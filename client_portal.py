@@ -30,6 +30,40 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
+# ── HubSpot CRM sync ─────────────────────────────────────────────────────────
+# Bridge Streamlit Cloud's secret to the environment variable that
+# hubspot_sync.py looks for. Streamlit's `secrets.toml` is a separate
+# mechanism from os.environ — they're not auto-linked. Without this bridge,
+# hubspot_sync._read_token() returns None and every sync silently no-ops.
+#
+# Set the secret on Streamlit Cloud (Settings → Secrets) as:
+#     hubspot_token = "pat-na1-..."
+# It can also be set as the env var HUBSPOT_TOKEN directly (e.g. for local
+# dev or non-Streamlit-Cloud hosts) — the bridge below is a no-op in that
+# case since we only set the env var if it isn't already there.
+try:
+    if not os.environ.get("HUBSPOT_TOKEN"):
+        _hs_token = st.secrets.get("hubspot_token", "")
+        if _hs_token:
+            os.environ["HUBSPOT_TOKEN"] = str(_hs_token).strip()
+except Exception:
+    # st.secrets raises if no secrets file exists — that's fine, just means
+    # HubSpot sync stays disabled and the rest of the app keeps working.
+    pass
+
+# Optional import — if the module isn't in the repo (or fails to load for
+# any reason), the app still works, just without CRM sync. The flag below
+# is what we check before attempting any sync.
+_HUBSPOT_AVAILABLE = False
+_HUBSPOT_IMPORT_ERROR: Optional[str] = None
+try:
+    import hubspot_sync  # type: ignore
+    _HUBSPOT_AVAILABLE = True
+except Exception as _e:
+    hubspot_sync = None  # type: ignore
+    _HUBSPOT_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+    print(f"[hubspot_sync] import failed: {_HUBSPOT_IMPORT_ERROR}")
+
 from shared import (
     load_json as _shared_load_json,
     update_json as _shared_update_json,
@@ -1472,9 +1506,52 @@ def _screen_register():
                     **(st.session_state.fr_scores or {}),
                 })
 
+                # ── HubSpot CRM sync ─────────────────────────────────────
+                # Local save above is the source of truth. If HubSpot is
+                # down, missing a token, or the module isn't installed,
+                # registration still succeeds — the sync just no-ops.
+                # sync_now=True attempts one synchronous push (~1-2s on
+                # success) and falls back to the background queue on
+                # failure, so the user is never blocked.
+                hs_msg = ""
+                if _HUBSPOT_AVAILABLE and hubspot_sync is not None:
+                    try:
+                        if hubspot_sync.is_configured():
+                            scores = st.session_state.fr_scores or {}
+                            overall = int(scores.get("overall_score", 0))
+                            label, _, _ = (score_band(overall) if overall
+                                           else ("", "", ""))
+                            hs_status = hubspot_sync.sync_contact(
+                                first      = st.session_state.fr_first,
+                                last       = st.session_state.fr_last,
+                                email      = email,
+                                phone      = phone,
+                                address    = addr,
+                                zipcode    = zipcode,
+                                age        = int(st.session_state.fr_age),
+                                risk_score = overall,
+                                risk_label = label,
+                                sync_now   = True,
+                            )
+                            print(f"[hubspot_sync] result: {hs_status}")
+                            if hs_status.get("ok") and not hs_status.get("queued"):
+                                hs_msg = " Your advisor has been notified."
+                            elif hs_status.get("queued"):
+                                hs_msg = " Sending to your advisor in the background."
+                        else:
+                            print("[hubspot_sync] not configured "
+                                  "(no HUBSPOT_TOKEN env var or "
+                                  "hubspot_token Streamlit secret)")
+                    except Exception as _hs_e:
+                        # Never block registration on a sync error.
+                        import traceback as _tb
+                        _tb.print_exc()
+                        print(f"[hubspot_sync] sync exception: {_hs_e}")
+
                 # Log them in and land on the dashboard.
                 st.session_state.fr_user = user
-                st.session_state.fr_flash = "Profile saved — welcome!"
+                st.session_state.fr_flash = (
+                    "Profile saved — welcome!" + hs_msg)
                 st.rerun()
 
 

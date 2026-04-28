@@ -1,5 +1,17 @@
+# Foresight Risk — Streamlit client portal
+#
+# Versions intentionally use lower bounds (>=) instead of pins (==).
+# Pinning old versions breaks Streamlit Cloud, which now runs Python 3.14:
+#   - pyyaml==6.0 fails to build (Cython incompatibility on 3.14)
+#   - pandas==2.0.3 fails to build (needs old pkg_resources)
+# Lower bounds let pip pick versions compatible with whatever Python the
+# host is running. The minimums below are what the code was tested with.
+
 streamlit>=1.39
 pandas>=2.2
 plotly>=5.20
 yfinance>=0.2.40
 numpy>=1.26
+
+# HubSpot CRM sync (hubspot_sync.py uses requests for the HubSpot REST API)
+requests>=2.31
