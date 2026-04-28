@@ -37,24 +37,6 @@ from shared import (
     score_to_label, score_to_allocation,
 )
 
-# ── Optional HubSpot CRM sync ────────────────────────────────────────────────
-# Non-blocking: if the module isn't installed or the token isn't configured,
-# the portal works exactly as before. Registrations always save locally first;
-# HubSpot sync runs in a background thread with retry-and-backoff.
-_HUBSPOT_IMPORT_ERROR: Optional[str] = None
-try:
-    import hubspot_sync  # type: ignore
-    _HUBSPOT_AVAILABLE = True
-except Exception as _e:
-    hubspot_sync = None
-    _HUBSPOT_AVAILABLE = False
-    _HUBSPOT_IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
-    # Also log it so it shows up in the Streamlit terminal output, not just
-    # the in-app diagnostic.
-    import traceback as _tb
-    print(f"[hubspot_sync] import failed: {_HUBSPOT_IMPORT_ERROR}")
-    _tb.print_exc()
-
 # ── DATA FILE LOCATIONS ──────────────────────────────────────────────────────
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 def _data_path(name: str) -> str: return os.path.join(_APP_DIR, name)
@@ -62,6 +44,38 @@ def _data_path(name: str) -> str: return os.path.join(_APP_DIR, name)
 USERS_FILE           = _data_path("ra_users.json")
 PROFILES_FILE        = _data_path("risk_profiles.json")
 CLIENT_HOLDINGS_FILE = _data_path("client_holdings.json")
+CLIENT_GOALS_FILE    = _data_path("client_goals.json")
+CLIENT_BUDGETS_FILE  = _data_path("client_budgets.json")
+
+# ── ADVISOR PROFILE ──────────────────────────────────────────────────────────
+# Single advisor profile shown on the Advisor tab. Edit these fields to swap
+# the photo, contact info, or company website without touching the UI code.
+ADVISOR = {
+    "name":    "Sarah Whitfield, CFP®",
+    "title":   "Senior Financial Advisor",
+    "firm":    "Foresight Wealth Partners",
+    "email":   "sarah.whitfield@foresightwealth.com",
+    "phone":   "(612) 555-0142",
+    "website": "https://www.foresightwealth.com",
+    "address": "200 South Sixth Street, Suite 1200, Minneapolis, MN 55402",
+    "bio":     ("Sarah has spent fifteen years helping families plan for "
+                "retirement, education, and legacy goals. She's a Certified "
+                "Financial Planner™ and a fiduciary — meaning she's legally "
+                "required to act in your best interest."),
+    # Generic SVG avatar — neutral, no real likeness.
+    "photo_svg": (
+        '<svg viewBox="0 0 80 80" width="80" height="80" '
+        'xmlns="http://www.w3.org/2000/svg">'
+        '<defs><linearGradient id="adv_bg" x1="0" y1="0" x2="1" y2="1">'
+        '<stop offset="0" stop-color="#0E5C5E"/>'
+        '<stop offset="1" stop-color="#0E7C86"/></linearGradient></defs>'
+        '<circle cx="40" cy="40" r="40" fill="url(#adv_bg)"/>'
+        '<circle cx="40" cy="32" r="13" fill="#FFFFFF" opacity="0.95"/>'
+        '<path d="M16 70 C 18 56, 28 50, 40 50 S 62 56, 64 70 Z" '
+        'fill="#FFFFFF" opacity="0.95"/>'
+        '</svg>'
+    ),
+}
 
 st.set_page_config(
     page_title="Foresight Risk Analytics",
@@ -200,19 +214,50 @@ st.markdown(
             color: {THEME['primary']} !important;
         }}
 
+        /* Standardize number rendering inside radio/select labels — tabular
+           numerals so $50,000 – $100,000 lines up identically in every
+           question (income, net worth, goal amount, etc.). */
+        .stRadio label, .stRadio [data-baseweb="radio"] div,
+        .stSelectbox div, .stMultiSelect div {{
+            font-variant-numeric: tabular-nums;
+            font-feature-settings: "tnum" 1, "lnum" 1;
+        }}
+
         .stTabs [data-baseweb="tab-list"] {{
             background: transparent;
             border-bottom: 1px solid {THEME['line']};
-            gap: 4px;
+            gap: 28px;                  /* generous spacing between tabs */
+            padding: 0 4px;             /* keeps first tab from kissing the edge */
+            margin-bottom: 18px;        /* breathing room before tab content */
         }}
         .stTabs [data-baseweb="tab"] {{
             color: {THEME['muted']};
             background: transparent;
             font-weight: 600;
+            font-size: 0.95rem;
+            padding: 12px 4px;          /* taller hit-area, slim horizontal */
+            min-height: auto;
+            letter-spacing: 0.01em;
+            transition: color 0.15s ease;
+        }}
+        .stTabs [data-baseweb="tab"]:hover {{
+            color: {THEME['ink2']};
         }}
         .stTabs [aria-selected="true"] {{
             color: {THEME['ink']} !important;
-            border-bottom: 2px solid {THEME['primary']} !important;
+        }}
+        /* Newer Streamlit renders the active-tab indicator as a separate
+           sliding element. By default it picks up Streamlit's primaryColor
+           (red #FF4B4B) regardless of our app theme. Force it to the brand
+           teal so the tab selection matches everything else on the page. */
+        .stTabs [data-baseweb="tab-highlight"] {{
+            background-color: {THEME['primary']} !important;
+            background: {THEME['primary']} !important;
+            height: 2.5px !important;
+        }}
+        .stTabs [data-baseweb="tab-border"] {{
+            background-color: {THEME['line']} !important;
+            background: {THEME['line']} !important;
         }}
 
         .stButton > button {{
@@ -337,6 +382,32 @@ def save_profile_for(client_key: str, profile_patch: dict) -> None:
     _shared_update_json(PROFILES_FILE, _mutate)
 
 
+# ── GOALS & BUDGETS ──────────────────────────────────────────────────────────
+def load_all_goals() -> dict:
+    return _shared_load_json(CLIENT_GOALS_FILE, default={})
+
+def load_goals_for(client_key: str) -> list:
+    return list(load_all_goals().get(client_key, []) or [])
+
+def save_goals_for(client_key: str, goals: list) -> None:
+    _shared_update_json(
+        CLIENT_GOALS_FILE,
+        lambda d, k=client_key, g=goals: d.update({k: g}),
+    )
+
+def load_all_budgets() -> dict:
+    return _shared_load_json(CLIENT_BUDGETS_FILE, default={})
+
+def load_budget_for(client_key: str) -> dict:
+    return dict(load_all_budgets().get(client_key, {}) or {})
+
+def save_budget_for(client_key: str, budget: dict) -> None:
+    _shared_update_json(
+        CLIENT_BUDGETS_FILE,
+        lambda d, k=client_key, b=budget: d.update({k: b}),
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # LIVE QUOTES
 # ─────────────────────────────────────────────────────────────────────────────
@@ -401,12 +472,17 @@ PROFILE_QUESTIONS = [
     ]},
     {"id": "income_band", "section": "Context",
      "text": "Household annual income (gross)",
+     # Only ONE dollar sign per option — Streamlit renders radio labels
+     # through markdown, and a paired `$...$` is parsed as inline LaTeX
+     # (rendering the inside in green monospace math font). Standard
+     # financial-report convention: "$50,000 – 100,000" is unambiguous
+     # because the range is clearly currency from the first symbol.
      "type": "select", "options": [
         ("Under $50,000",            30),
-        ("$50,000 – $100,000",       45),
-        ("$100,000 – $200,000",      60),
-        ("$200,000 – $500,000",      75),
-        ("$500,000 – $1,000,000",    85),
+        ("$50,000 – 100,000",        45),
+        ("$100,000 – 200,000",       60),
+        ("$200,000 – 500,000",       75),
+        ("$500,000 – 1,000,000",     85),
         ("Over $1,000,000",          90),
         ("Prefer not to say",        50),
     ]},
@@ -420,12 +496,13 @@ PROFILE_QUESTIONS = [
     ]},
     {"id": "net_worth", "section": "Context",
      "text": "Approximate liquid net worth (excluding home)",
+     # See income_band note re: single dollar sign per option.
      "type": "select", "options": [
         ("Under $100,000",              30),
-        ("$100,000 – $500,000",         50),
-        ("$500,000 – $1,000,000",       65),
-        ("$1,000,000 – $5,000,000",     75),
-        ("$5,000,000 – $25,000,000",    85),
+        ("$100,000 – 500,000",          50),
+        ("$500,000 – 1,000,000",        65),
+        ("$1,000,000 – 5,000,000",      75),
+        ("$5,000,000 – 25,000,000",     85),
         ("Over $25,000,000",            90),
         ("Prefer not to say",           55),
     ]},
@@ -448,12 +525,13 @@ PROFILE_QUESTIONS = [
     ]},
     {"id": "goal_amount", "section": "Goals",
      "text": "Do you have a specific dollar target in mind?",
+     # See income_band note re: single dollar sign per option.
      "type": "select", "options": [
         ("No target — I'm just building",              60),
         ("Under $250,000",                             40),
-        ("$250,000 – $1,000,000",                      55),
-        ("$1,000,000 – $5,000,000",                    70),
-        ("$5,000,000 – $25,000,000",                   80),
+        ("$250,000 – 1,000,000",                       55),
+        ("$1,000,000 – 5,000,000",                     70),
+        ("$5,000,000 – 25,000,000",                    80),
         ("Over $25,000,000",                           85),
     ]},
     {"id": "goal_timeline", "section": "Goals",
@@ -515,11 +593,13 @@ PROFILE_QUESTIONS = [
     ]},
     {"id": "major_expense", "section": "Horizon",
      "text": "Major expense in the next 3 years (home, education, medical)?",
+     # Single $ per option — see income_band note above for the LaTeX-pairing
+     # rationale.
      "type": "select", "options": [
-        ("No major expenses planned",   75),
-        ("Possibly — under $50,000",    60),
-        ("Yes — $50,000 to $250,000",   40),
-        ("Yes — over $250,000",         25),
+        ("No major expenses planned",     75),
+        ("Possibly — under $50,000",      60),
+        ("Yes — $50,000 to 250,000",      40),
+        ("Yes — over $250,000",           25),
     ]},
     {"id": "drawdown_reaction", "section": "Tolerance",
      "text": "Your portfolio drops 25% in a single year. What do you do?",
@@ -660,12 +740,14 @@ def score_profile(answers: dict) -> dict:
 
 
 def score_band(score: int) -> tuple[str, str, str]:
-    """(label, hex, soft_bg) — prototype's Risk Checkup framing.
-       75+ Strong, 65+ Stable, 40+ Watch, <40 At risk."""
-    if score >= 75: return "Strong",  THEME["healthy"], THEME["healthy_soft"]
-    if score >= 65: return "Stable",  THEME["healthy"], THEME["healthy_soft"]
-    if score >= 40: return "Watch",   THEME["caution"], THEME["caution_soft"]
-    return            "At risk", THEME["risk"],    THEME["risk_soft"]
+    """(label, hex, soft_bg) — neutral risk-profile bands.
+
+    Three buckets only — Conservative, Moderate, Aggressive. No diagnostic
+    or evaluative language ("at risk", "watch", "strong", etc.); these
+    describe an *investing posture*, not a judgment about the client."""
+    if score >= 70: return "Aggressive",   THEME["primary"], THEME["primary_soft"]
+    if score >= 45: return "Moderate",     THEME["primary"], THEME["primary_soft"]
+    return            "Conservative", THEME["primary"], THEME["primary_soft"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -774,15 +856,19 @@ def make_sparkline(values: list, height: int = 120) -> go.Figure:
 
 
 def status_chip(status: str, label: Optional[str] = None) -> str:
+    """Neutral chip. No diagnostic language ("Watch", "Alert") — a chip is
+    only rendered if `label` is explicitly provided. Called sites that pass
+    just a status now get an empty string back, which is intentional."""
+    if not label:
+        return ""
     cmap = {
-        "healthy": (THEME["healthy_soft"], THEME["healthy"], "Healthy"),
-        "caution": (THEME["caution_soft"], THEME["caution"], "Watch"),
-        "risk":    (THEME["risk_soft"],    THEME["risk"],    "Alert"),
+        "healthy": (THEME["primary_soft"], THEME["primary"]),
+        "caution": (THEME["primary_soft"], THEME["primary"]),
+        "risk":    (THEME["primary_soft"], THEME["primary"]),
     }
-    bg, fg, default_text = cmap.get(status, cmap["healthy"])
-    text = label or default_text
+    bg, fg = cmap.get(status, cmap["healthy"])
     return (f'<span class="fr-chip" style="background:{bg};color:{fg}">'
-            f'{text}</span>')
+            f'{label}</span>')
 
 
 def fmt_money(x: float) -> str:
@@ -912,8 +998,10 @@ def _screen_welcome():
     )
 
     st.markdown(
-        f'<div style="max-width:520px;margin:30px auto 0;padding:0 28px">'
-        f'  <div style="display:flex;align-items:center;gap:10px;margin-bottom:36px">'
+        f'<div style="max-width:520px;margin:30px auto 0;padding:0 28px;'
+        f'            text-align:center">'
+        f'  <div style="display:flex;align-items:center;justify-content:center;'
+        f'              gap:10px;margin-bottom:36px">'
         f'    {logo_mark(THEME["primary"], 26)}'
         f'    <span style="font-size:0.82rem;font-weight:600;letter-spacing:0.12em;'
         f'                 color:{THEME["ink"]};text-transform:uppercase">'
@@ -921,11 +1009,13 @@ def _screen_welcome():
         f'    </span>'
         f'  </div>'
         f'  <h1 style="font-size:2rem;line-height:1.18;color:{THEME["ink"]};'
-        f'             font-weight:500;margin:14px 0 28px;letter-spacing:-0.015em">'
+        f'             font-weight:500;margin:14px 0 28px;letter-spacing:-0.015em;'
+        f'             text-align:center">'
         f'    A complete financial risk profile in less than 2 minutes.'
         f'  </h1>'
         f'  <div style="display:flex;gap:24px;color:{THEME["muted"]};'
-        f'              font-size:0.92rem;margin-bottom:24px;align-items:center">'
+        f'              font-size:0.92rem;margin-bottom:24px;align-items:center;'
+        f'              justify-content:center">'
         f'    <span>{_icon_lock}Encrypted</span>'
         f'    <span>{_icon_shield}Fiduciary</span>'
         f'  </div>'
@@ -1004,7 +1094,10 @@ def _screen_prequiz():
 
     _l, _form, _r = st.columns([1, 2, 1])
     with _form:
-        st.markdown('<div class="fr-card">', unsafe_allow_html=True)
+        # No fr-card wrapper — it was rendering an empty padded box above
+        # the field labels. The text inputs already have their own visual
+        # container; nesting them inside another card created a redundant
+        # white rectangle.
         c1, c2 = st.columns(2)
         first = c1.text_input("First name *", key="fr_pq_first",
                               value=st.session_state.fr_first,
@@ -1015,7 +1108,6 @@ def _screen_prequiz():
         age = st.number_input("Age *", min_value=18, max_value=100,
                               value=int(st.session_state.fr_age) or 40,
                               step=1, key="fr_pq_age")
-        st.markdown('</div>', unsafe_allow_html=True)
 
         b1, b2 = st.columns([1, 2])
         with b1:
@@ -1087,7 +1179,8 @@ def _screen_quiz():
 
     _l, _form, _r = st.columns([1, 2.4, 1])
     with _form:
-        st.markdown('<div class="fr-card">', unsafe_allow_html=True)
+        # No card wrapper here — the question itself is the focal point.
+        # The fr-card was visually redundant with the section header above.
 
         prev = st.session_state.fr_answers.get(q["id"])
         if q["type"] == "number":
@@ -1106,6 +1199,25 @@ def _screen_quiz():
                            key=f"fr_qz_{q['id']}",
                            label_visibility="collapsed")
             answered = val is not None
+
+            # Auto-advance: if the user just selected an option (val is set
+            # AND it's a fresh selection — different from what was stored),
+            # save the answer and jump to the next question without making
+            # them click "Next →". Multi-select and number-input questions
+            # don't get this behavior (no clear "done" signal), and we only
+            # auto-advance when *moving forward* (val != prev) so revisiting
+            # a previously-answered question via Back doesn't immediately
+            # bounce the user away again.
+            if val is not None and val != prev:
+                st.session_state.fr_answers[q["id"]] = val
+                if idx == total - 1:
+                    st.session_state.fr_scores = score_profile(
+                        st.session_state.fr_answers
+                    )
+                    st.session_state.fr_step = "results"
+                else:
+                    st.session_state.fr_q_idx = idx + 1
+                st.rerun()
         elif q["type"] == "multi":
             opts = q["options"]
             default = ([d for d in (prev or []) if d in opts]
@@ -1118,7 +1230,7 @@ def _screen_quiz():
         else:
             val = None; answered = False
 
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
 
         b1, b2 = st.columns([1, 2])
         with b1:
@@ -1150,7 +1262,7 @@ def _screen_results():
     """Score is computed and stored in session_state but NOT revealed here.
     The user sees a 'your profile is ready' card with a locked preview to
     nudge registration. Once they register and land on the dashboard, the
-    full RiskRing + diagnosis are shown.
+    full RiskRing + neutral risk-profile summary are shown.
 
     This is intentional: showing the score before registration removes the
     incentive to register. The score reveal becomes the reward for finishing
@@ -1175,8 +1287,8 @@ def _screen_results():
         f'  </h1>'
         f'  <p style="font-size:0.95rem;line-height:1.55;color:{THEME["ink2"]};'
         f'            margin:0 0 22px 0">'
-        f'    Save your results to view your full risk score, diagnosis, and '
-        f'    personalized recommendations. Email and phone only — address '
+        f'    Save your results to view your full risk profile and a summary '
+        f'    of your investing posture. Email and phone only — address '
         f'    is optional.'
         f'  </p>'
         f'</div>',
@@ -1279,7 +1391,9 @@ def _screen_register():
 
     _l, _form, _r = st.columns([1, 2, 1])
     with _form:
-        st.markdown('<div class="fr-card">', unsafe_allow_html=True)
+        # No fr-card wrapper here — same reason as the prequiz screen: it
+        # rendered an empty padded white box above the first label. The
+        # eyebrow + inputs already group visually on their own.
         st.markdown('<div class="fr-eyebrow">Contact info</div>',
                     unsafe_allow_html=True)
         email = st.text_input("Email *", key="fr_rg_email",
@@ -1298,7 +1412,6 @@ def _screen_register():
                                 placeholder="12345")
 
         st.caption("Your email is how you'll sign in next time.")
-        st.markdown('</div>', unsafe_allow_html=True)
 
         b1, b2 = st.columns([1, 2])
         with b1:
@@ -1359,80 +1472,9 @@ def _screen_register():
                     **(st.session_state.fr_scores or {}),
                 })
 
-                # ── HubSpot CRM sync ─────────────────────────────────────
-                # Local save above is the source of truth — if HubSpot is down,
-                # missing a token, or even uninstalled, registration still
-                # succeeds. sync_now=True tries one synchronous attempt
-                # (~1-2s on success); failures auto-fall-back to the
-                # background queue so nothing is lost.
-                hs_status = None
-                hs_skip_reason = None  # set when sync is skipped, for diagnostics
-
-                if not _HUBSPOT_AVAILABLE:
-                    hs_skip_reason = (
-                        f"hubspot_sync module not importable "
-                        f"({_HUBSPOT_IMPORT_ERROR or 'unknown error'})"
-                    )
-                elif not hubspot_sync.is_configured():
-                    hs_skip_reason = (
-                        "hubspot_sync.is_configured() returned False "
-                        "(token missing or invalid?)"
-                    )
-                else:
-                    try:
-                        scores = st.session_state.fr_scores or {}
-                        overall = int(scores.get("overall_score", 0))
-                        label, _, _ = (score_band(overall) if overall
-                                       else ("", "", ""))
-                        hs_status = hubspot_sync.sync_contact(
-                            first   = st.session_state.fr_first,
-                            last    = st.session_state.fr_last,
-                            email   = email,
-                            phone   = phone,
-                            address = addr,
-                            zipcode = zipcode,
-                            age     = int(st.session_state.fr_age),
-                            risk_score = overall,
-                            risk_label = label,
-                            sync_now   = True,
-                        )
-                        # Log whatever came back so it's visible in the
-                        # Streamlit terminal, not just the UI.
-                        print(f"[hubspot_sync] sync_contact returned: {hs_status}")
-                    except Exception as e:
-                        import traceback as _tb
-                        _tb.print_exc()
-                        hs_status = {"ok": False, "error": str(e),
-                                     "exception_type": type(e).__name__}
-
-                # Log them in and land on the dashboard.  If HubSpot returned
-                # a status, surface it on the dashboard via the flash banner so
-                # we're not silent about failures the user might want to know
-                # about (advisor team won't see this contact yet, etc.).
+                # Log them in and land on the dashboard.
                 st.session_state.fr_user = user
-                if hs_skip_reason is not None:
-                    # Sync was skipped before we ever reached HubSpot. Stash
-                    # the reason where the dashboard can pick it up; don't
-                    # alarm the end user with a stack trace.
-                    st.session_state.fr_hubspot_debug = hs_skip_reason
-                    st.session_state.fr_flash = "Profile saved — welcome!"
-                elif hs_status is None:
-                    st.session_state.fr_flash = "Profile saved — welcome!"
-                elif hs_status.get("ok") and not hs_status.get("queued"):
-                    st.session_state.fr_flash = (
-                        "Profile saved — welcome! "
-                        "Your advisor has been notified.")
-                elif hs_status.get("queued"):
-                    st.session_state.fr_flash = (
-                        "Profile saved — welcome! "
-                        "Sending a copy to your advisor in the background.")
-                else:
-                    # Sync ran but failed.  Stash the failure for the
-                    # diagnostics panel; user-facing message stays calm.
-                    st.session_state.fr_hubspot_debug = (
-                        f"sync_contact failed: {hs_status}"
-                    )
-                    st.session_state.fr_flash = "Profile saved — welcome!"
+                st.session_state.fr_flash = "Profile saved — welcome!"
                 st.rerun()
 
 
@@ -1467,51 +1509,6 @@ def render_dashboard():
         st.success(st.session_state.fr_flash)
         st.session_state.fr_flash = None
 
-    # ── HubSpot diagnostic panel ────────────────────────────────────────────
-    # Set to False once the integration is verified to be working in production.
-    # Leaves the panel hidden unless there's a debug payload to surface.
-    _ADMIN_DIAGNOSTICS_ENABLED = True
-
-    _hs_debug = st.session_state.get("fr_hubspot_debug")
-    _hs_show_status = (
-        _ADMIN_DIAGNOSTICS_ENABLED
-        or st.session_state.get("fr_hubspot_show_status", False)
-    )
-    if _hs_debug or _hs_show_status:
-        with st.expander("🔧 HubSpot sync status (admin)", expanded=False):
-            st.write(f"**Module available:** `{_HUBSPOT_AVAILABLE}`")
-            if _HUBSPOT_IMPORT_ERROR:
-                st.error(f"Import error: {_HUBSPOT_IMPORT_ERROR}")
-            if _HUBSPOT_AVAILABLE and hubspot_sync is not None:
-                try:
-                    st.write(f"**is_configured():** `{hubspot_sync.is_configured()}`")
-                except Exception as e:
-                    st.error(f"is_configured() raised: {type(e).__name__}: {e}")
-                # Queue depth and dead-letter — these reveal whether past
-                # syncs have been failing silently.
-                try:
-                    st.write(f"**Pending in queue:** `{hubspot_sync.pending_count()}`")
-                except Exception as e:
-                    st.write(f"pending_count() raised: {e}")
-                try:
-                    dead = hubspot_sync.get_deadletter()
-                    st.write(f"**Dead-lettered (failed permanently):** `{len(dead)}`")
-                    if dead:
-                        st.write("Most recent failure:")
-                        st.json(dead[-1])
-                        if st.button("Clear dead-letter file",
-                                     key="fr_clear_hs_dead"):
-                            hubspot_sync.clear_deadletter()
-                            st.rerun()
-                except Exception as e:
-                    st.write(f"get_deadletter() raised: {e}")
-            if _hs_debug:
-                st.write("**Last sync attempt:**")
-                st.code(str(_hs_debug))
-                if st.button("Clear debug", key="fr_clear_hs_debug"):
-                    st.session_state.fr_hubspot_debug = None
-                    st.rerun()
-
     # ── Greeting ────────────────────────────────────────────────────────────
     first_name = user.get("first_name", "there")
     hour = datetime.now().hour
@@ -1541,6 +1538,21 @@ def render_dashboard():
         unsafe_allow_html=True,
     )
 
+    # ── Real tabs replace the old visual-only bottom nav ───────────────────
+    tab_home, tab_plan, tab_advisor = st.tabs(["Home", "Plan", "Advisor"])
+
+    with tab_home:
+        _render_home_tab(profile, holdings, ck)
+    with tab_plan:
+        _render_plan_tab(ck)
+    with tab_advisor:
+        _render_advisor_tab()
+
+
+def _render_home_tab(profile: dict, holdings: dict, ck: str):
+    """Original dashboard body — score hero, vitals snapshot, trend, holdings.
+    The advisor CTA and fake bottom nav have been removed; the advisor card
+    moved to its own tab and the bottom nav was replaced by real tabs."""
     # ── Score hero card ─────────────────────────────────────────────────────
     if not profile or "overall_score" not in profile:
         st.markdown(
@@ -1561,7 +1573,10 @@ def render_dashboard():
             st.rerun()
     else:
         overall = int(profile.get("overall_score", 50))
-        st.markdown('<div class="fr-card">', unsafe_allow_html=True)
+        # No fr-card wrapper here — Streamlit's `st.columns`, `st.plotly_chart`
+        # and `st.button` don't actually nest inside raw HTML divs (they're
+        # appended as DOM siblings), so the `<div class="fr-card">` was
+        # rendering as an empty padded white box above the content.
         h1, h2 = st.columns([1.05, 1])
         with h1:
             st.plotly_chart(make_risk_ring(overall, height=300),
@@ -1570,28 +1585,37 @@ def render_dashboard():
         with h2:
             cap = int(profile.get("capacity_score", 50))
             tol = int(profile.get("tolerance_score", 50))
-            if overall >= 75:
-                diag = "On a strong trajectory."
-                detail = "Capacity and tolerance both align — keep building toward your horizon."
-            elif overall >= 60:
-                diag = "On track, with two areas to watch."
-                detail = "Strong signal across most dimensions. Review liquidity and outlook tilts."
-            elif overall >= 40:
-                diag = "Some areas need attention."
-                detail = ("Lower-than-average " +
-                          ("capacity" if cap < tol else "tolerance") +
-                          " is pulling your score down.")
+            label, _, _ = score_band(overall)
+
+            # Neutral summary — describes the posture, not a verdict on the
+            # client. Three buckets matching score_band: Conservative,
+            # Moderate, Aggressive.
+            if label == "Aggressive":
+                summary = (
+                    "Your answers point to an aggressive posture — a higher "
+                    "tolerance for short-term swings in exchange for greater "
+                    "long-term growth potential."
+                )
+            elif label == "Moderate":
+                summary = (
+                    "Your answers point to a moderate posture — a balance "
+                    "between growth and stability that most long-term "
+                    "investors land on."
+                )
             else:
-                diag = "Several areas at risk."
-                detail = "Significant rebalancing recommended — talk to your advisor."
+                summary = (
+                    "Your answers point to a conservative posture — a "
+                    "preference for stability and capital preservation over "
+                    "maximum growth."
+                )
 
             st.markdown(
                 f'<div style="padding-top:18px">'
-                f'  <div class="fr-eyebrow">Diagnosis</div>'
+                f'  <div class="fr-eyebrow">Risk Profile</div>'
                 f'  <div style="font-size:1rem;color:{THEME["ink"]};font-weight:600;'
-                f'              margin-top:4px;line-height:1.3">{diag}</div>'
+                f'              margin-top:4px;line-height:1.3">{label}</div>'
                 f'  <div style="font-size:0.85rem;color:{THEME["ink2"]};'
-                f'              margin-top:8px;line-height:1.5">{detail}</div>'
+                f'              margin-top:8px;line-height:1.5">{summary}</div>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -1599,7 +1623,6 @@ def render_dashboard():
                          use_container_width=True):
                 st.session_state.fr_view = "edit_profile"
                 st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Vitals grid ─────────────────────────────────────────────────────────
     if holdings:
@@ -1614,12 +1637,34 @@ def render_dashboard():
     tol = int(profile.get("tolerance_score", 0)) if profile else 0
 
     def _tile(label: str, value: str, detail: str, status: str,
-              delta: str = "") -> str:
+              delta: str = "", gauge: Optional[int] = None) -> str:
+        """If `gauge` is a 0-100 integer, render a thin horizontal bar
+        underneath the value — used for Risk Capacity and Risk Tolerance so
+        the score has a visual reference, not just a bare number."""
         chip = status_chip(status) if status else ""
         delta_color = (THEME["healthy"] if not str(delta).startswith("-")
                        else THEME["risk"])
         delta_html = (f'<span class="fr-mono" style="color:{delta_color}">'
                       f'{delta}</span>' if delta else "")
+        gauge_html = ""
+        if gauge is not None:
+            g = max(0, min(100, int(gauge)))
+            gauge_html = (
+                f'<div style="margin-top:8px">'
+                f'  <div style="height:5px;background:{THEME["line"]};'
+                f'              border-radius:3px;position:relative;overflow:hidden">'
+                f'    <div style="height:100%;width:{g}%;'
+                f'                background:{THEME["primary"]};'
+                f'                border-radius:3px"></div>'
+                f'  </div>'
+                f'  <div style="display:flex;justify-content:space-between;'
+                f'              font-size:0.66rem;color:{THEME["muted"]};'
+                f'              margin-top:4px;'
+                f'              font-variant-numeric:tabular-nums">'
+                f'    <span>0</span><span>50</span><span>100</span>'
+                f'  </div>'
+                f'</div>'
+            )
         return (
             f'<div class="fr-vital">'
             f'  <div style="display:flex;align-items:center;justify-content:space-between">'
@@ -1629,13 +1674,14 @@ def render_dashboard():
             f'  <div class="fr-vital-detail">'
             f'    <span>{detail}</span>{delta_html}'
             f'  </div>'
+            f'  {gauge_html}'
             f'</div>'
         )
 
     st.markdown(
         f'<div style="display:flex;align-items:center;justify-content:space-between;'
         f'            margin:18px 2px 10px">'
-        f'  <div class="fr-eyebrow">Financial Vitals</div>'
+        f'  <div class="fr-eyebrow">Snapshot</div>'
         f'  <span style="font-size:0.72rem;color:{THEME["primary"]};font-weight:600">'
         f'    This month'
         f'  </span>'
@@ -1646,38 +1692,38 @@ def render_dashboard():
     g3, g4 = st.columns(2)
 
     with g1:
-        nw_status = "healthy" if vitals["net_worth"] > 0 else "caution"
+        # Net Worth — informational only. Show gain % as a neutral delta;
+        # no "watch" / "alert" framing.
         nw_delta  = (fmt_pct(vitals["gain_pct"]) if vitals["cost_basis"] else "")
         st.markdown(_tile(
             "Net Worth", fmt_money(vitals["net_worth"]),
             f"{len(holdings)} positions" if holdings else "no positions yet",
-            nw_status, delta=nw_delta,
+            "", delta=nw_delta,
         ), unsafe_allow_html=True)
 
     with g2:
-        cap_status = ("healthy" if cap >= 60 else
-                      "caution" if cap >= 40 else "risk")
         st.markdown(_tile(
             "Risk Capacity", str(cap) if cap else "—",
-            "ability to absorb loss", cap_status,
+            "ability to absorb loss", "",
+            gauge=cap if cap else None,
         ), unsafe_allow_html=True)
 
     with g3:
+        # Cash Position — informational only. Show % of portfolio as detail;
+        # no "watch" framing on whether the % is "healthy" or not.
         cash_pct = (vitals["cash"] / vitals["net_worth"] * 100
                     if vitals["net_worth"] else 0)
-        cash_status = "healthy" if 5 <= cash_pct <= 20 else "caution"
         st.markdown(_tile(
             "Cash Position", fmt_money(vitals["cash"]),
             f"{cash_pct:.1f}% of portfolio" if vitals["net_worth"] else "—",
-            cash_status,
+            "",
         ), unsafe_allow_html=True)
 
     with g4:
-        tol_status = ("healthy" if tol >= 60 else
-                      "caution" if tol >= 40 else "risk")
         st.markdown(_tile(
             "Risk Tolerance", str(tol) if tol else "—",
-            "comfort with volatility", tol_status,
+            "comfort with volatility", "",
+            gauge=tol if tol else None,
         ), unsafe_allow_html=True)
 
     # ── Trend card ──────────────────────────────────────────────────────────
@@ -1721,7 +1767,9 @@ def render_dashboard():
             config={"displayModeBar": False})
 
     # ── Holdings card ───────────────────────────────────────────────────────
-    st.markdown('<div class="fr-card">', unsafe_allow_html=True)
+    # No fr-card wrapper — the streamlit widgets inside (columns, buttons,
+    # markdown rows) don't actually nest into a raw HTML div, so the wrapper
+    # was rendering as an empty box and the content sat below as siblings.
     h_l, h_r = st.columns([3, 1])
     with h_l:
         st.markdown(
@@ -1786,50 +1834,442 @@ def render_dashboard():
             f'</div>',
             unsafe_allow_html=True,
         )
-    st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── Advisor CTA ─────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLAN TAB — Goals + Budget builder
+# ─────────────────────────────────────────────────────────────────────────────
+def _render_plan_tab(ck: str):
+    """Two stacked sections: financial goals (with $ amount + timeline) and a
+    monthly budget builder that shows how much room the user has each month
+    to direct toward their goals."""
+    goals = load_goals_for(ck)
+    budget = load_budget_for(ck)
+
+    # ── Goals card ──────────────────────────────────────────────────────────
+    # No fr-card wrapper — st.data_editor and other Streamlit widgets below
+    # don't actually nest into raw HTML divs.
     st.markdown(
-        f'<div class="fr-cta-dark">'
-        f'  <div class="fr-cta-icon">📅</div>'
-        f'  <div style="flex:1">'
-        f'    <div style="font-size:0.92rem;font-weight:600">Book your follow-up</div>'
-        f'    <div style="font-size:0.78rem;opacity:0.7;margin-top:2px">'
-        f'      15-min call with a fiduciary advisor'
+        f'<div class="fr-eyebrow">Financial Goals</div>'
+        f'<div style="font-size:1.05rem;font-weight:600;color:{THEME["ink"]};'
+        f'            margin-top:2px">What are you saving toward?</div>'
+        f'<div style="color:{THEME["ink2"]};font-size:0.88rem;margin-top:4px">'
+        f'  Add a goal with a dollar amount and target date. We\'ll show what '
+        f'  you need to set aside each month to get there.'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Goals list — a single editable table. No cap on number of goals; users
+    # add rows by typing into the empty bottom row, delete by selecting rows
+    # via the row-handle and pressing Delete (Streamlit's data_editor pattern,
+    # same as the holdings editor elsewhere in this app).
+    today = date.today()
+
+    import pandas as pd  # local import — only needed for the goals/budget tab
+
+    # Build the editable dataframe. We always append one blank row at the end
+    # so there's a visible "add a goal here" affordance even when the list
+    # is full of saved goals.
+    default_target = today.replace(year=today.year + 5)
+    goal_rows = []
+    for g in goals:
+        try:
+            tdt = date.fromisoformat(g.get("target_date", ""))
+        except Exception:
+            tdt = default_target
+        goal_rows.append({
+            "Goal":         g.get("name", ""),
+            "Target $":     float(g.get("amount") or 0),
+            "Saved":        float(g.get("saved") or 0),
+            "Target date":  tdt,
+        })
+    goals_df = pd.DataFrame(
+        goal_rows,
+        columns=["Goal", "Target $", "Saved", "Target date"],
+    )
+
+    edited_df = st.data_editor(
+        goals_df,
+        key="fr_goals_editor",
+        num_rows="dynamic",            # users can add/delete rows freely
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Goal": st.column_config.TextColumn(
+                "Goal",
+                help="What are you saving toward? "
+                     "(e.g., House down payment, Sabbatical, College fund)",
+                required=False,
+                max_chars=80,
+            ),
+            "Target $": st.column_config.NumberColumn(
+                "Target $",
+                help="Dollar amount you want to reach",
+                min_value=0.0, step=1000.0, format="$%d",
+            ),
+            "Saved": st.column_config.NumberColumn(
+                "Saved",
+                help="How much you've set aside toward this goal so far",
+                min_value=0.0, step=500.0, format="$%d",
+            ),
+            "Target date": st.column_config.DateColumn(
+                "Target date",
+                help="When you want to reach the goal",
+                min_value=today,
+            ),
+        },
+    )
+
+    # Save changes whenever the table edits land. We keep only rows that have
+    # both a name and a positive target — partially-typed rows are ignored
+    # until they're complete, so the user's in-progress entry doesn't get
+    # discarded on rerun.
+    cleaned = []
+    for _, row in edited_df.iterrows():
+        name = (str(row.get("Goal") or "")).strip()
+        amt  = float(row.get("Target $") or 0)
+        if not name or amt <= 0:
+            continue
+        saved = float(row.get("Saved") or 0)
+        tdt = row.get("Target date") or default_target
+        try:
+            tdt_iso = (tdt.isoformat() if hasattr(tdt, "isoformat")
+                       else str(tdt))
+        except Exception:
+            tdt_iso = default_target.isoformat()
+        cleaned.append({
+            "name":        name,
+            "amount":      round(amt, 2),
+            "saved":       round(saved, 2),
+            "target_date": tdt_iso,
+            "added_at":    datetime.now().isoformat(timespec="minutes"),
+        })
+
+    # Persist only when the cleaned list actually differs from what's saved
+    # (otherwise every dashboard rerun would re-write the file).
+    def _normalize(g_list):
+        return [(g["name"], g["amount"], g["saved"], g["target_date"])
+                for g in g_list]
+    if _normalize(cleaned) != _normalize(goals):
+        save_goals_for(ck, cleaned)
+        goals = cleaned
+
+    # Roll-up summary: total target, total saved, total monthly need across
+    # all goals. Replaces the per-card progress bars; users see at a glance
+    # whether they're tracking against their plan as a whole.
+    if goals:
+        total_target  = sum(float(g.get("amount") or 0) for g in goals)
+        total_saved   = sum(float(g.get("saved")  or 0) for g in goals)
+        total_monthly = 0.0
+        for g in goals:
+            try:
+                tdt = date.fromisoformat(g.get("target_date", ""))
+                mleft = max(1, (tdt.year - today.year) * 12
+                              + (tdt.month - today.month))
+            except Exception:
+                mleft = 12
+            rem = max(0.0, float(g.get("amount") or 0)
+                          - float(g.get("saved")  or 0))
+            total_monthly += rem / mleft
+        pct = min(100, (total_saved / total_target * 100)
+                       if total_target else 0)
+        st.markdown(
+            f'<div style="margin-top:14px;background:{THEME["surface2"]};'
+            f'            border:1px solid {THEME["line"]};border-radius:14px;'
+            f'            padding:14px 16px">'
+            f'  <div style="display:flex;justify-content:space-between;'
+            f'              align-items:baseline">'
+            f'    <span class="fr-vital-label">'
+            f'      Across {len(goals)} goal{"s" if len(goals)!=1 else ""}'
+            f'    </span>'
+            f'    <span class="fr-mono" style="color:{THEME["ink"]};font-weight:600">'
+            f'      {fmt_money(total_saved)} / {fmt_money(total_target)}'
+            f'    </span>'
+            f'  </div>'
+            f'  <div style="height:6px;background:{THEME["line"]};'
+            f'              border-radius:3px;margin-top:8px;overflow:hidden">'
+            f'    <div style="height:100%;width:{pct:.0f}%;'
+            f'                background:{THEME["primary"]}"></div>'
+            f'  </div>'
+            f'  <div style="display:flex;justify-content:space-between;'
+            f'              font-size:0.78rem;color:{THEME["muted"]};'
+            f'              margin-top:8px">'
+            f'    <span>{pct:.0f}% funded overall</span>'
+            f'    <span class="fr-mono">'
+            f'      {fmt_money(total_monthly)}/mo to stay on pace'
+            f'    </span>'
+            f'  </div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.caption("Type a goal name in the empty row above to add your "
+                   "first one. Add as many goals as you'd like.")
+
+    # Visual separator between the Goals section and the Budget section,
+    # since we no longer have card backgrounds providing that separation.
+    st.markdown(
+        f'<div style="height:1px;background:{THEME["line"]};'
+        f'            margin:28px 0 20px"></div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Budget builder card ─────────────────────────────────────────────────
+    # No fr-card wrapper — same reason as the other cards.
+    st.markdown(
+        f'<div class="fr-eyebrow">Monthly Budget</div>'
+        f'<div style="font-size:1.05rem;font-weight:600;color:{THEME["ink"]};'
+        f'            margin-top:2px">What\'s coming in and going out?</div>'
+        f'<div style="color:{THEME["ink2"]};font-size:0.88rem;margin-top:4px">'
+        f'  Enter rough monthly numbers — we\'ll show how much room you have to '
+        f'  put toward your goals.'
+        f'</div>'
+        f'<div style="height:14px"></div>',
+        unsafe_allow_html=True,
+    )
+
+    b1, b2 = st.columns(2)
+    income = b1.number_input("Take-home income (monthly)", min_value=0.0,
+                             value=float(budget.get("income") or 0),
+                             step=100.0, format="%.2f", key="fr_bud_income")
+    housing = b2.number_input("Housing (rent / mortgage)", min_value=0.0,
+                              value=float(budget.get("housing") or 0),
+                              step=50.0, format="%.2f", key="fr_bud_housing")
+
+    b3, b4 = st.columns(2)
+    transport = b3.number_input("Transportation", min_value=0.0,
+                                value=float(budget.get("transport") or 0),
+                                step=25.0, format="%.2f", key="fr_bud_transport")
+    food = b4.number_input("Food & groceries", min_value=0.0,
+                           value=float(budget.get("food") or 0),
+                           step=25.0, format="%.2f", key="fr_bud_food")
+
+    b5, b6 = st.columns(2)
+    utilities = b5.number_input("Utilities & insurance", min_value=0.0,
+                                value=float(budget.get("utilities") or 0),
+                                step=25.0, format="%.2f", key="fr_bud_util")
+    debt = b6.number_input("Debt payments (non-mortgage)", min_value=0.0,
+                           value=float(budget.get("debt") or 0),
+                           step=25.0, format="%.2f", key="fr_bud_debt")
+
+    b7, b8 = st.columns(2)
+    discretionary = b7.number_input("Discretionary (dining, shopping, fun)",
+                                    min_value=0.0,
+                                    value=float(budget.get("discretionary") or 0),
+                                    step=25.0, format="%.2f",
+                                    key="fr_bud_disc")
+    other = b8.number_input("Other monthly expenses", min_value=0.0,
+                            value=float(budget.get("other") or 0),
+                            step=25.0, format="%.2f", key="fr_bud_other")
+
+    expenses = (housing + transport + food + utilities + debt
+                + discretionary + other)
+    available = income - expenses
+
+    # Tally up monthly need across all goals to compare to available cash flow
+    total_monthly_need = 0.0
+    for g in goals:
+        try:
+            tdt = date.fromisoformat(g.get("target_date", ""))
+            mleft = max(1, (tdt.year - today.year) * 12
+                          + (tdt.month - today.month))
+        except Exception:
+            mleft = 12
+        rem = max(0.0, float(g.get("amount") or 0) - float(g.get("saved") or 0))
+        total_monthly_need += rem / mleft
+
+    gap = available - total_monthly_need
+    gap_color = THEME["primary"] if gap >= 0 else THEME["risk"]
+    gap_label = ("On track to fund your goals"
+                 if gap >= 0
+                 else f"Short by {fmt_money(abs(gap))}/month")
+
+    st.markdown(
+        f'<div style="height:10px"></div>'
+        f'<div style="background:{THEME["surface2"]};border:1px solid {THEME["line"]};'
+        f'            border-radius:14px;padding:14px 16px">'
+        f'  <div style="display:flex;justify-content:space-between;'
+        f'              align-items:baseline">'
+        f'    <span class="fr-vital-label">Monthly income</span>'
+        f'    <span class="fr-mono">{fmt_money(income)}</span>'
+        f'  </div>'
+        f'  <div style="display:flex;justify-content:space-between;'
+        f'              align-items:baseline;margin-top:6px">'
+        f'    <span class="fr-vital-label">Monthly expenses</span>'
+        f'    <span class="fr-mono">– {fmt_money(expenses)}</span>'
+        f'  </div>'
+        f'  <div style="display:flex;justify-content:space-between;'
+        f'              align-items:baseline;margin-top:6px;'
+        f'              border-top:1px solid {THEME["line"]};padding-top:8px">'
+        f'    <span class="fr-vital-label">Available for goals</span>'
+        f'    <span class="fr-mono" style="color:{THEME["primary"]};'
+        f'                                  font-weight:700">'
+        f'      {fmt_money(available)}</span>'
+        f'  </div>'
+        f'  <div style="display:flex;justify-content:space-between;'
+        f'              align-items:baseline;margin-top:6px">'
+        f'    <span class="fr-vital-label">Goal funding needed</span>'
+        f'    <span class="fr-mono">{fmt_money(total_monthly_need)}</span>'
+        f'  </div>'
+        f'  <div style="margin-top:10px;padding:10px 12px;'
+        f'              background:{THEME["surface"]};border-radius:10px;'
+        f'              color:{gap_color};font-weight:600;font-size:0.92rem">'
+        f'    {gap_label}'
+        f'  </div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    sb1, sb2 = st.columns([1, 1])
+    with sb1:
+        if st.button("Reset budget", key="fr_bud_reset",
+                     use_container_width=True):
+            save_budget_for(ck, {})
+            st.session_state.fr_flash = "Budget reset."
+            st.rerun()
+    with sb2:
+        if st.button("Save budget", type="primary", key="fr_bud_save",
+                     use_container_width=True):
+            save_budget_for(ck, {
+                "income": income, "housing": housing,
+                "transport": transport, "food": food,
+                "utilities": utilities, "debt": debt,
+                "discretionary": discretionary, "other": other,
+            })
+            st.session_state.fr_flash = "Budget saved."
+            st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADVISOR TAB — full advisor profile with photo, contact info, website
+# ─────────────────────────────────────────────────────────────────────────────
+def _render_advisor_tab():
+    """Full advisor profile card. Replaces the old single-line "Book your
+    follow-up" CTA — now the client can see who their advisor actually is,
+    where the firm is based, and reach them through any channel they prefer."""
+    a = ADVISOR
+
+    # Header with photo + name + title
+    st.markdown(
+        f'<div class="fr-card">'
+        f'  <div style="display:flex;gap:18px;align-items:center">'
+        f'    <div style="flex-shrink:0">{a["photo_svg"]}</div>'
+        f'    <div style="flex:1">'
+        f'      <div class="fr-eyebrow">Your advisor</div>'
+        f'      <div style="font-size:1.15rem;font-weight:600;color:{THEME["ink"]};'
+        f'                  margin-top:2px;letter-spacing:-0.01em">{a["name"]}</div>'
+        f'      <div style="font-size:0.88rem;color:{THEME["ink2"]};margin-top:2px">'
+        f'        {a["title"]} · {a["firm"]}'
+        f'      </div>'
         f'    </div>'
         f'  </div>'
-        f'  <div style="font-size:1.2rem">→</div>'
+        f'  <div style="margin-top:16px;padding-top:14px;'
+        f'              border-top:1px solid {THEME["line"]};'
+        f'              font-size:0.92rem;color:{THEME["ink2"]};line-height:1.55">'
+        f'    {a["bio"]}'
+        f'  </div>'
         f'</div>',
         unsafe_allow_html=True,
     )
-    if st.button("Schedule call", key="fr_schedule_btn",
-                 use_container_width=True):
-        st.session_state.fr_flash = "Booking flow coming soon — your advisor will reach out."
+
+    # Contact info card
+    _icon_mail = (
+        f'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" '
+        f'stroke="{THEME["primary"]}" stroke-width="1.8" stroke-linecap="round" '
+        f'stroke-linejoin="round" style="flex-shrink:0">'
+        f'<rect x="3" y="5" width="18" height="14" rx="2"/>'
+        f'<path d="M3 7l9 6 9-6"/></svg>'
+    )
+    _icon_phone = (
+        f'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" '
+        f'stroke="{THEME["primary"]}" stroke-width="1.8" stroke-linecap="round" '
+        f'stroke-linejoin="round" style="flex-shrink:0">'
+        f'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 '
+        f'19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 '
+        f'2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 '
+        f'9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 '
+        f'2.81.7A2 2 0 0 1 22 16.92z"/></svg>'
+    )
+    _icon_globe = (
+        f'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" '
+        f'stroke="{THEME["primary"]}" stroke-width="1.8" stroke-linecap="round" '
+        f'stroke-linejoin="round" style="flex-shrink:0">'
+        f'<circle cx="12" cy="12" r="10"/>'
+        f'<path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 '
+        f'15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>'
+    )
+    _icon_pin = (
+        f'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" '
+        f'stroke="{THEME["primary"]}" stroke-width="1.8" stroke-linecap="round" '
+        f'stroke-linejoin="round" style="flex-shrink:0">'
+        f'<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>'
+        f'<circle cx="12" cy="10" r="3"/></svg>'
+    )
+
+    def _row(icon: str, label: str, value: str, href: Optional[str] = None) -> str:
+        val_html = (f'<a href="{href}" style="color:{THEME["primary"]};'
+                    f'                       text-decoration:none">{value}</a>'
+                    if href else
+                    f'<span style="color:{THEME["ink"]}">{value}</span>')
+        return (
+            f'<div style="display:flex;align-items:flex-start;gap:12px;'
+            f'            padding:12px 0;border-top:1px solid {THEME["line"]}">'
+            f'  <div style="margin-top:2px">{icon}</div>'
+            f'  <div style="flex:1">'
+            f'    <div class="fr-vital-label">{label}</div>'
+            f'    <div style="font-size:0.95rem;margin-top:2px">{val_html}</div>'
+            f'  </div>'
+            f'</div>'
+        )
+
+    st.markdown(
+        f'<div class="fr-card">'
+        f'  <div class="fr-eyebrow">Contact</div>'
+        f'  {_row(_icon_mail,  "Email",   a["email"],   "mailto:" + a["email"])}'
+        f'  {_row(_icon_phone, "Phone",   a["phone"],   "tel:" + a["phone"].replace(" ", ""))}'
+        f'  {_row(_icon_globe, "Website", a["website"], a["website"])}'
+        f'  {_row(_icon_pin,   "Office",  a["address"])}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Schedule-a-call CTA. Replaces the old "dark banner + Schedule call
+    # button" combo, which was doing the same job twice. Now it's a single
+    # block: dark card with a clear primary action button right below the
+    # description, properly emphasizing that the call is free and with a
+    # licensed advisor.
+    _icon_calendar = (
+        '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" '
+        'stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" '
+        'stroke-linejoin="round" aria-hidden="true">'
+        '<rect x="3" y="5" width="18" height="16" rx="2.5"/>'
+        '<path d="M3 10h18"/>'
+        '<path d="M8 3v4"/>'
+        '<path d="M16 3v4"/>'
+        '</svg>'
+    )
+    st.markdown(
+        f'<div class="fr-cta-dark" style="margin-bottom:0">'
+        f'  <div class="fr-cta-icon">{_icon_calendar}</div>'
+        f'  <div style="flex:1">'
+        f'    <div style="font-size:0.95rem;font-weight:600;line-height:1.3">'
+        f'      Book a free 15-minute review'
+        f'    </div>'
+        f'    <div style="font-size:0.8rem;opacity:0.78;margin-top:3px;'
+        f'                line-height:1.45">'
+        f'      With a licensed financial advisor — no obligation.'
+        f'    </div>'
+        f'  </div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    if st.button("Schedule my review →", key="fr_schedule_btn",
+                 type="primary", use_container_width=True):
+        st.session_state.fr_flash = (
+            "Booking flow coming soon — your advisor will reach out.")
         st.rerun()
 
-    # ── Bottom nav (visual indicator) ───────────────────────────────────────
-    st.markdown(
-        f'<div style="display:flex;justify-content:space-around;padding:14px 0 6px;'
-        f'            margin-top:18px;border-top:1px solid {THEME["line"]}">'
-        f'  <div style="text-align:center;color:{THEME["primary"]};'
-        f'              font-size:0.7rem;font-weight:600">'
-        f'    <div style="font-size:1.05rem">🏠</div>Home'
-        f'  </div>'
-        f'  <div style="text-align:center;color:{THEME["muted"]};'
-        f'              font-size:0.7rem;font-weight:600">'
-        f'    <div style="font-size:1.05rem">⭐</div>Plan'
-        f'  </div>'
-        f'  <div style="text-align:center;color:{THEME["muted"]};'
-        f'              font-size:0.7rem;font-weight:600">'
-        f'    <div style="font-size:1.05rem">📅</div>Advisor'
-        f'  </div>'
-        f'  <div style="text-align:center;color:{THEME["muted"]};'
-        f'              font-size:0.7rem;font-weight:600">'
-        f'    <div style="font-size:1.05rem">👤</div>Me'
-        f'  </div>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
