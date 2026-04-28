@@ -1051,7 +1051,6 @@ def _screen_welcome():
         f'              font-size:0.92rem;margin-bottom:24px;align-items:center;'
         f'              justify-content:center">'
         f'    <span>{_icon_lock}Encrypted</span>'
-        f'    <span>{_icon_shield}Fiduciary</span>'
         f'  </div>'
         f'</div>',
         unsafe_allow_html=True,
@@ -1256,10 +1255,23 @@ def _screen_quiz():
             opts = q["options"]
             default = ([d for d in (prev or []) if d in opts]
                        if isinstance(prev, list) else [])
+            # NOTE: we deliberately do NOT pass max_selections to st.multiselect.
+            # Streamlit's hard cap shows a confusing "remove an option first"
+            # popup that *also* prevents the user from interacting normally.
+            # Instead we render a soft, informative warning below if the user
+            # picks more than the recommended max_pick — and we still let
+            # them finish. The first max_pick selections (in order) are what
+            # actually gets scored.
             val = st.multiselect(q["text"], opts, default=default,
                                   key=f"fr_qz_{q['id']}",
-                                  max_selections=q.get("max_pick"),
                                   label_visibility="collapsed")
+            max_pick = q.get("max_pick")
+            if max_pick and len(val or []) > max_pick:
+                st.warning(
+                    f"You've picked {len(val)}. We use the top {max_pick} for "
+                    f"scoring — remove one to choose which counts, or "
+                    f"continue and we'll keep the first {max_pick}."
+                )
             answered = len(val or []) > 0
         else:
             val = None; answered = False
@@ -1279,7 +1291,14 @@ def _screen_quiz():
             label = "Finish →" if idx == total - 1 else "Next →"
             if st.button(label, type="primary", key=f"fr_qz_next_{idx}",
                          use_container_width=True, disabled=not answered):
-                st.session_state.fr_answers[q["id"]] = val
+                # For multi-select questions with a max_pick, store only the
+                # first max_pick selections — keeps scoring deterministic
+                # whether or not the user respected the soft-cap warning.
+                store_val = val
+                if q.get("type") == "multi" and q.get("max_pick"):
+                    mp = int(q["max_pick"])
+                    store_val = list(val or [])[:mp]
+                st.session_state.fr_answers[q["id"]] = store_val
                 if idx == total - 1:
                     # Score and move to results screen
                     st.session_state.fr_scores = score_profile(
@@ -1616,11 +1635,18 @@ def render_dashboard():
     )
 
     # ── Real tabs replace the old visual-only bottom nav ───────────────────
-    tab_home, tab_plan, tab_advisor = st.tabs(["Home", "Plan", "Advisor"])
+    # Order matches the natural reading flow: high-level summary → portfolio
+    # detail → forward-looking plan → human contact. Plan was renamed to
+    # "Financial Goals" since that's the actual content of the tab.
+    tab_home, tab_holdings, tab_goals, tab_advisor = st.tabs(
+        ["Home", "Holdings", "Financial Goals", "Advisor"]
+    )
 
     with tab_home:
         _render_home_tab(profile, holdings, ck)
-    with tab_plan:
+    with tab_holdings:
+        _render_holdings_tab(holdings, ck)
+    with tab_goals:
         _render_plan_tab(ck)
     with tab_advisor:
         _render_advisor_tab()
@@ -1755,6 +1781,126 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             f'</div>'
         )
 
+    # ── Advisor box ─────────────────────────────────────────────────────────
+    # Compact version of the full advisor card — surfaces the human contact
+    # at the top of Home so clients see who's behind the numbers without
+    # having to navigate to the Advisor tab. The full profile + bio + book-
+    # a-call CTA still live on the dedicated Advisor tab.
+    a = ADVISOR
+    company_logo_svg = (
+        f'<svg width="22" height="22" viewBox="0 0 24 24" '
+        f'xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+        f'<rect x="2" y="2" width="20" height="20" rx="5" '
+        f'fill="{THEME["primary"]}"/>'
+        f'<path d="M6 16 L11 8 L13 12 L18 6" stroke="#FFFFFF" '
+        f'stroke-width="2" fill="none" stroke-linecap="round" '
+        f'stroke-linejoin="round"/></svg>'
+    )
+    st.markdown(
+        f'<div style="background:{THEME["surface2"]};border:1px solid {THEME["line"]};'
+        f'            border-radius:14px;padding:14px 16px;margin-top:18px;'
+        f'            display:flex;align-items:center;gap:14px">'
+        f'  <div style="flex-shrink:0">{a["photo_svg"]}</div>'
+        f'  <div style="flex:1;min-width:0">'
+        f'    <div style="display:flex;align-items:center;gap:8px;'
+        f'                margin-bottom:2px">'
+        f'      <div class="fr-eyebrow" style="margin:0">Your advisor</div>'
+        f'    </div>'
+        f'    <div style="font-size:1rem;font-weight:600;color:{THEME["ink"]};'
+        f'                line-height:1.25;letter-spacing:-0.01em">{a["name"]}</div>'
+        f'    <div style="display:flex;align-items:center;gap:6px;'
+        f'                font-size:0.8rem;color:{THEME["ink2"]};margin-top:3px">'
+        f'      {company_logo_svg}'
+        f'      <span>{a["firm"]}</span>'
+        f'    </div>'
+        f'    <div style="font-size:0.78rem;color:{THEME["muted"]};margin-top:6px;'
+        f'                line-height:1.5">'
+        f'      <a href="mailto:{a["email"]}" style="color:{THEME["primary"]};'
+        f'                                            text-decoration:none">'
+        f'        {a["email"]}'
+        f'      </a> · '
+        f'      <a href="tel:{a["phone"].replace(" ", "")}" '
+        f'         style="color:{THEME["primary"]};text-decoration:none">'
+        f'        {a["phone"]}'
+        f'      </a>'
+        f'    </div>'
+        f'  </div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Goals summary box ───────────────────────────────────────────────────
+    # High-level rollup across all goals — saved vs target, % funded,
+    # monthly amount needed to stay on pace. Detailed goal list and budget
+    # builder live on the Financial Goals tab.
+    goals = load_goals_for(ck)
+    if goals:
+        _today = date.today()
+        total_target  = sum(float(g.get("amount") or 0) for g in goals)
+        total_saved   = sum(float(g.get("saved")  or 0) for g in goals)
+        total_monthly = 0.0
+        for g in goals:
+            try:
+                tdt = date.fromisoformat(g.get("target_date", ""))
+                mleft = max(1, (tdt.year - _today.year) * 12
+                              + (tdt.month - _today.month))
+            except Exception:
+                mleft = 12
+            rem = max(0.0, float(g.get("amount") or 0)
+                          - float(g.get("saved")  or 0))
+            total_monthly += rem / mleft
+        pct = min(100, (total_saved / total_target * 100)
+                       if total_target else 0)
+        st.markdown(
+            f'<div style="margin-top:12px;background:{THEME["surface2"]};'
+            f'            border:1px solid {THEME["line"]};border-radius:14px;'
+            f'            padding:14px 16px">'
+            f'  <div style="display:flex;align-items:center;'
+            f'              justify-content:space-between;margin-bottom:8px">'
+            f'    <div class="fr-eyebrow" style="margin:0">Financial Goals</div>'
+            f'    <span style="font-size:0.74rem;color:{THEME["muted"]};'
+            f'                 font-weight:600">'
+            f'      {len(goals)} active'
+            f'    </span>'
+            f'  </div>'
+            f'  <div style="display:flex;justify-content:space-between;'
+            f'              align-items:baseline">'
+            f'    <span class="fr-vital-label">Saved toward your goals</span>'
+            f'    <span class="fr-mono" style="color:{THEME["ink"]};font-weight:600">'
+            f'      {fmt_money(total_saved)} / {fmt_money(total_target)}'
+            f'    </span>'
+            f'  </div>'
+            f'  <div style="height:6px;background:{THEME["line"]};'
+            f'              border-radius:3px;margin-top:8px;overflow:hidden">'
+            f'    <div style="height:100%;width:{pct:.0f}%;'
+            f'                background:{THEME["primary"]}"></div>'
+            f'  </div>'
+            f'  <div style="display:flex;justify-content:space-between;'
+            f'              font-size:0.78rem;color:{THEME["muted"]};'
+            f'              margin-top:8px">'
+            f'    <span>{pct:.0f}% funded overall</span>'
+            f'    <span class="fr-mono">'
+            f'      {fmt_money(total_monthly)}/mo to stay on pace'
+            f'    </span>'
+            f'  </div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f'<div style="margin-top:12px;background:{THEME["surface2"]};'
+            f'            border:1px dashed {THEME["line"]};border-radius:14px;'
+            f'            padding:16px;text-align:center">'
+            f'  <div class="fr-eyebrow" style="margin-bottom:6px">Financial Goals</div>'
+            f'  <div style="font-size:0.88rem;color:{THEME["ink2"]};line-height:1.5">'
+            f'    No goals yet. Head to the <strong>Financial Goals</strong> tab '
+            f'    to add what you\'re saving toward.'
+            f'  </div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Snapshot grid ───────────────────────────────────────────────────────
     st.markdown(
         f'<div style="display:flex;align-items:center;justify-content:space-between;'
         f'            margin:18px 2px 10px">'
@@ -1843,16 +1989,28 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             use_container_width=True,
             config={"displayModeBar": False})
 
-    # ── Holdings card ───────────────────────────────────────────────────────
-    # No fr-card wrapper — the streamlit widgets inside (columns, buttons,
-    # markdown rows) don't actually nest into a raw HTML div, so the wrapper
-    # was rendering as an empty box and the content sat below as siblings.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HOLDINGS TAB — full portfolio view, formerly the bottom of the Home tab
+# ─────────────────────────────────────────────────────────────────────────────
+def _render_holdings_tab(holdings: dict, ck: str):
+    """Standalone tab for the user's portfolio. Used to live at the bottom
+    of the Home tab; promoted to its own tab so Holdings sits between the
+    summary view and the planning view in the natural reading order
+    (Home → Holdings → Financial Goals → Advisor)."""
+    if holdings:
+        quotes = get_live_quotes(list(holdings.keys()))
+    else:
+        quotes = {}
+
+    # Header + Manage button
     h_l, h_r = st.columns([3, 1])
     with h_l:
         st.markdown(
             f'<div class="fr-eyebrow">Holdings</div>'
             f'<div style="font-size:1.05rem;font-weight:600;color:{THEME["ink"]};'
-            f'            margin-top:2px">{len(holdings)} positions</div>',
+            f'            margin-top:2px">{len(holdings)} '
+            f'position{"s" if len(holdings)!=1 else ""}</div>',
             unsafe_allow_html=True,
         )
     with h_r:
@@ -1863,6 +2021,8 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             st.rerun()
 
     if holdings:
+        # In a dedicated tab we have room to show ALL positions, not just the
+        # top 5 like the old home-tab summary did.
         rows = []
         for tk, h in holdings.items():
             sh = float(h.get("shares") or 0)
@@ -1871,7 +2031,7 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             day = float((quotes.get(tk) or {}).get("change_pct") or 0)
             rows.append((tk, sh, px, val, day))
         rows.sort(key=lambda r: -r[3])
-        rows = rows[:5]
+
         for tk, sh, px, val, day in rows:
             day_color = THEME["healthy"] if day >= 0 else THEME["risk"]
             day_sign  = "+" if day >= 0 else ""
@@ -1896,18 +2056,12 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
                 f'</div>',
                 unsafe_allow_html=True,
             )
-        if len(holdings) > 5:
-            st.markdown(
-                f'<div style="text-align:center;padding-top:10px;'
-                f'            font-size:0.78rem;color:{THEME["muted"]}">'
-                f'+ {len(holdings) - 5} more — tap Manage to see all</div>',
-                unsafe_allow_html=True,
-            )
     else:
         st.markdown(
-            f'<div style="text-align:center;padding:24px 0;color:{THEME["muted"]};'
-            f'            font-size:0.9rem">'
-            f'  No holdings yet. Add your first position to see your portfolio here.'
+            f'<div style="text-align:center;padding:32px 0;color:{THEME["muted"]};'
+            f'            font-size:0.92rem">'
+            f'  No holdings yet. Tap <strong>Manage</strong> above to add '
+            f'  your first position.'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -2406,11 +2560,18 @@ def render_edit_profile():
             opts = q["options"]
             default = ([d for d in (prev or []) if d in opts]
                        if isinstance(prev, list) else [])
+            # Soft cap (no max_selections) — see the quiz screen for rationale.
             val = st.multiselect(
                 q["text"], opts, default=default,
                 key=f"fr_q_{qid}",
-                max_selections=q.get("max_pick"),
             )
+            mp = q.get("max_pick")
+            if mp and len(val or []) > mp:
+                st.warning(
+                    f"You've picked {len(val)}. Only the first {mp} will be "
+                    f"used for scoring — remove one to change which counts."
+                )
+                val = list(val or [])[:mp]
             answers[qid] = val
 
     if last_section is not None:
