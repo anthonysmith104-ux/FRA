@@ -1829,9 +1829,62 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
         unsafe_allow_html=True,
     )
 
-    # ── Goals summary box ───────────────────────────────────────────────────
-    # High-level rollup across all goals — saved vs target, % funded,
-    # monthly amount needed to stay on pace. Detailed goal list and budget
+    # ── Snapshot grid ───────────────────────────────────────────────────────
+    # Three rows, each grouping related metrics:
+    #   Row 1: Net Worth | Cash Position    (financial-position pair)
+    #   Row 2: Risk Capacity | Risk Tolerance (risk-profile pair)
+    #   Row 3: Financial Goals              (full-width with progress meter)
+    # Cash Position now sits next to Net Worth (similar visual pairing as
+    # Risk Capacity/Tolerance) instead of in the bottom-left of a 2x2.
+    st.markdown(
+        f'<div style="display:flex;align-items:center;justify-content:space-between;'
+        f'            margin:18px 2px 10px">'
+        f'  <div class="fr-eyebrow">Snapshot</div>'
+        f'  <span style="font-size:0.72rem;color:{THEME["primary"]};font-weight:600">'
+        f'    This month'
+        f'  </span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Pre-compute cash percentage so it's available for the row-1 tile
+    cash_pct = (vitals["cash"] / vitals["net_worth"] * 100
+                if vitals["net_worth"] else 0)
+
+    # ── Row 1: Net Worth | Cash Position ────────────────────────────────────
+    g1, g2 = st.columns(2)
+    with g1:
+        nw_delta  = (fmt_pct(vitals["gain_pct"]) if vitals["cost_basis"] else "")
+        st.markdown(_tile(
+            "Net Worth", fmt_money(vitals["net_worth"]),
+            f"{len(holdings)} positions" if holdings else "no positions yet",
+            "", delta=nw_delta,
+        ), unsafe_allow_html=True)
+    with g2:
+        st.markdown(_tile(
+            "Cash Position", fmt_money(vitals["cash"]),
+            f"{cash_pct:.1f}% of portfolio" if vitals["net_worth"] else "—",
+            "",
+        ), unsafe_allow_html=True)
+
+    # ── Row 2: Risk Capacity | Risk Tolerance ───────────────────────────────
+    g3, g4 = st.columns(2)
+    with g3:
+        st.markdown(_tile(
+            "Risk Capacity", str(cap) if cap else "—",
+            "ability to absorb loss", "",
+            gauge=cap if cap else None,
+        ), unsafe_allow_html=True)
+    with g4:
+        st.markdown(_tile(
+            "Risk Tolerance", str(tol) if tol else "—",
+            "comfort with volatility", "",
+            gauge=tol if tol else None,
+        ), unsafe_allow_html=True)
+
+    # ── Row 3: Financial Goals (full width, with progress meter) ────────────
+    # Sits inside the Snapshot section so it reads as another vital — same
+    # surface treatment as the tiles above. Detailed goal list and budget
     # builder live on the Financial Goals tab.
     goals = load_goals_for(ck)
     if goals:
@@ -1852,33 +1905,38 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
         pct = min(100, (total_saved / total_target * 100)
                        if total_target else 0)
         st.markdown(
-            f'<div style="margin-top:12px;background:{THEME["surface2"]};'
-            f'            border:1px solid {THEME["line"]};border-radius:14px;'
-            f'            padding:14px 16px">'
+            f'<div class="fr-vital" style="margin-top:8px">'
             f'  <div style="display:flex;align-items:center;'
-            f'              justify-content:space-between;margin-bottom:8px">'
-            f'    <div class="fr-eyebrow" style="margin:0">Financial Goals</div>'
-            f'    <span style="font-size:0.74rem;color:{THEME["muted"]};'
+            f'              justify-content:space-between">'
+            f'    <span class="fr-vital-label">Financial Goals</span>'
+            f'    <span style="font-size:0.72rem;color:{THEME["muted"]};'
             f'                 font-weight:600">'
             f'      {len(goals)} active'
             f'    </span>'
             f'  </div>'
             f'  <div style="display:flex;justify-content:space-between;'
-            f'              align-items:baseline">'
-            f'    <span class="fr-vital-label">Saved toward your goals</span>'
-            f'    <span class="fr-mono" style="color:{THEME["ink"]};font-weight:600">'
-            f'      {fmt_money(total_saved)} / {fmt_money(total_target)}'
+            f'              align-items:baseline;margin-top:6px">'
+            f'    <span style="font-size:1.05rem;font-weight:600;'
+            f'                 color:{THEME["ink"]};font-variant-numeric:tabular-nums">'
+            f'      {fmt_money(total_saved)} <span style="color:{THEME["muted"]};'
+            f'                                          font-weight:500">'
+            f'        / {fmt_money(total_target)}</span>'
+            f'    </span>'
+            f'    <span class="fr-mono" style="color:{THEME["primary"]};'
+            f'                                  font-weight:700;font-size:0.95rem">'
+            f'      {pct:.0f}%'
             f'    </span>'
             f'  </div>'
             f'  <div style="height:6px;background:{THEME["line"]};'
             f'              border-radius:3px;margin-top:8px;overflow:hidden">'
             f'    <div style="height:100%;width:{pct:.0f}%;'
-            f'                background:{THEME["primary"]}"></div>'
+            f'                background:{THEME["primary"]};'
+            f'                border-radius:3px"></div>'
             f'  </div>'
             f'  <div style="display:flex;justify-content:space-between;'
-            f'              font-size:0.78rem;color:{THEME["muted"]};'
-            f'              margin-top:8px">'
-            f'    <span>{pct:.0f}% funded overall</span>'
+            f'              font-size:0.74rem;color:{THEME["muted"]};'
+            f'              margin-top:6px">'
+            f'    <span>saved toward your goals</span>'
             f'    <span class="fr-mono">'
             f'      {fmt_money(total_monthly)}/mo to stay on pace'
             f'    </span>'
@@ -1888,66 +1946,19 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
         )
     else:
         st.markdown(
-            f'<div style="margin-top:12px;background:{THEME["surface2"]};'
-            f'            border:1px dashed {THEME["line"]};border-radius:14px;'
-            f'            padding:16px;text-align:center">'
-            f'  <div class="fr-eyebrow" style="margin-bottom:6px">Financial Goals</div>'
-            f'  <div style="font-size:0.88rem;color:{THEME["ink2"]};line-height:1.5">'
+            f'<div class="fr-vital" style="margin-top:8px;text-align:center;'
+            f'                              border-style:dashed">'
+            f'  <div class="fr-vital-label" style="margin-bottom:6px">'
+            f'    Financial Goals'
+            f'  </div>'
+            f'  <div style="font-size:0.86rem;color:{THEME["ink2"]};'
+            f'              line-height:1.5">'
             f'    No goals yet. Head to the <strong>Financial Goals</strong> tab '
             f'    to add what you\'re saving toward.'
             f'  </div>'
             f'</div>',
             unsafe_allow_html=True,
         )
-
-    # ── Snapshot grid ───────────────────────────────────────────────────────
-    st.markdown(
-        f'<div style="display:flex;align-items:center;justify-content:space-between;'
-        f'            margin:18px 2px 10px">'
-        f'  <div class="fr-eyebrow">Snapshot</div>'
-        f'  <span style="font-size:0.72rem;color:{THEME["primary"]};font-weight:600">'
-        f'    This month'
-        f'  </span>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-    g1, g2 = st.columns(2)
-    g3, g4 = st.columns(2)
-
-    with g1:
-        # Net Worth — informational only. Show gain % as a neutral delta;
-        # no "watch" / "alert" framing.
-        nw_delta  = (fmt_pct(vitals["gain_pct"]) if vitals["cost_basis"] else "")
-        st.markdown(_tile(
-            "Net Worth", fmt_money(vitals["net_worth"]),
-            f"{len(holdings)} positions" if holdings else "no positions yet",
-            "", delta=nw_delta,
-        ), unsafe_allow_html=True)
-
-    with g2:
-        st.markdown(_tile(
-            "Risk Capacity", str(cap) if cap else "—",
-            "ability to absorb loss", "",
-            gauge=cap if cap else None,
-        ), unsafe_allow_html=True)
-
-    with g3:
-        # Cash Position — informational only. Show % of portfolio as detail;
-        # no "watch" framing on whether the % is "healthy" or not.
-        cash_pct = (vitals["cash"] / vitals["net_worth"] * 100
-                    if vitals["net_worth"] else 0)
-        st.markdown(_tile(
-            "Cash Position", fmt_money(vitals["cash"]),
-            f"{cash_pct:.1f}% of portfolio" if vitals["net_worth"] else "—",
-            "",
-        ), unsafe_allow_html=True)
-
-    with g4:
-        st.markdown(_tile(
-            "Risk Tolerance", str(tol) if tol else "—",
-            "comfort with volatility", "",
-            gauge=tol if tol else None,
-        ), unsafe_allow_html=True)
 
     # ── Trend card ──────────────────────────────────────────────────────────
     if holdings and vitals["net_worth"] > 0:
