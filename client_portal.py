@@ -1,6 +1,3 @@
-git add client_portal.py
-   git commit -m "Update: reorder tabs, rename Portfolio Performance, update profile button"
-   git push
 """client_portal.py — Foresight Risk Analytics client portal.
 
 Matches the "Risk Checkup" mobile prototype's clinical aesthetic:
