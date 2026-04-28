@@ -2766,4 +2766,3 @@ else:
         render_edit_holdings()
     else:
         render_dashboard()
-        
