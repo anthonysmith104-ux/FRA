@@ -1722,7 +1722,7 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
                 f'</div>',
                 unsafe_allow_html=True,
             )
-            if st.button("View full profile →", key="fr_view_profile",
+            if st.button("View / update profile →", key="fr_view_profile",
                          use_container_width=True):
                 st.session_state.fr_view = "edit_profile"
                 st.rerun()
@@ -1831,11 +1831,10 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
 
     # ── Snapshot grid ───────────────────────────────────────────────────────
     # Three rows, each grouping related metrics:
-    #   Row 1: Net Worth | Cash Position    (financial-position pair)
-    #   Row 2: Risk Capacity | Risk Tolerance (risk-profile pair)
+    #   Row 1: Risk Capacity | Risk Tolerance (risk-profile pair — leads
+    #          because the profile is the headline of this app)
+    #   Row 2: Net Worth | Cash Position    (financial-position pair)
     #   Row 3: Financial Goals              (full-width with progress meter)
-    # Cash Position now sits next to Net Worth (similar visual pairing as
-    # Risk Capacity/Tolerance) instead of in the bottom-left of a 2x2.
     st.markdown(
         f'<div style="display:flex;align-items:center;justify-content:space-between;'
         f'            margin:18px 2px 10px">'
@@ -1847,39 +1846,39 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
         unsafe_allow_html=True,
     )
 
-    # Pre-compute cash percentage so it's available for the row-1 tile
+    # Pre-compute cash percentage so it's available for the row-2 tile
     cash_pct = (vitals["cash"] / vitals["net_worth"] * 100
                 if vitals["net_worth"] else 0)
 
-    # ── Row 1: Net Worth | Cash Position ────────────────────────────────────
+    # ── Row 1: Risk Capacity | Risk Tolerance ───────────────────────────────
     g1, g2 = st.columns(2)
     with g1:
+        st.markdown(_tile(
+            "Risk Capacity", str(cap) if cap else "—",
+            "ability to absorb loss", "",
+            gauge=cap if cap else None,
+        ), unsafe_allow_html=True)
+    with g2:
+        st.markdown(_tile(
+            "Risk Tolerance", str(tol) if tol else "—",
+            "comfort with volatility", "",
+            gauge=tol if tol else None,
+        ), unsafe_allow_html=True)
+
+    # ── Row 2: Net Worth | Cash Position ────────────────────────────────────
+    g3, g4 = st.columns(2)
+    with g3:
         nw_delta  = (fmt_pct(vitals["gain_pct"]) if vitals["cost_basis"] else "")
         st.markdown(_tile(
             "Net Worth", fmt_money(vitals["net_worth"]),
             f"{len(holdings)} positions" if holdings else "no positions yet",
             "", delta=nw_delta,
         ), unsafe_allow_html=True)
-    with g2:
+    with g4:
         st.markdown(_tile(
             "Cash Position", fmt_money(vitals["cash"]),
             f"{cash_pct:.1f}% of portfolio" if vitals["net_worth"] else "—",
             "",
-        ), unsafe_allow_html=True)
-
-    # ── Row 2: Risk Capacity | Risk Tolerance ───────────────────────────────
-    g3, g4 = st.columns(2)
-    with g3:
-        st.markdown(_tile(
-            "Risk Capacity", str(cap) if cap else "—",
-            "ability to absorb loss", "",
-            gauge=cap if cap else None,
-        ), unsafe_allow_html=True)
-    with g4:
-        st.markdown(_tile(
-            "Risk Tolerance", str(tol) if tol else "—",
-            "comfort with volatility", "",
-            gauge=tol if tol else None,
         ), unsafe_allow_html=True)
 
     # ── Row 3: Financial Goals (full width, with progress meter) ────────────
@@ -1960,7 +1959,10 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             unsafe_allow_html=True,
         )
 
-    # ── Trend card ──────────────────────────────────────────────────────────
+    # ── Portfolio Performance card ──────────────────────────────────────────
+    # Renamed from "Net Worth Trend" — same data (sparkline of net worth over
+    # the last N months) but the new label more accurately describes what
+    # users are looking at: how their portfolio has been performing.
     if holdings and vitals["net_worth"] > 0:
         import numpy as np
         # Stable per-user random shape so the sparkline doesn't jitter on rerun
@@ -1978,7 +1980,7 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             f'<div class="fr-card" style="margin-bottom:0">'
             f'  <div style="display:flex;align-items:flex-end;justify-content:space-between">'
             f'    <div>'
-            f'      <div class="fr-eyebrow">Net Worth Trend</div>'
+            f'      <div class="fr-eyebrow">Portfolio Performance</div>'
             f'      <div class="fr-mono" style="font-size:1.35rem;color:{THEME["ink"]};'
             f'                                    margin-top:2px">'
             f'        {fmt_money(end)}'
