@@ -1194,7 +1194,7 @@ def _screen_welcome():
         f'             font-weight:500;margin:14px auto 24px;letter-spacing:-0.015em;'
         f'             text-align:center;max-width:440px;'
         f'             padding-left:8px;padding-right:8px">'
-        f'    A complete financial risk profile in less than 3 minutes.'
+        f'    Get your free financial risk profile in less than three minutes.'
         f'  </h1>'
         f'  <div style="display:flex;gap:24px;color:{THEME["muted"]};'
         f'              font-size:0.92rem;margin-bottom:24px;align-items:center;'
