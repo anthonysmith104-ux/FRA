@@ -23,6 +23,7 @@ Files (anchored to this script's directory):
 from __future__ import annotations
 
 import os
+import json
 from datetime import datetime, date
 from typing import Optional
 
@@ -82,9 +83,27 @@ CLIENT_GOALS_FILE    = _data_path("client_goals.json")
 CLIENT_BUDGETS_FILE  = _data_path("client_budgets.json")
 
 # ── ADVISOR PROFILE ──────────────────────────────────────────────────────────
-# Single advisor profile shown on the Advisor tab. Edit these fields to swap
-# the photo, contact info, or company website without touching the UI code.
-ADVISOR = {
+# The advisor profile shown across the client portal (Home page advisor box,
+# dedicated Advisor tab) is sourced from the same `firm_settings.json` file
+# the advisor app writes when the firm fills out Client Records → 🎨 Firm
+# Branding. The two apps live in the same directory, so when the advisor
+# updates their info on their side it flows through here automatically —
+# no editing this file required.
+#
+# Hardcoded values below are the *fallback* — used for any field the firm
+# hasn't filled in yet, so the portal always renders something sensible.
+# To customize, the advisor edits Firm Branding in the advisor app; nothing
+# in this file needs to change.
+
+# Firm-branding paths (mirror the advisor app's constants — same directory,
+# same filenames, so both apps see the same data).
+FIRM_SETTINGS_FILE = _data_path("firm_settings.json")
+FIRM_LOGO_PATH     = _data_path("firm_logo.png")
+ADVISOR_PHOTO_PATH = _data_path("advisor_photo.png")
+
+# Hardcoded fallback advisor profile. Used only for fields that aren't set
+# in firm_settings.json. Any value the advisor saves on their side wins.
+_ADVISOR_DEFAULTS = {
     "name":    "Sarah Whitfield, CFP®",
     "title":   "Senior Financial Advisor",
     "firm":    "Foresight Wealth Partners",
@@ -96,20 +115,149 @@ ADVISOR = {
                 "retirement, education, and legacy goals. She's a Certified "
                 "Financial Planner™ and a fiduciary — meaning she's legally "
                 "required to act in your best interest."),
-    # Generic SVG avatar — neutral, no real likeness.
-    "photo_svg": (
-        '<svg viewBox="0 0 80 80" width="80" height="80" '
-        'xmlns="http://www.w3.org/2000/svg">'
-        '<defs><linearGradient id="adv_bg" x1="0" y1="0" x2="1" y2="1">'
-        '<stop offset="0" stop-color="#0E5C5E"/>'
-        '<stop offset="1" stop-color="#0E7C86"/></linearGradient></defs>'
-        '<circle cx="40" cy="40" r="40" fill="url(#adv_bg)"/>'
-        '<circle cx="40" cy="32" r="13" fill="#FFFFFF" opacity="0.95"/>'
-        '<path d="M16 70 C 18 56, 28 50, 40 50 S 62 56, 64 70 Z" '
-        'fill="#FFFFFF" opacity="0.95"/>'
-        '</svg>'
-    ),
 }
+
+# Generic SVG avatar — neutral, no real likeness. Used only if no
+# advisor_photo.png has been uploaded.
+_DEFAULT_PHOTO_SVG = (
+    '<svg viewBox="0 0 80 80" width="80" height="80" '
+    'xmlns="http://www.w3.org/2000/svg">'
+    '<defs><linearGradient id="adv_bg" x1="0" y1="0" x2="1" y2="1">'
+    '<stop offset="0" stop-color="#0E5C5E"/>'
+    '<stop offset="1" stop-color="#0E7C86"/></linearGradient></defs>'
+    '<circle cx="40" cy="40" r="40" fill="url(#adv_bg)"/>'
+    '<circle cx="40" cy="32" r="13" fill="#FFFFFF" opacity="0.95"/>'
+    '<path d="M16 70 C 18 56, 28 50, 40 50 S 62 56, 64 70 Z" '
+    'fill="#FFFFFF" opacity="0.95"/>'
+    '</svg>'
+)
+
+# Default firm logo SVG (the small teal chart-mark) — used when no
+# firm_logo.png has been uploaded.
+_DEFAULT_FIRM_LOGO_SMALL_SVG = (
+    '<svg width="22" height="22" viewBox="0 0 24 24" '
+    'xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+    '<rect x="2" y="2" width="20" height="20" rx="5" fill="#0E5C5E"/>'
+    '<path d="M6 16 L11 8 L13 12 L18 6" stroke="#FFFFFF" '
+    'stroke-width="2" fill="none" stroke-linecap="round" '
+    'stroke-linejoin="round"/></svg>'
+)
+
+
+def _load_firm_settings() -> dict:
+    """Read firm_settings.json (written by the advisor app's Firm Branding
+    panel). Returns {} if the file is missing or unreadable, so callers
+    can safely use `dict.get` patterns without raising."""
+    if not os.path.exists(FIRM_SETTINGS_FILE):
+        return {}
+    try:
+        with open(FIRM_SETTINGS_FILE, "r") as f:
+            data = json.load(f) or {}
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _file_to_data_url(path: str, mime: str = "image/png") -> Optional[str]:
+    """Read an image file and return a base64 data URL suitable for embedding
+    in an <img src="..."> tag. Returns None if the file is missing or
+    unreadable. Used to inline the firm logo / advisor photo into HTML
+    without having to host them at a URL."""
+    if not os.path.exists(path):
+        return None
+    try:
+        import base64 as _b64
+        with open(path, "rb") as f:
+            return f"data:{mime};base64,{_b64.b64encode(f.read()).decode('ascii')}"
+    except OSError:
+        return None
+
+
+def _build_advisor_profile() -> dict:
+    """Compose the advisor profile shown across the portal. Merges:
+        1. Hardcoded defaults (lowest priority — used for missing fields).
+        2. firm_settings.json values (if present — wins per-field).
+        3. Image data URLs for advisor photo + firm logo (if files exist;
+           otherwise the SVG fallbacks).
+
+    Returns the same dict shape the rest of the portal expects (`name`,
+    `title`, `firm`, `email`, `phone`, `website`, `address`, `bio`,
+    `photo_html`, `firm_logo_html_small`). The HTML fields are guaranteed
+    to be safe to drop into an existing markup template — they're either
+    an `<img>` tag (when a real image was uploaded) or an inline `<svg>`
+    fallback.
+    """
+    fs = _load_firm_settings()
+
+    # Map advisor-app field names → portal field names. Each portal field
+    # falls back to the hardcoded default when the firm setting is missing
+    # or empty.
+    def _pick(*keys, default=""):
+        for k in keys:
+            v = fs.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return default
+
+    profile = {
+        "name":    _pick("advisor_name",    default=_ADVISOR_DEFAULTS["name"]),
+        "title":   _pick("advisor_title",   default=_ADVISOR_DEFAULTS["title"]),
+        "firm":    _pick("firm_name",       default=_ADVISOR_DEFAULTS["firm"]),
+        "email":   _pick("advisor_email",   default=_ADVISOR_DEFAULTS["email"]),
+        "phone":   _pick("advisor_phone",   default=_ADVISOR_DEFAULTS["phone"]),
+        "website": _pick("firm_website",    default=_ADVISOR_DEFAULTS["website"]),
+        "address": _pick("firm_address",    default=_ADVISOR_DEFAULTS["address"]),
+        "bio":     _pick("advisor_bio",     default=_ADVISOR_DEFAULTS["bio"]),
+    }
+
+    # Advisor photo: <img> tag if uploaded, else default SVG avatar.
+    _photo_url = _file_to_data_url(ADVISOR_PHOTO_PATH, mime="image/png")
+    if _photo_url:
+        profile["photo_html"] = (
+            f'<img src="{_photo_url}" alt="Advisor photo" '
+            f'style="width:80px;height:80px;border-radius:50%;'
+            f'        object-fit:cover;display:block;'
+            f'        border:1px solid #E1E8EE"/>'
+        )
+    else:
+        profile["photo_html"] = _DEFAULT_PHOTO_SVG
+
+    # Firm logo (small variant for the home-page advisor box).
+    _logo_url = _file_to_data_url(FIRM_LOGO_PATH, mime="image/png")
+    if _logo_url:
+        profile["firm_logo_html_small"] = (
+            f'<img src="{_logo_url}" alt="" '
+            f'style="height:22px;width:auto;max-width:90px;'
+            f'        display:inline-block;vertical-align:middle"/>'
+        )
+        # Larger variant for the dedicated Advisor tab header.
+        profile["firm_logo_html_large"] = (
+            f'<img src="{_logo_url}" alt="" '
+            f'style="height:36px;width:auto;max-width:160px;'
+            f'        display:inline-block;vertical-align:middle"/>'
+        )
+    else:
+        profile["firm_logo_html_small"] = _DEFAULT_FIRM_LOGO_SMALL_SVG
+        # No large default — advisor tab just won't show a logo if none uploaded.
+        profile["firm_logo_html_large"] = ""
+
+    # Backward-compat alias: legacy code reads `photo_svg`. Keep it as the
+    # photo HTML so any unmodified call sites still work.
+    profile["photo_svg"] = profile["photo_html"]
+
+    return profile
+
+
+def get_advisor() -> dict:
+    """Get the live advisor profile. Re-read on every call so when the
+    advisor updates their Firm Branding panel, the next portal page render
+    picks up the change without restarting Streamlit."""
+    return _build_advisor_profile()
+
+
+# Legacy module-level constant — kept so any old reference still resolves,
+# but new code should call `get_advisor()` so updates flow through live.
+ADVISOR = _build_advisor_profile()
 
 st.set_page_config(
     page_title="Foresight Risk Analytics",
@@ -1032,33 +1180,50 @@ def _screen_welcome():
     )
 
     st.markdown(
-        f'<div style="max-width:520px;margin:30px auto 0;padding:0 28px;'
-        f'            text-align:center">'
+        f'<div class="fr-welcome-wrap" style="max-width:520px;margin:24px auto 0;'
+        f'            padding:0 24px;text-align:center">'
         f'  <div style="display:flex;align-items:center;justify-content:center;'
-        f'              gap:14px;margin-bottom:36px">'
-        f'    {logo_mark(THEME["primary"], 40)}'
-        f'    <span style="font-size:1.1rem;font-weight:600;letter-spacing:0.12em;'
+        f'              gap:16px;margin-bottom:32px">'
+        f'    {logo_mark(THEME["primary"], 64)}'
+        f'    <span style="font-size:1.25rem;font-weight:600;letter-spacing:0.12em;'
         f'                 color:{THEME["ink"]};text-transform:uppercase">'
         f'      Foresight Risk'
         f'    </span>'
         f'  </div>'
-        f'  <h1 style="font-size:1.5rem;line-height:1.25;color:{THEME["ink"]};'
-        f'             font-weight:500;margin:14px 0 28px;letter-spacing:-0.015em;'
-        f'             text-align:center">'
+        f'  <h1 style="font-size:1.5rem;line-height:1.3;color:{THEME["ink"]};'
+        f'             font-weight:500;margin:14px auto 24px;letter-spacing:-0.015em;'
+        f'             text-align:center;max-width:440px;'
+        f'             padding-left:8px;padding-right:8px">'
         f'    A complete financial risk profile in less than 3 minutes.'
         f'  </h1>'
         f'  <div style="display:flex;gap:24px;color:{THEME["muted"]};'
         f'              font-size:0.92rem;margin-bottom:24px;align-items:center;'
-        f'              justify-content:center">'
-        f'    <span>{_icon_lock}Encrypted</span>'
+        f'              justify-content:center;flex-wrap:wrap">'
+        f'    <span style="display:inline-flex;align-items:center">{_icon_lock}Encrypted</span>'
         f'  </div>'
-        f'</div>',
+        f'</div>'
+        # Mobile-only tweaks: pull the CTAs up so they sit closer to the
+        # vertical middle of the viewport rather than way below the fold,
+        # and let the headline have a touch more breathing room around the
+        # text so it doesn't visually drift left/right on narrow screens.
+        f'<style>'
+        f'@media (max-width: 640px) {{'
+        f'  .fr-welcome-wrap {{ margin-top: 12px !important; padding: 0 20px !important; }}'
+        f'  .fr-welcome-wrap h1 {{ font-size: 1.35rem !important; }}'
+        f'  .fr-welcome-spacer {{ height: 28px !important; }}'
+        f'}}'
+        f'</style>',
         unsafe_allow_html=True,
     )
 
-    # Spacer pushes the CTA toward the bottom of the visible area, matching
-    # the mockup's vertical rhythm
-    st.markdown('<div style="height:120px"></div>', unsafe_allow_html=True)
+    # Spacer below the trust badges. On desktop it gives the CTA breathing
+    # room (the page is otherwise sparse and we want visual rhythm); on
+    # mobile it collapses to a much smaller value via the media query
+    # above so the CTA sits closer to the vertical middle of the viewport.
+    st.markdown(
+        '<div class="fr-welcome-spacer" style="height:80px"></div>',
+        unsafe_allow_html=True,
+    )
 
     _spc_l, _cta, _spc_r = st.columns([1, 2, 1])
     with _cta:
@@ -1786,21 +1951,17 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
     # at the top of Home so clients see who's behind the numbers without
     # having to navigate to the Advisor tab. The full profile + bio + book-
     # a-call CTA still live on the dedicated Advisor tab.
-    a = ADVISOR
-    company_logo_svg = (
-        f'<svg width="22" height="22" viewBox="0 0 24 24" '
-        f'xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
-        f'<rect x="2" y="2" width="20" height="20" rx="5" '
-        f'fill="{THEME["primary"]}"/>'
-        f'<path d="M6 16 L11 8 L13 12 L18 6" stroke="#FFFFFF" '
-        f'stroke-width="2" fill="none" stroke-linecap="round" '
-        f'stroke-linejoin="round"/></svg>'
-    )
+    #
+    # Profile is loaded fresh from firm_settings.json every render via
+    # get_advisor(), so when the advisor updates their info on the advisor
+    # app side it shows up here on the next page load — no restart needed.
+    a = get_advisor()
+    company_logo_html = a["firm_logo_html_small"]
     st.markdown(
         f'<div style="background:{THEME["surface2"]};border:1px solid {THEME["line"]};'
         f'            border-radius:14px;padding:14px 16px;margin-top:18px;'
         f'            display:flex;align-items:center;gap:14px">'
-        f'  <div style="flex-shrink:0">{a["photo_svg"]}</div>'
+        f'  <div style="flex-shrink:0">{a["photo_html"]}</div>'
         f'  <div style="flex:1;min-width:0">'
         f'    <div style="display:flex;align-items:center;gap:8px;'
         f'                margin-bottom:2px">'
@@ -1810,7 +1971,7 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
         f'                line-height:1.25;letter-spacing:-0.01em">{a["name"]}</div>'
         f'    <div style="display:flex;align-items:center;gap:6px;'
         f'                font-size:0.8rem;color:{THEME["ink2"]};margin-top:3px">'
-        f'      {company_logo_svg}'
+        f'      {company_logo_html}'
         f'      <span>{a["firm"]}</span>'
         f'    </div>'
         f'    <div style="font-size:0.78rem;color:{THEME["muted"]};margin-top:6px;'
@@ -2391,14 +2552,86 @@ def _render_plan_tab(ck: str):
 def _render_advisor_tab():
     """Full advisor profile card. Replaces the old single-line "Book your
     follow-up" CTA — now the client can see who their advisor actually is,
-    where the firm is based, and reach them through any channel they prefer."""
-    a = ADVISOR
+    where the firm is based, and reach them through any channel they prefer.
+
+    Profile is sourced live from firm_settings.json (written by the advisor
+    app's Firm Branding panel) on every render — so updates flow through
+    without needing to restart the portal."""
+    a = get_advisor()
+
+    # ── Branding diagnostics (collapsed expander) ──────────────────────
+    # Surfaces exactly which file path this portal instance is looking at,
+    # whether the file exists, and whether the images exist. Helpful when
+    # the advisor info isn't populating: usually means the portal and the
+    # advisor app are launched from different folders, so they're reading
+    # different firm_settings.json files.
+    _fs_raw = _load_firm_settings()
+    _logo_exists  = os.path.exists(FIRM_LOGO_PATH)
+    _photo_exists = os.path.exists(ADVISOR_PHOTO_PATH)
+    _settings_exists = os.path.exists(FIRM_SETTINGS_FILE)
+    _populated_keys = sorted(
+        k for k, v in (_fs_raw or {}).items()
+        if isinstance(v, str) and v.strip()
+    )
+    with st.expander("⚙ Branding diagnostics", expanded=False):
+        st.caption(
+            "If the advisor info or logo isn't showing, this panel tells you why. "
+            "The most common cause is the advisor app and this portal being "
+            "launched from different folders — they need to live side-by-side "
+            "so they share the same firm_settings.json."
+        )
+        st.markdown(
+            f"**Working directory (this portal):** `{_APP_DIR}`  \n"
+            f"**Looking for:**  \n"
+            f"&nbsp;&nbsp;`{FIRM_SETTINGS_FILE}` — "
+            f"{'✅ found' if _settings_exists else '❌ missing'}  \n"
+            f"&nbsp;&nbsp;`{FIRM_LOGO_PATH}` — "
+            f"{'✅ found' if _logo_exists else '❌ missing (using default SVG)'}  \n"
+            f"&nbsp;&nbsp;`{ADVISOR_PHOTO_PATH}` — "
+            f"{'✅ found' if _photo_exists else '❌ missing (using default avatar)'}"
+        )
+        if _settings_exists:
+            if _populated_keys:
+                st.markdown(
+                    "**Populated fields in firm_settings.json:**  \n"
+                    + ", ".join(f"`{k}`" for k in _populated_keys)
+                )
+            else:
+                st.warning(
+                    "firm_settings.json exists but is empty. Open the advisor "
+                    "app → Client Records → 🎨 Firm Branding, fill in the "
+                    "fields, and click 💾 Save firm details."
+                )
+        else:
+            st.warning(
+                "No firm_settings.json found. Either (a) you haven't saved "
+                "branding yet on the advisor app, or (b) the advisor app is "
+                "running from a different folder than this portal. "
+                "Confirm both apps are launched from the same directory."
+            )
+
+    # Optional firm-logo strip across the top of the card. Renders only
+    # when the firm has uploaded a logo; otherwise this whole row collapses
+    # so the existing photo + name layout takes its full place.
+    _firm_logo_strip = ""
+    if a.get("firm_logo_html_large"):
+        _firm_logo_strip = (
+            f'<div style="display:flex;align-items:center;gap:10px;'
+            f'            padding-bottom:14px;margin-bottom:14px;'
+            f'            border-bottom:1px solid {THEME["line"]}">'
+            f'  {a["firm_logo_html_large"]}'
+            f'  <div style="font-size:0.78rem;font-weight:600;'
+            f'              color:{THEME["muted"]};letter-spacing:0.06em;'
+            f'              text-transform:uppercase">{a["firm"]}</div>'
+            f'</div>'
+        )
 
     # Header with photo + name + title
     st.markdown(
         f'<div class="fr-card">'
+        f'  {_firm_logo_strip}'
         f'  <div style="display:flex;gap:18px;align-items:center">'
-        f'    <div style="flex-shrink:0">{a["photo_svg"]}</div>'
+        f'    <div style="flex-shrink:0">{a["photo_html"]}</div>'
         f'    <div style="flex:1">'
         f'      <div class="fr-eyebrow">Your advisor</div>'
         f'      <div style="font-size:1.15rem;font-weight:600;color:{THEME["ink"]};'
