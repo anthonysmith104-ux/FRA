@@ -1035,17 +1035,17 @@ def _screen_welcome():
         f'<div style="max-width:520px;margin:30px auto 0;padding:0 28px;'
         f'            text-align:center">'
         f'  <div style="display:flex;align-items:center;justify-content:center;'
-        f'              gap:10px;margin-bottom:36px">'
-        f'    {logo_mark(THEME["primary"], 26)}'
-        f'    <span style="font-size:0.82rem;font-weight:600;letter-spacing:0.12em;'
+        f'              gap:14px;margin-bottom:36px">'
+        f'    {logo_mark(THEME["primary"], 40)}'
+        f'    <span style="font-size:1.1rem;font-weight:600;letter-spacing:0.12em;'
         f'                 color:{THEME["ink"]};text-transform:uppercase">'
         f'      Foresight Risk'
         f'    </span>'
         f'  </div>'
-        f'  <h1 style="font-size:2rem;line-height:1.18;color:{THEME["ink"]};'
+        f'  <h1 style="font-size:1.5rem;line-height:1.25;color:{THEME["ink"]};'
         f'             font-weight:500;margin:14px 0 28px;letter-spacing:-0.015em;'
         f'             text-align:center">'
-        f'    A complete financial risk profile in less than 2 minutes.'
+        f'    A complete financial risk profile in less than 3 minutes.'
         f'  </h1>'
         f'  <div style="display:flex;gap:24px;color:{THEME["muted"]};'
         f'              font-size:0.92rem;margin-bottom:24px;align-items:center;'
@@ -1638,16 +1638,16 @@ def render_dashboard():
     # Order matches the natural reading flow: high-level summary → portfolio
     # detail → forward-looking plan → human contact. Plan was renamed to
     # "Financial Goals" since that's the actual content of the tab.
-    tab_home, tab_holdings, tab_goals, tab_advisor = st.tabs(
-        ["Home", "Holdings", "Financial Goals", "Advisor"]
+    tab_home, tab_goals, tab_holdings, tab_advisor = st.tabs(
+        ["Home", "Financial Goals", "Holdings", "Advisor"]
     )
 
     with tab_home:
         _render_home_tab(profile, holdings, ck)
-    with tab_holdings:
-        _render_holdings_tab(holdings, ck)
     with tab_goals:
         _render_plan_tab(ck)
+    with tab_holdings:
+        _render_holdings_tab(holdings, ck)
     with tab_advisor:
         _render_advisor_tab()
 
