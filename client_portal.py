@@ -191,9 +191,10 @@ st.markdown(
             letter-spacing: 0.06em; text-transform: uppercase;
         }}
         .fr-vital-value {{
-            font-family: 'IBM Plex Mono', ui-monospace, monospace;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             font-size: 1.4rem; font-weight: 600; color: {THEME['ink']};
             letter-spacing: -0.01em; line-height: 1;
+            font-variant-numeric: tabular-nums;
         }}
         .fr-vital-detail {{
             display: flex; align-items: center; justify-content: space-between;
@@ -1718,9 +1719,12 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
 
             st.markdown(
                 f'<div style="padding-top:18px">'
-                f'  <div class="fr-eyebrow">Risk Profile</div>'
-                f'  <div style="font-size:1rem;color:{THEME["ink"]};font-weight:600;'
-                f'              margin-top:4px;line-height:1.3">{label}</div>'
+                f'  <div class="fr-eyebrow" '
+                f'       style="font-size:0.85rem;letter-spacing:0.12em">'
+                f'    Risk Profile</div>'
+                f'  <div style="font-size:1.5rem;color:{THEME["ink"]};'
+                f'              font-weight:700;margin-top:6px;line-height:1.2;'
+                f'              letter-spacing:-0.015em">{label}</div>'
                 f'  <div style="font-size:0.85rem;color:{THEME["ink2"]};'
                 f'              margin-top:8px;line-height:1.5">{summary}</div>'
                 f'</div>',
@@ -1759,10 +1763,11 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             else:
                 when_text = "not yet"
             st.markdown(
-                f'<div style="text-align:center;margin-top:10px;'
-                f'            font-size:0.78rem;color:{THEME["ink2"]};'
-                f'            letter-spacing:0.01em">'
-                f'  Last checkup: <span style="font-weight:600;'
+                f'<div style="text-align:center;margin-top:14px;'
+                f'            font-size:1.05rem;color:{THEME["ink2"]};'
+                f'            letter-spacing:-0.005em;line-height:1.3">'
+                f'  Last checkup: <span style="font-weight:700;'
+                f'                              font-size:1.5rem;'
                 f'                              color:{THEME["primary"]}">'
                 f'    {when_text}</span>'
                 f'</div>',
@@ -1919,7 +1924,8 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
     with g4:
         st.markdown(_tile(
             "Cash Position", fmt_money(vitals["cash"]),
-            f"{cash_pct:.1f}% of portfolio" if vitals["net_worth"] else "—",
+            f"{cash_pct:.1f}% of portfolio" if vitals["net_worth"]
+                else "no positions yet",
             "",
         ), unsafe_allow_html=True)
 
