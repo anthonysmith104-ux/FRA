@@ -23,7 +23,6 @@ Files (anchored to this script's directory):
 from __future__ import annotations
 
 import os
-import json
 from datetime import datetime, date
 from typing import Optional
 
@@ -83,27 +82,9 @@ CLIENT_GOALS_FILE    = _data_path("client_goals.json")
 CLIENT_BUDGETS_FILE  = _data_path("client_budgets.json")
 
 # ── ADVISOR PROFILE ──────────────────────────────────────────────────────────
-# The advisor profile shown across the client portal (Home page advisor box,
-# dedicated Advisor tab) is sourced from the same `firm_settings.json` file
-# the advisor app writes when the firm fills out Client Records → 🎨 Firm
-# Branding. The two apps live in the same directory, so when the advisor
-# updates their info on their side it flows through here automatically —
-# no editing this file required.
-#
-# Hardcoded values below are the *fallback* — used for any field the firm
-# hasn't filled in yet, so the portal always renders something sensible.
-# To customize, the advisor edits Firm Branding in the advisor app; nothing
-# in this file needs to change.
-
-# Firm-branding paths (mirror the advisor app's constants — same directory,
-# same filenames, so both apps see the same data).
-FIRM_SETTINGS_FILE = _data_path("firm_settings.json")
-FIRM_LOGO_PATH     = _data_path("firm_logo.png")
-ADVISOR_PHOTO_PATH = _data_path("advisor_photo.png")
-
-# Hardcoded fallback advisor profile. Used only for fields that aren't set
-# in firm_settings.json. Any value the advisor saves on their side wins.
-_ADVISOR_DEFAULTS = {
+# Single advisor profile shown on the Advisor tab. Edit these fields to swap
+# the photo, contact info, or company website without touching the UI code.
+ADVISOR = {
     "name":    "Sarah Whitfield, CFP®",
     "title":   "Senior Financial Advisor",
     "firm":    "Foresight Wealth Partners",
@@ -115,149 +96,20 @@ _ADVISOR_DEFAULTS = {
                 "retirement, education, and legacy goals. She's a Certified "
                 "Financial Planner™ and a fiduciary — meaning she's legally "
                 "required to act in your best interest."),
+    # Generic SVG avatar — neutral, no real likeness.
+    "photo_svg": (
+        '<svg viewBox="0 0 80 80" width="80" height="80" '
+        'xmlns="http://www.w3.org/2000/svg">'
+        '<defs><linearGradient id="adv_bg" x1="0" y1="0" x2="1" y2="1">'
+        '<stop offset="0" stop-color="#0E5C5E"/>'
+        '<stop offset="1" stop-color="#0E7C86"/></linearGradient></defs>'
+        '<circle cx="40" cy="40" r="40" fill="url(#adv_bg)"/>'
+        '<circle cx="40" cy="32" r="13" fill="#FFFFFF" opacity="0.95"/>'
+        '<path d="M16 70 C 18 56, 28 50, 40 50 S 62 56, 64 70 Z" '
+        'fill="#FFFFFF" opacity="0.95"/>'
+        '</svg>'
+    ),
 }
-
-# Generic SVG avatar — neutral, no real likeness. Used only if no
-# advisor_photo.png has been uploaded.
-_DEFAULT_PHOTO_SVG = (
-    '<svg viewBox="0 0 80 80" width="80" height="80" '
-    'xmlns="http://www.w3.org/2000/svg">'
-    '<defs><linearGradient id="adv_bg" x1="0" y1="0" x2="1" y2="1">'
-    '<stop offset="0" stop-color="#0E5C5E"/>'
-    '<stop offset="1" stop-color="#0E7C86"/></linearGradient></defs>'
-    '<circle cx="40" cy="40" r="40" fill="url(#adv_bg)"/>'
-    '<circle cx="40" cy="32" r="13" fill="#FFFFFF" opacity="0.95"/>'
-    '<path d="M16 70 C 18 56, 28 50, 40 50 S 62 56, 64 70 Z" '
-    'fill="#FFFFFF" opacity="0.95"/>'
-    '</svg>'
-)
-
-# Default firm logo SVG (the small teal chart-mark) — used when no
-# firm_logo.png has been uploaded.
-_DEFAULT_FIRM_LOGO_SMALL_SVG = (
-    '<svg width="22" height="22" viewBox="0 0 24 24" '
-    'xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
-    '<rect x="2" y="2" width="20" height="20" rx="5" fill="#0E5C5E"/>'
-    '<path d="M6 16 L11 8 L13 12 L18 6" stroke="#FFFFFF" '
-    'stroke-width="2" fill="none" stroke-linecap="round" '
-    'stroke-linejoin="round"/></svg>'
-)
-
-
-def _load_firm_settings() -> dict:
-    """Read firm_settings.json (written by the advisor app's Firm Branding
-    panel). Returns {} if the file is missing or unreadable, so callers
-    can safely use `dict.get` patterns without raising."""
-    if not os.path.exists(FIRM_SETTINGS_FILE):
-        return {}
-    try:
-        with open(FIRM_SETTINGS_FILE, "r") as f:
-            data = json.load(f) or {}
-        return data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def _file_to_data_url(path: str, mime: str = "image/png") -> Optional[str]:
-    """Read an image file and return a base64 data URL suitable for embedding
-    in an <img src="..."> tag. Returns None if the file is missing or
-    unreadable. Used to inline the firm logo / advisor photo into HTML
-    without having to host them at a URL."""
-    if not os.path.exists(path):
-        return None
-    try:
-        import base64 as _b64
-        with open(path, "rb") as f:
-            return f"data:{mime};base64,{_b64.b64encode(f.read()).decode('ascii')}"
-    except OSError:
-        return None
-
-
-def _build_advisor_profile() -> dict:
-    """Compose the advisor profile shown across the portal. Merges:
-        1. Hardcoded defaults (lowest priority — used for missing fields).
-        2. firm_settings.json values (if present — wins per-field).
-        3. Image data URLs for advisor photo + firm logo (if files exist;
-           otherwise the SVG fallbacks).
-
-    Returns the same dict shape the rest of the portal expects (`name`,
-    `title`, `firm`, `email`, `phone`, `website`, `address`, `bio`,
-    `photo_html`, `firm_logo_html_small`). The HTML fields are guaranteed
-    to be safe to drop into an existing markup template — they're either
-    an `<img>` tag (when a real image was uploaded) or an inline `<svg>`
-    fallback.
-    """
-    fs = _load_firm_settings()
-
-    # Map advisor-app field names → portal field names. Each portal field
-    # falls back to the hardcoded default when the firm setting is missing
-    # or empty.
-    def _pick(*keys, default=""):
-        for k in keys:
-            v = fs.get(k)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-        return default
-
-    profile = {
-        "name":    _pick("advisor_name",    default=_ADVISOR_DEFAULTS["name"]),
-        "title":   _pick("advisor_title",   default=_ADVISOR_DEFAULTS["title"]),
-        "firm":    _pick("firm_name",       default=_ADVISOR_DEFAULTS["firm"]),
-        "email":   _pick("advisor_email",   default=_ADVISOR_DEFAULTS["email"]),
-        "phone":   _pick("advisor_phone",   default=_ADVISOR_DEFAULTS["phone"]),
-        "website": _pick("firm_website",    default=_ADVISOR_DEFAULTS["website"]),
-        "address": _pick("firm_address",    default=_ADVISOR_DEFAULTS["address"]),
-        "bio":     _pick("advisor_bio",     default=_ADVISOR_DEFAULTS["bio"]),
-    }
-
-    # Advisor photo: <img> tag if uploaded, else default SVG avatar.
-    _photo_url = _file_to_data_url(ADVISOR_PHOTO_PATH, mime="image/png")
-    if _photo_url:
-        profile["photo_html"] = (
-            f'<img src="{_photo_url}" alt="Advisor photo" '
-            f'style="width:80px;height:80px;border-radius:50%;'
-            f'        object-fit:cover;display:block;'
-            f'        border:1px solid #E1E8EE"/>'
-        )
-    else:
-        profile["photo_html"] = _DEFAULT_PHOTO_SVG
-
-    # Firm logo (small variant for the home-page advisor box).
-    _logo_url = _file_to_data_url(FIRM_LOGO_PATH, mime="image/png")
-    if _logo_url:
-        profile["firm_logo_html_small"] = (
-            f'<img src="{_logo_url}" alt="" '
-            f'style="height:22px;width:auto;max-width:90px;'
-            f'        display:inline-block;vertical-align:middle"/>'
-        )
-        # Larger variant for the dedicated Advisor tab header.
-        profile["firm_logo_html_large"] = (
-            f'<img src="{_logo_url}" alt="" '
-            f'style="height:36px;width:auto;max-width:160px;'
-            f'        display:inline-block;vertical-align:middle"/>'
-        )
-    else:
-        profile["firm_logo_html_small"] = _DEFAULT_FIRM_LOGO_SMALL_SVG
-        # No large default — advisor tab just won't show a logo if none uploaded.
-        profile["firm_logo_html_large"] = ""
-
-    # Backward-compat alias: legacy code reads `photo_svg`. Keep it as the
-    # photo HTML so any unmodified call sites still work.
-    profile["photo_svg"] = profile["photo_html"]
-
-    return profile
-
-
-def get_advisor() -> dict:
-    """Get the live advisor profile. Re-read on every call so when the
-    advisor updates their Firm Branding panel, the next portal page render
-    picks up the change without restarting Streamlit."""
-    return _build_advisor_profile()
-
-
-# Legacy module-level constant — kept so any old reference still resolves,
-# but new code should call `get_advisor()` so updates flow through live.
-ADVISOR = _build_advisor_profile()
 
 st.set_page_config(
     page_title="Foresight Risk Analytics",
@@ -549,6 +401,40 @@ def register_user(first: str, last: str, email: str, phone: str = "") -> tuple[b
     if conflict["exists"]: return False, "An account with this email already exists."
     return True, "Account created."
 
+def update_user(email: str, patch: dict) -> tuple[bool, str]:
+    """In-place update of an existing user record, atomic under USERS_FILE lock.
+
+    `email` is the canonical key (lowercased, stripped) — this is the field
+    we never change, since it's also how the client signs in. Anything else
+    on the user dict can be patched: first_name, last_name, phone, address,
+    zip, age.
+
+    Returns (ok, message). Message is a short user-facing explanation when
+    ok is False; empty when ok is True.
+    """
+    key = normalize_email(email)
+    if key is None:
+        return False, "Invalid email — cannot identify the user record."
+    found = {"yes": False}
+    def _mutate(users, k=key, p=dict(patch)):
+        if k not in users:
+            return
+        found["yes"] = True
+        # Merge the patch onto the existing record. Drop the email key
+        # if present so a malformed patch can't accidentally re-key the
+        # entry. Trim whitespace on string fields to keep the data clean.
+        p.pop("email", None)
+        for fk, fv in p.items():
+            if isinstance(fv, str):
+                fv = fv.strip()
+            users[k][fk] = fv
+        users[k]["updated_at"] = datetime.now().isoformat(timespec="minutes")
+    _shared_update_json(USERS_FILE, _mutate)
+    if not found["yes"]:
+        return False, "User not found."
+    return True, ""
+
+
 def save_holdings_for(client_key: str, holdings: dict) -> None:
     _shared_update_json(
         CLIENT_HOLDINGS_FILE,
@@ -677,7 +563,7 @@ PROFILE_QUESTIONS = [
         ("Uncertain — major change expected",   30),
     ]},
     {"id": "net_worth", "section": "Context",
-     "text": "Approximate liquid net worth (excluding home)",
+     "text": "Liquid cash (excluding retirement)",
      # See income_band note re: single dollar sign per option.
      "type": "select", "options": [
         ("Under $100,000",              30),
@@ -689,43 +575,12 @@ PROFILE_QUESTIONS = [
         ("Prefer not to say",           55),
     ]},
 
-    # ── Goals — what's this money FOR? Drives capacity scoring because the
-    # goal type (preservation vs growth vs aggressive accumulation) shifts how
-    # much risk a portfolio reasonably needs to take. Higher-aspiration goals
-    # (early retirement, major wealth building) push the score higher; pure
-    # preservation goals push it lower.
-    {"id": "primary_goal", "section": "Goals",
-     "text": "What's your primary goal for this money?",
-     "type": "select", "options": [
-        ("Preserve what I have",                       30),
-        ("Generate steady income",                     45),
-        ("Save for a specific purchase (home, etc.)",  50),
-        ("Fund education for myself or family",        55),
-        ("Build long-term wealth for retirement",      70),
-        ("Achieve financial independence early",       85),
-        ("Build generational / legacy wealth",         75),
-    ]},
-    {"id": "goal_amount", "section": "Goals",
-     "text": "Do you have a specific dollar target in mind?",
-     # See income_band note re: single dollar sign per option.
-     "type": "select", "options": [
-        ("No target — I'm just building",              60),
-        ("Under $250,000",                             40),
-        ("$250,000 – 1,000,000",                       55),
-        ("$1,000,000 – 5,000,000",                     70),
-        ("$5,000,000 – 25,000,000",                    80),
-        ("Over $25,000,000",                           85),
-    ]},
-    {"id": "goal_timeline", "section": "Goals",
-     "text": "When do you want to reach this goal?",
-     "type": "select", "options": [
-        ("Less than 3 years",     20),
-        ("3 – 7 years",           40),
-        ("7 – 15 years",          60),
-        ("15 – 25 years",         80),
-        ("More than 25 years",    90),
-        ("No specific timeline",  65),
-    ]},
+    # ── Goals: kept as a smaller block (specific goal & timeline questions
+    # were removed in the 2026-04-30 questionnaire trim — feedback was that
+    # they duplicated context already captured in withdrawal_horizon and the
+    # advisor's own kickoff conversation). What remains targets dimensions
+    # the questionnaire is uniquely positioned to capture: income replacement
+    # ratio in retirement, and the strength of legacy intent.
     {"id": "income_replacement", "section": "Goals",
      "text": "In retirement, what % of your current income do you want to replace?",
      "type": "select", "options": [
@@ -746,7 +601,7 @@ PROFILE_QUESTIONS = [
     ]},
 
     {"id": "withdrawal_horizon", "section": "Horizon",
-     "text": "When will you start drawing from this portfolio?",
+     "text": "When will access to funds within your investment/retirement portfolio?",
      "type": "select", "options": [
         ("Less than 2 years",    20),
         ("2 – 5 years",          35),
@@ -765,7 +620,7 @@ PROFILE_QUESTIONS = [
         ("Not sure yet",       55),
     ]},
     {"id": "emergency_fund", "section": "Horizon",
-     "text": "Months of expenses you have in cash outside this portfolio",
+     "text": "Months of expenses in cash outside your investment/retirement portfolio",
      "type": "select", "options": [
         ("Less than 1 month",  20),
         ("1 – 3 months",       40),
@@ -773,32 +628,18 @@ PROFILE_QUESTIONS = [
         ("6 – 12 months",      75),
         ("More than 12 months",85),
     ]},
-    {"id": "major_expense", "section": "Horizon",
-     "text": "Major expense in the next 3 years (home, education, medical)?",
-     # Single $ per option — see income_band note above for the LaTeX-pairing
-     # rationale.
-     "type": "select", "options": [
-        ("No major expenses planned",     75),
-        ("Possibly — under $50,000",      60),
-        ("Yes — $50,000 to 250,000",      40),
-        ("Yes — over $250,000",           25),
-    ]},
-    {"id": "drawdown_reaction", "section": "Tolerance",
-     "text": "Your portfolio drops 25% in a single year. What do you do?",
-     "type": "select", "options": [
-        ("Sell most of it — protect what's left",  15),
-        ("Sell some — reduce exposure",            35),
-        ("Hold and wait it out",                   65),
-        ("Buy more — prices are on sale",          90),
-    ]},
-    {"id": "experience", "section": "Tolerance",
-     "text": "How would you describe your investing experience?",
-     "type": "select", "options": [
-        ("New to investing",                                25),
-        ("Some experience — mostly mutual funds / 401k",    45),
-        ("Experienced — actively pick stocks / ETFs",       65),
-        ("Very experienced — options, bonds, alternatives", 80),
-    ]},
+    # major_expense was removed in the 2026-04-30 questionnaire trim — the
+    # specific 3-year-horizon expense question added marginal scoring signal
+    # over what the withdrawal_horizon and emergency_fund questions already
+    # capture, and clients found it confusing when the answer didn't match
+    # their actual mental model of upcoming spending.
+    # drawdown_reaction and experience were removed in the 2026-04-30
+    # questionnaire trim. drawdown_reaction was a hypothetical that
+    # over-weighted self-perceived behavior; experience adds
+    # subjective signal we don't act on. The remaining tolerance
+    # questions (loss_floor, growth_vs_safety) measure tolerance
+    # through concrete numeric tradeoffs which clients answer more
+    # consistently.
     {"id": "loss_floor", "section": "Tolerance",
      "text": "Largest one-year loss you could accept before changing strategy",
      "type": "select", "options": [
@@ -853,7 +694,7 @@ PROFILE_QUESTIONS = [
         ("Critical — must be ESG-aligned",                   45),
     ]},
     {"id": "priorities", "section": "Outlook",
-     "text": "Which of these matter MOST to you? (pick up to 3)",
+     "text": "Which of these matter MOST to you? (pick exactly 3)",
      "type": "multi", "options": [
         "Capital preservation",
         "Steady income / dividends",
@@ -863,7 +704,7 @@ PROFILE_QUESTIONS = [
         "Liquidity / flexibility",
         "ESG / values alignment",
         "Estate / legacy planning",
-    ], "max_pick": 3},
+    ], "min_pick": 3, "max_pick": 3},
 ]
 
 
@@ -876,12 +717,18 @@ def score_profile(answers: dict) -> dict:
     short-timeline goals pull it down (they require safety).
     """
     section_scores = {"capacity": [], "tolerance": [], "outlook": []}
+    # Capacity = the financial cushion / horizon that lets the portfolio
+    # take risk. After 2026-04-30 trim: dropped major_expense,
+    # primary_goal, goal_amount, goal_timeline (3-year expense + specific-
+    # goal questions removed).
     capacity_qs  = {"occupation","income_band","income_stability","net_worth",
-                    "withdrawal_horizon","withdrawal_rate","emergency_fund","major_expense",
+                    "withdrawal_horizon","withdrawal_rate","emergency_fund",
                     # Goals
-                    "primary_goal","goal_amount","goal_timeline",
                     "income_replacement","legacy_intent"}
-    tolerance_qs = {"drawdown_reaction","experience","loss_floor","growth_vs_safety"}
+    # Tolerance = the client's emotional/behavioral capacity for
+    # volatility. After 2026-04-30 trim: dropped drawdown_reaction
+    # (hypothetical-behavior bias) and experience (subjective signal).
+    tolerance_qs = {"loss_floor","growth_vs_safety"}
     outlook_qs   = {"market_view","inflation_concern","recession_concern"}
 
     for q in PROFILE_QUESTIONS:
@@ -1144,7 +991,7 @@ def render_login():
     onboarding screens based on fr_step:
         welcome  → landing page with single CTA
         prequiz  → first/last name + age (only fields needed before quiz)
-        quiz     → 23 questions across 5 sections (Goals included)
+        quiz     → 18 questions across 5 sections (Goals included)
         results  → score reveal (no gate yet — show first, ask second)
         register → email + phone (req'd) + address + zip (optional) → save
     """
@@ -1180,50 +1027,33 @@ def _screen_welcome():
     )
 
     st.markdown(
-        f'<div class="fr-welcome-wrap" style="max-width:520px;margin:24px auto 0;'
-        f'            padding:0 24px;text-align:center">'
+        f'<div style="max-width:520px;margin:30px auto 0;padding:0 28px;'
+        f'            text-align:center">'
         f'  <div style="display:flex;align-items:center;justify-content:center;'
-        f'              gap:16px;margin-bottom:32px">'
-        f'    {logo_mark(THEME["primary"], 64)}'
-        f'    <span style="font-size:1.25rem;font-weight:600;letter-spacing:0.12em;'
+        f'              gap:14px;margin-bottom:36px">'
+        f'    {logo_mark(THEME["primary"], 40)}'
+        f'    <span style="font-size:1.1rem;font-weight:600;letter-spacing:0.12em;'
         f'                 color:{THEME["ink"]};text-transform:uppercase">'
         f'      Foresight Risk'
         f'    </span>'
         f'  </div>'
-        f'  <h1 style="font-size:1.5rem;line-height:1.3;color:{THEME["ink"]};'
-        f'             font-weight:500;margin:14px auto 24px;letter-spacing:-0.015em;'
-        f'             text-align:center;max-width:440px;'
-        f'             padding-left:8px;padding-right:8px">'
-        f'    Get your free financial risk profile in less than three minutes.'
+        f'  <h1 style="font-size:1.5rem;line-height:1.25;color:{THEME["ink"]};'
+        f'             font-weight:500;margin:14px 0 28px;letter-spacing:-0.015em;'
+        f'             text-align:center">'
+        f'    A complete financial risk profile in less than 3 minutes.'
         f'  </h1>'
         f'  <div style="display:flex;gap:24px;color:{THEME["muted"]};'
         f'              font-size:0.92rem;margin-bottom:24px;align-items:center;'
-        f'              justify-content:center;flex-wrap:wrap">'
-        f'    <span style="display:inline-flex;align-items:center">{_icon_lock}Encrypted</span>'
+        f'              justify-content:center">'
+        f'    <span>{_icon_lock}Encrypted</span>'
         f'  </div>'
-        f'</div>'
-        # Mobile-only tweaks: pull the CTAs up so they sit closer to the
-        # vertical middle of the viewport rather than way below the fold,
-        # and let the headline have a touch more breathing room around the
-        # text so it doesn't visually drift left/right on narrow screens.
-        f'<style>'
-        f'@media (max-width: 640px) {{'
-        f'  .fr-welcome-wrap {{ margin-top: 12px !important; padding: 0 20px !important; }}'
-        f'  .fr-welcome-wrap h1 {{ font-size: 1.35rem !important; }}'
-        f'  .fr-welcome-spacer {{ height: 28px !important; }}'
-        f'}}'
-        f'</style>',
+        f'</div>',
         unsafe_allow_html=True,
     )
 
-    # Spacer below the trust badges. On desktop it gives the CTA breathing
-    # room (the page is otherwise sparse and we want visual rhythm); on
-    # mobile it collapses to a much smaller value via the media query
-    # above so the CTA sits closer to the vertical middle of the viewport.
-    st.markdown(
-        '<div class="fr-welcome-spacer" style="height:80px"></div>',
-        unsafe_allow_html=True,
-    )
+    # Spacer pushes the CTA toward the bottom of the visible area, matching
+    # the mockup's vertical rhythm
+    st.markdown('<div style="height:120px"></div>', unsafe_allow_html=True)
 
     _spc_l, _cta, _spc_r = st.columns([1, 2, 1])
     with _cta:
@@ -1268,9 +1098,11 @@ def _screen_welcome():
                     if user is None:
                         st.error("No account found. Take the assessment to create one.")
                     else:
+                        # Don't set a "Welcome back" flash — the dashboard's
+                        # "Good morning/afternoon/evening, {name}" greeting
+                        # already acknowledges the user, and stacking a green
+                        # banner on top added visual noise without information.
                         st.session_state.fr_user  = user
-                        st.session_state.fr_flash = (
-                            f"Welcome back, {user.get('first_name','')}.")
                         st.session_state.fr_show_signin = False
                         st.rerun()
 
@@ -1431,13 +1263,28 @@ def _screen_quiz():
                                   key=f"fr_qz_{q['id']}",
                                   label_visibility="collapsed")
             max_pick = q.get("max_pick")
-            if max_pick and len(val or []) > max_pick:
+            min_pick = q.get("min_pick")
+            n_picked = len(val or [])
+            if max_pick and n_picked > max_pick:
                 st.warning(
-                    f"You've picked {len(val)}. We use the top {max_pick} for "
+                    f"You've picked {n_picked}. We use the top {max_pick} for "
                     f"scoring — remove one to choose which counts, or "
                     f"continue and we'll keep the first {max_pick}."
                 )
-            answered = len(val or []) > 0
+            elif min_pick and n_picked < min_pick:
+                st.info(
+                    f"Pick {min_pick - n_picked} more to continue "
+                    f"({n_picked} of {min_pick} selected)."
+                )
+            # Question is "answered" only when the floor is met. If
+            # min_pick is set, the Next/Finish button stays disabled
+            # until the user reaches the required count. If only
+            # max_pick is set, any non-zero pick counts as answered
+            # (legacy behavior).
+            if min_pick:
+                answered = n_picked >= min_pick
+            else:
+                answered = n_picked > 0
         else:
             val = None; answered = False
 
@@ -1791,20 +1638,19 @@ def render_dashboard():
     st.markdown(
         f'<div style="margin:18px 0 0 2px">'
         f'  <div class="fr-greeting">{greeting}, {first_name}</div>'
-        f'  <h1 class="fr-headline">'
-        f'    Your last checkup was<br/>'
-        f'    <span class="fr-headline-accent">{when_text}</span>.'
-        f'  </h1>'
         f'</div>',
         unsafe_allow_html=True,
     )
 
     # ── Real tabs replace the old visual-only bottom nav ───────────────────
     # Order matches the natural reading flow: high-level summary → portfolio
-    # detail → forward-looking plan → human contact. Plan was renamed to
-    # "Financial Goals" since that's the actual content of the tab.
-    tab_home, tab_goals, tab_holdings, tab_advisor = st.tabs(
-        ["Home", "Financial Goals", "Holdings", "Advisor"]
+    # detail → forward-looking plan → personal info → human contact. "My Info"
+    # was added in the 2026-04-30 update so clients can edit their own
+    # contact details without having to message the advisor; placed left of
+    # Advisor since the natural pairing is "my info / their info".
+    (tab_home, tab_goals, tab_holdings,
+     tab_my_info, tab_advisor) = st.tabs(
+        ["Home", "Financial Goals", "Holdings", "My Info", "Advisor"]
     )
 
     with tab_home:
@@ -1813,6 +1659,8 @@ def render_dashboard():
         _render_plan_tab(ck)
     with tab_holdings:
         _render_holdings_tab(holdings, ck)
+    with tab_my_info:
+        _render_my_info_tab()
     with tab_advisor:
         _render_advisor_tab()
 
@@ -1830,7 +1678,7 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             f'  </div>'
             f'  <h3 style="margin:0 0 6px">Take your first checkup</h3>'
             f'  <p style="color:{THEME["ink2"]};margin:0 0 18px;font-size:0.93rem">'
-            f'    23 questions in 5 short sections — about 6 minutes.'
+            f'    18 questions in 5 short sections — about 5 minutes.'
             f'  </p>'
             f'</div>',
             unsafe_allow_html=True,
@@ -1891,6 +1739,21 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
                          use_container_width=True):
                 st.session_state.fr_view = "edit_profile"
                 st.rerun()
+            # Last checkup indicator — placed under the button so the
+            # primary action stays visually dominant. Color matches the
+            # secondary "ink2" theme tone (used by .fr-greeting and other
+            # supporting text) so it reads as a soft annotation rather
+            # than competing with the button.
+            st.markdown(
+                f'<div style="text-align:center;margin-top:10px;'
+                f'            font-size:0.78rem;color:{THEME["ink2"]};'
+                f'            letter-spacing:0.01em">'
+                f'  Last checkup: <span style="font-weight:600;'
+                f'                              color:{THEME["primary"]}">'
+                f'    {when_text}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
     # ── Vitals grid ─────────────────────────────────────────────────────────
     if holdings:
@@ -1951,17 +1814,21 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
     # at the top of Home so clients see who's behind the numbers without
     # having to navigate to the Advisor tab. The full profile + bio + book-
     # a-call CTA still live on the dedicated Advisor tab.
-    #
-    # Profile is loaded fresh from firm_settings.json every render via
-    # get_advisor(), so when the advisor updates their info on the advisor
-    # app side it shows up here on the next page load — no restart needed.
-    a = get_advisor()
-    company_logo_html = a["firm_logo_html_small"]
+    a = ADVISOR
+    company_logo_svg = (
+        f'<svg width="22" height="22" viewBox="0 0 24 24" '
+        f'xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+        f'<rect x="2" y="2" width="20" height="20" rx="5" '
+        f'fill="{THEME["primary"]}"/>'
+        f'<path d="M6 16 L11 8 L13 12 L18 6" stroke="#FFFFFF" '
+        f'stroke-width="2" fill="none" stroke-linecap="round" '
+        f'stroke-linejoin="round"/></svg>'
+    )
     st.markdown(
         f'<div style="background:{THEME["surface2"]};border:1px solid {THEME["line"]};'
         f'            border-radius:14px;padding:14px 16px;margin-top:18px;'
         f'            display:flex;align-items:center;gap:14px">'
-        f'  <div style="flex-shrink:0">{a["photo_html"]}</div>'
+        f'  <div style="flex-shrink:0">{a["photo_svg"]}</div>'
         f'  <div style="flex:1;min-width:0">'
         f'    <div style="display:flex;align-items:center;gap:8px;'
         f'                margin-bottom:2px">'
@@ -1971,7 +1838,7 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
         f'                line-height:1.25;letter-spacing:-0.01em">{a["name"]}</div>'
         f'    <div style="display:flex;align-items:center;gap:6px;'
         f'                font-size:0.8rem;color:{THEME["ink2"]};margin-top:3px">'
-        f'      {company_logo_html}'
+        f'      {company_logo_svg}'
         f'      <span>{a["firm"]}</span>'
         f'    </div>'
         f'    <div style="font-size:0.78rem;color:{THEME["muted"]};margin-top:6px;'
@@ -2549,89 +2416,258 @@ def _render_plan_tab(ck: str):
 # ─────────────────────────────────────────────────────────────────────────────
 # ADVISOR TAB — full advisor profile with photo, contact info, website
 # ─────────────────────────────────────────────────────────────────────────────
+def _render_my_info_tab():
+    """Personal contact info — editable by the client.
+
+    All fields except email are editable: first/last name, phone, address,
+    ZIP, age. Email is the database key and is shown read-only with a
+    short note explaining why it can't be changed here. Saves write back
+    to USERS_FILE atomically via update_user(), and on success we update
+    the in-memory session_state so subsequent tabs see the new values
+    without requiring a full reload.
+
+    Edit mode is gated by a "Edit info" button so the default view is a
+    clean read-only summary — the same shape as the Advisor tab, just
+    populated with the client's own data.
+    """
+    user = st.session_state.fr_user or {}
+
+    # Toggle between view-only and edit modes via session state. Default
+    # is view; clicking "Edit" flips to the edit form.
+    edit_key = "fr_my_info_editing"
+    if edit_key not in st.session_state:
+        st.session_state[edit_key] = False
+    is_editing = st.session_state[edit_key]
+
+    # ── Header card (matches Advisor tab visual style) ─────────────────
+    full_name = (
+        f"{(user.get('first_name') or '').strip()} "
+        f"{(user.get('last_name') or '').strip()}"
+    ).strip() or "—"
+    age_val = user.get("age")
+    age_str = f"Age {age_val}" if age_val else "Age not set"
+
+    st.markdown(
+        f'<div class="fr-card">'
+        f'  <div style="display:flex;gap:18px;align-items:center;'
+        f'              justify-content:space-between">'
+        f'    <div style="flex:1">'
+        f'      <div class="fr-eyebrow">Your information</div>'
+        f'      <div style="font-size:1.15rem;font-weight:600;'
+        f'                  color:{THEME["ink"]};margin-top:2px;'
+        f'                  letter-spacing:-0.01em">{full_name}</div>'
+        f'      <div style="font-size:0.88rem;color:{THEME["ink2"]};margin-top:2px">'
+        f'        {age_str}'
+        f'      </div>'
+        f'    </div>'
+        f'  </div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Contact info card — read-only or editable form ─────────────────
+    if not is_editing:
+        # ── READ-ONLY VIEW ──
+        # Use the same icon vocabulary as the Advisor tab so the two
+        # surfaces feel paired (mail = email, phone = phone, etc.). Icons
+        # are inlined here rather than refactored into helpers because the
+        # Advisor tab still has its own copies and merging would be a
+        # separate refactor.
+        _icon_mail_mi = (
+            f'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" '
+            f'stroke="{THEME["primary"]}" stroke-width="1.8" '
+            f'stroke-linecap="round" stroke-linejoin="round" '
+            f'style="flex-shrink:0">'
+            f'<rect x="3" y="5" width="18" height="14" rx="2"/>'
+            f'<path d="M3 7l9 6 9-6"/></svg>'
+        )
+        _icon_phone_mi = (
+            f'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" '
+            f'stroke="{THEME["primary"]}" stroke-width="1.8" '
+            f'stroke-linecap="round" stroke-linejoin="round" '
+            f'style="flex-shrink:0">'
+            f'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 '
+            f'19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 '
+            f'2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 '
+            f'9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 '
+            f'2.81.7A2 2 0 0 1 22 16.92z"/></svg>'
+        )
+        _icon_pin_mi = (
+            f'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" '
+            f'stroke="{THEME["primary"]}" stroke-width="1.8" '
+            f'stroke-linecap="round" stroke-linejoin="round" '
+            f'style="flex-shrink:0">'
+            f'<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>'
+            f'<circle cx="12" cy="10" r="3"/></svg>'
+        )
+
+        def _row(icon_svg, label, value):
+            shown = (value or "").strip() or "—"
+            return (
+                f'<div style="display:flex;align-items:center;gap:10px;'
+                f'            padding:10px 0;border-bottom:1px solid '
+                f'            {THEME["line"]}">'
+                f'  {icon_svg}'
+                f'  <div style="flex:1">'
+                f'    <div style="font-size:0.7rem;text-transform:uppercase;'
+                f'                letter-spacing:0.08em;color:{THEME["muted"]};'
+                f'                font-weight:600">{label}</div>'
+                f'    <div style="font-size:0.92rem;color:{THEME["ink"]};'
+                f'                margin-top:1px">{shown}</div>'
+                f'  </div>'
+                f'</div>'
+            )
+
+        addr_lines = []
+        if (user.get("address") or "").strip():
+            addr_lines.append(user["address"].strip())
+        if (user.get("zip") or "").strip():
+            addr_lines.append(user["zip"].strip())
+        addr_combined = ", ".join(addr_lines) if addr_lines else ""
+
+        st.markdown(
+            f'<div class="fr-card">'
+            f'  <div class="fr-eyebrow" style="margin-bottom:6px">Contact</div>'
+            f'  {_row(_icon_mail_mi,  "Email",   user.get("email", ""))}'
+            f'  {_row(_icon_phone_mi, "Phone",   user.get("phone", ""))}'
+            f'  {_row(_icon_pin_mi,   "Address", addr_combined)}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        if st.button("Edit info →", key="fr_my_info_edit_btn",
+                     use_container_width=True):
+            st.session_state[edit_key] = True
+            st.rerun()
+
+    else:
+        # ── EDIT FORM ──
+        st.markdown(
+            f'<div class="fr-card">'
+            f'  <div class="fr-eyebrow" style="margin-bottom:10px">'
+            f'    Edit your information</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        # Two-column layout for first/last name, then full-width for the rest.
+        n1, n2 = st.columns(2)
+        with n1:
+            new_first = st.text_input(
+                "First name",
+                value=(user.get("first_name") or ""),
+                key="fr_mi_first",
+            )
+        with n2:
+            new_last = st.text_input(
+                "Last name",
+                value=(user.get("last_name") or ""),
+                key="fr_mi_last",
+            )
+        # Email is read-only — it's the database key.
+        st.text_input(
+            "Email (cannot be changed here)",
+            value=(user.get("email") or ""),
+            disabled=True,
+            help="Your email is how you sign in. Contact your advisor "
+                 "if you need to change it.",
+            key="fr_mi_email_readonly",
+        )
+        new_phone = st.text_input(
+            "Phone",
+            value=(user.get("phone") or ""),
+            placeholder="(555) 555-5555",
+            key="fr_mi_phone",
+        )
+        new_addr = st.text_input(
+            "Address",
+            value=(user.get("address") or ""),
+            placeholder="123 Main St",
+            key="fr_mi_addr",
+        )
+        a1, a2 = st.columns([1, 1])
+        with a1:
+            new_zip = st.text_input(
+                "ZIP code",
+                value=(user.get("zip") or ""),
+                placeholder="12345",
+                key="fr_mi_zip",
+            )
+        with a2:
+            new_age = st.number_input(
+                "Age",
+                min_value=18, max_value=99, step=1,
+                value=int(user.get("age") or 45),
+                key="fr_mi_age",
+            )
+
+        # Action buttons — Save / Cancel
+        b1, b2 = st.columns([1, 2])
+        with b1:
+            if st.button("Cancel", key="fr_mi_cancel",
+                         use_container_width=True):
+                st.session_state[edit_key] = False
+                st.rerun()
+        with b2:
+            if st.button("Save changes", type="primary",
+                         key="fr_mi_save", use_container_width=True):
+                # ── Validation ──
+                errors = []
+                if not (new_first or "").strip():
+                    errors.append("First name is required.")
+                if not (new_last or "").strip():
+                    errors.append("Last name is required.")
+                phone_digits = "".join(
+                    ch for ch in (new_phone or "") if ch.isdigit()
+                )
+                if (new_phone or "").strip() and len(phone_digits) < 10:
+                    errors.append("Phone needs at least 10 digits.")
+                if (new_zip or "").strip():
+                    z = "".join(ch for ch in new_zip if ch.isdigit())
+                    if len(z) not in (5, 9):
+                        errors.append(
+                            "ZIP should be 5 digits (12345) or 9 (12345-6789)."
+                        )
+                if errors:
+                    for e in errors:
+                        st.error(e)
+                    return
+
+                # Persist
+                ok, msg = update_user(user.get("email", ""), {
+                    "first_name": new_first,
+                    "last_name":  new_last,
+                    "phone":      new_phone,
+                    "address":    new_addr,
+                    "zip":        new_zip,
+                    "age":        int(new_age),
+                })
+                if not ok:
+                    st.error(msg or "Could not save changes.")
+                    return
+
+                # Update the in-memory user object so the rest of the
+                # session sees the new values immediately. Re-fetching
+                # from disk also works but is one extra I/O.
+                refreshed = find_user(user.get("email", ""))
+                if refreshed:
+                    st.session_state.fr_user = refreshed
+
+                st.session_state[edit_key] = False
+                st.session_state.fr_flash = "Your information was updated."
+                st.rerun()
+
+
 def _render_advisor_tab():
     """Full advisor profile card. Replaces the old single-line "Book your
     follow-up" CTA — now the client can see who their advisor actually is,
-    where the firm is based, and reach them through any channel they prefer.
-
-    Profile is sourced live from firm_settings.json (written by the advisor
-    app's Firm Branding panel) on every render — so updates flow through
-    without needing to restart the portal."""
-    a = get_advisor()
-
-    # ── Branding diagnostics (collapsed expander) ──────────────────────
-    # Surfaces exactly which file path this portal instance is looking at,
-    # whether the file exists, and whether the images exist. Helpful when
-    # the advisor info isn't populating: usually means the portal and the
-    # advisor app are launched from different folders, so they're reading
-    # different firm_settings.json files.
-    _fs_raw = _load_firm_settings()
-    _logo_exists  = os.path.exists(FIRM_LOGO_PATH)
-    _photo_exists = os.path.exists(ADVISOR_PHOTO_PATH)
-    _settings_exists = os.path.exists(FIRM_SETTINGS_FILE)
-    _populated_keys = sorted(
-        k for k, v in (_fs_raw or {}).items()
-        if isinstance(v, str) and v.strip()
-    )
-    with st.expander("⚙ Branding diagnostics", expanded=False):
-        st.caption(
-            "If the advisor info or logo isn't showing, this panel tells you why. "
-            "The most common cause is the advisor app and this portal being "
-            "launched from different folders — they need to live side-by-side "
-            "so they share the same firm_settings.json."
-        )
-        st.markdown(
-            f"**Working directory (this portal):** `{_APP_DIR}`  \n"
-            f"**Looking for:**  \n"
-            f"&nbsp;&nbsp;`{FIRM_SETTINGS_FILE}` — "
-            f"{'✅ found' if _settings_exists else '❌ missing'}  \n"
-            f"&nbsp;&nbsp;`{FIRM_LOGO_PATH}` — "
-            f"{'✅ found' if _logo_exists else '❌ missing (using default SVG)'}  \n"
-            f"&nbsp;&nbsp;`{ADVISOR_PHOTO_PATH}` — "
-            f"{'✅ found' if _photo_exists else '❌ missing (using default avatar)'}"
-        )
-        if _settings_exists:
-            if _populated_keys:
-                st.markdown(
-                    "**Populated fields in firm_settings.json:**  \n"
-                    + ", ".join(f"`{k}`" for k in _populated_keys)
-                )
-            else:
-                st.warning(
-                    "firm_settings.json exists but is empty. Open the advisor "
-                    "app → Client Records → 🎨 Firm Branding, fill in the "
-                    "fields, and click 💾 Save firm details."
-                )
-        else:
-            st.warning(
-                "No firm_settings.json found. Either (a) you haven't saved "
-                "branding yet on the advisor app, or (b) the advisor app is "
-                "running from a different folder than this portal. "
-                "Confirm both apps are launched from the same directory."
-            )
-
-    # Optional firm-logo strip across the top of the card. Renders only
-    # when the firm has uploaded a logo; otherwise this whole row collapses
-    # so the existing photo + name layout takes its full place.
-    _firm_logo_strip = ""
-    if a.get("firm_logo_html_large"):
-        _firm_logo_strip = (
-            f'<div style="display:flex;align-items:center;gap:10px;'
-            f'            padding-bottom:14px;margin-bottom:14px;'
-            f'            border-bottom:1px solid {THEME["line"]}">'
-            f'  {a["firm_logo_html_large"]}'
-            f'  <div style="font-size:0.78rem;font-weight:600;'
-            f'              color:{THEME["muted"]};letter-spacing:0.06em;'
-            f'              text-transform:uppercase">{a["firm"]}</div>'
-            f'</div>'
-        )
+    where the firm is based, and reach them through any channel they prefer."""
+    a = ADVISOR
 
     # Header with photo + name + title
     st.markdown(
         f'<div class="fr-card">'
-        f'  {_firm_logo_strip}'
         f'  <div style="display:flex;gap:18px;align-items:center">'
-        f'    <div style="flex-shrink:0">{a["photo_html"]}</div>'
+        f'    <div style="flex-shrink:0">{a["photo_svg"]}</div>'
         f'    <div style="flex:1">'
         f'      <div class="fr-eyebrow">Your advisor</div>'
         f'      <div style="font-size:1.15rem;font-weight:600;color:{THEME["ink"]};'
@@ -2763,7 +2799,7 @@ def render_edit_profile():
             f'<div class="fr-eyebrow">Risk Profile</div>'
             f'<h1 class="fr-headline" style="font-size:1.6rem">Tell us about yourself</h1>'
             f'<div style="color:{THEME["ink2"]};font-size:0.92rem">'
-            f'  23 questions across 5 sections — Context, Goals, Horizon, Tolerance, Outlook.'
+            f'  18 questions across 5 sections — Context, Goals, Horizon, Tolerance, Outlook.'
             f'</div>',
             unsafe_allow_html=True,
         )
