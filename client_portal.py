@@ -675,14 +675,12 @@ PROFILE_QUESTIONS = [
     # shift their risk profile based on transient mood. The remaining
     # outlook questions (esg_preference, priorities) capture preferences
     # that are stable over time.
-    {"id": "esg_preference", "section": "Outlook",
-     "text": "How important is ESG / sustainable investing to you?",
-     "type": "select", "options": [
-        ("Not a factor",                                     60),
-        ("Nice to have — won't sacrifice returns",           55),
-        ("Important — willing to accept some tradeoff",      50),
-        ("Critical — must be ESG-aligned",                   45),
-    ]},
+    #
+    # 2026-04-30 follow-up: esg_preference removed too. Advisor feedback
+    # was that the standalone ESG question over-weighted what's a niche
+    # preference for most clients, while ESG / values alignment remains
+    # available as one of the eight options in the priorities multi-pick
+    # — so a client who genuinely cares about it can still flag it there.
     {"id": "priorities", "section": "Outlook",
      "text": "Which of these matter MOST to you? (pick exactly 3)",
      "type": "multi", "options": [
@@ -994,7 +992,7 @@ def render_login():
     onboarding screens based on fr_step:
         welcome  → landing page with single CTA
         prequiz  → first/last name + age (only fields needed before quiz)
-        quiz     → 15 questions across 5 sections (Goals included)
+        quiz     → 14 questions across 5 sections (Goals included)
         results  → score reveal (no gate yet — show first, ask second)
         register → email + phone (req'd) + address + zip (optional) → save
     """
@@ -1583,9 +1581,13 @@ def _screen_register():
                         print(f"[hubspot_sync] sync exception: {_hs_e}")
 
                 # Log them in and land on the dashboard.
+                # No flash banner here — the dashboard's greeting already
+                # acknowledges the user, and stacking a green
+                # "Profile saved — welcome!" banner on top added visual
+                # noise without information. (HubSpot sync messages, if
+                # any, are still printed to logs for debugging — just not
+                # shown as a UI banner.)
                 st.session_state.fr_user = user
-                st.session_state.fr_flash = (
-                    "Profile saved — welcome!" + hs_msg)
                 st.rerun()
 
 
@@ -1671,7 +1673,7 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             f'  </div>'
             f'  <h3 style="margin:0 0 6px">Take your first checkup</h3>'
             f'  <p style="color:{THEME["ink2"]};margin:0 0 18px;font-size:0.93rem">'
-            f'    15 questions in 5 short sections — about 4 minutes.'
+            f'    14 questions in 5 short sections — about 4 minutes.'
             f'  </p>'
             f'</div>',
             unsafe_allow_html=True,
@@ -2816,7 +2818,7 @@ def render_edit_profile():
             f'<div class="fr-eyebrow">Risk Profile</div>'
             f'<h1 class="fr-headline" style="font-size:1.6rem">Tell us about yourself</h1>'
             f'<div style="color:{THEME["ink2"]};font-size:0.92rem">'
-            f'  15 questions across 5 sections — Context, Goals, Horizon, Tolerance, Outlook.'
+            f'  14 questions across 5 sections — Context, Goals, Horizon, Tolerance, Outlook.'
             f'</div>',
             unsafe_allow_html=True,
         )
