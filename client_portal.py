@@ -201,8 +201,9 @@ st.markdown(
             font-size: 0.72rem; color: {THEME['muted']};
         }}
         .fr-mono {{
-            font-family: 'IBM Plex Mono', ui-monospace, monospace;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             font-weight: 600;
+            font-variant-numeric: tabular-nums;
         }}
         .fr-chip {{
             display: inline-flex; align-items: center; gap: 6px;
@@ -846,7 +847,7 @@ def make_risk_ring(score: int, height: int = 320) -> go.Figure:
     fig.add_annotation(x=0, y=0.34, text="RISK SCORE", showarrow=False,
         font=dict(family="Inter", size=11, color=THEME["muted"]))
     fig.add_annotation(x=0, y=0.0, text=str(score), showarrow=False,
-        font=dict(family="IBM Plex Mono", size=64, color=THEME["ink"]))
+        font=dict(family="Inter", size=64, color=THEME["ink"]))
     fig.add_annotation(x=0, y=-0.42, text=f"  {label.upper()}  ",
         showarrow=False, bgcolor=band_soft, borderpad=6,
         font=dict(family="Inter", size=11, color=band_color))
@@ -1190,7 +1191,7 @@ def _screen_quiz():
         f'      </span>'
         f'    </div>'
         f'    <span style="font-size:0.78rem;color:{THEME["muted"]};'
-        f'                 font-family:\'IBM Plex Mono\',monospace">'
+        f'                 font-variant-numeric:tabular-nums">'
         f'      {idx+1} / {total}'
         f'    </span>'
         f'  </div>'
@@ -1392,7 +1393,7 @@ def _screen_results():
             f'                display:flex;flex-direction:column;align-items:center;'
             f'                justify-content:center">'
             f'      {_icon_lock_lg}'
-            f'      <div style="font-family:\'IBM Plex Mono\',monospace;'
+            f'      <div style="font-family:\'Inter\',-apple-system,sans-serif;'
             f'                  font-size:2rem;color:{THEME["muted"]};'
             f'                  letter-spacing:-0.02em;font-weight:600;'
             f'                  margin-top:4px">'
@@ -1764,11 +1765,10 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
                 when_text = "not yet"
             st.markdown(
                 f'<div style="text-align:center;margin-top:14px;'
-                f'            font-size:1.05rem;color:{THEME["ink2"]};'
-                f'            letter-spacing:-0.005em;line-height:1.3">'
-                f'  Last checkup: <span style="font-weight:700;'
-                f'                              font-size:1.5rem;'
-                f'                              color:{THEME["primary"]}">'
+                f'            font-size:1.5rem;font-weight:700;'
+                f'            color:{THEME["ink2"]};'
+                f'            letter-spacing:-0.015em;line-height:1.3">'
+                f'  Last checkup: <span style="color:{THEME["primary"]}">'
                 f'    {when_text}</span>'
                 f'</div>',
                 unsafe_allow_html=True,
