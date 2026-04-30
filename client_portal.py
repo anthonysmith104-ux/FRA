@@ -1622,18 +1622,9 @@ def render_dashboard():
     hour = datetime.now().hour
     greeting = ("Good morning" if hour < 12 else
                 "Good afternoon" if hour < 18 else "Good evening")
-    updated_str = profile.get("updated_at") or profile.get("date_completed")
-    if updated_str:
-        try:
-            d = datetime.fromisoformat(str(updated_str).replace(" ", "T")[:16])
-            days_ago = (datetime.now() - d).days
-            if days_ago == 0: when_text = "earlier today"
-            elif days_ago == 1: when_text = "yesterday"
-            else: when_text = f"{days_ago} days ago"
-        except Exception:
-            when_text = "recently"
-    else:
-        when_text = "not yet"
+    # The "Last checkup: ..." annotation moved to _render_home_tab and is
+    # computed there from the profile dict — keeping it close to where it
+    # renders.
 
     st.markdown(
         f'<div style="margin:18px 0 0 2px">'
@@ -1744,6 +1735,29 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             # secondary "ink2" theme tone (used by .fr-greeting and other
             # supporting text) so it reads as a soft annotation rather
             # than competing with the button.
+            #
+            # when_text is computed locally here rather than threaded in
+            # from render_dashboard() — _render_home_tab is a separate
+            # function and can't see the parent's locals. Profile dict
+            # is what's actually in scope and that's all we need.
+            _updated_str = (profile.get("updated_at")
+                            or profile.get("date_completed"))
+            if _updated_str:
+                try:
+                    _d = datetime.fromisoformat(
+                        str(_updated_str).replace(" ", "T")[:16]
+                    )
+                    _days_ago = (datetime.now() - _d).days
+                    if _days_ago == 0:
+                        when_text = "earlier today"
+                    elif _days_ago == 1:
+                        when_text = "yesterday"
+                    else:
+                        when_text = f"{_days_ago} days ago"
+                except Exception:
+                    when_text = "recently"
+            else:
+                when_text = "not yet"
             st.markdown(
                 f'<div style="text-align:center;margin-top:10px;'
                 f'            font-size:0.78rem;color:{THEME["ink2"]};'
