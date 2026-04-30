@@ -420,9 +420,9 @@ def update_user(email: str, patch: dict) -> tuple[bool, str]:
         if k not in users:
             return
         found["yes"] = True
-        # Merge the patch onto the existing record. Drop the email key
-        # if present so a malformed patch can't accidentally re-key the
-        # entry. Trim whitespace on string fields to keep the data clean.
+        # Drop email from the patch if present so a malformed patch
+        # can't accidentally re-key the entry. Trim whitespace on
+        # string fields to keep the data clean.
         p.pop("email", None)
         for fk, fv in p.items():
             if isinstance(fv, str):
@@ -519,8 +519,15 @@ def get_live_quotes(tickers) -> dict:
 # PROFILE QUESTIONS
 # ─────────────────────────────────────────────────────────────────────────────
 PROFILE_QUESTIONS = [
+    # ─────────────────────────────────────────────────────────────────────
+    # All question `text` fields are phrased as proper questions ending
+    # in "?" — clients found a few of the legacy fragments ("Your view
+    # on US equity markets...") read awkwardly because the answer
+    # context didn't make clear they were prompts. Every entry is now
+    # a complete interrogative.
+    # ─────────────────────────────────────────────────────────────────────
     {"id": "age", "section": "Context",
-     "text": "Your current age",
+     "text": "What is your current age?",
      "type": "number", "min": 18, "max": 99, "step": 1, "default": 45,
      "scoring": "age"},
     {"id": "retirement_age", "section": "Context",
@@ -539,7 +546,7 @@ PROFILE_QUESTIONS = [
         ("Student",                           60),
     ]},
     {"id": "income_band", "section": "Context",
-     "text": "Household annual income (gross)",
+     "text": "What is your household annual income (gross)?",
      # Only ONE dollar sign per option — Streamlit renders radio labels
      # through markdown, and a paired `$...$` is parsed as inline LaTeX
      # (rendering the inside in green monospace math font). Standard
@@ -563,7 +570,7 @@ PROFILE_QUESTIONS = [
         ("Uncertain — major change expected",   30),
     ]},
     {"id": "net_worth", "section": "Context",
-     "text": "Liquid cash (excluding retirement)",
+     "text": "What is your liquid cash (excluding retirement)?",
      # See income_band note re: single dollar sign per option.
      "type": "select", "options": [
         ("Under $100,000",              30),
@@ -601,7 +608,7 @@ PROFILE_QUESTIONS = [
     ]},
 
     {"id": "withdrawal_horizon", "section": "Horizon",
-     "text": "When will access to funds within your investment/retirement portfolio?",
+     "text": "When will you need access to funds within your investment/retirement portfolio?",
      "type": "select", "options": [
         ("Less than 2 years",    20),
         ("2 – 5 years",          35),
@@ -620,7 +627,7 @@ PROFILE_QUESTIONS = [
         ("Not sure yet",       55),
     ]},
     {"id": "emergency_fund", "section": "Horizon",
-     "text": "Months of expenses in cash outside your investment/retirement portfolio",
+     "text": "How many months of expenses do you have in cash outside your investment/retirement portfolio?",
      "type": "select", "options": [
         ("Less than 1 month",  20),
         ("1 – 3 months",       40),
@@ -633,15 +640,15 @@ PROFILE_QUESTIONS = [
     # over what the withdrawal_horizon and emergency_fund questions already
     # capture, and clients found it confusing when the answer didn't match
     # their actual mental model of upcoming spending.
+
     # drawdown_reaction and experience were removed in the 2026-04-30
     # questionnaire trim. drawdown_reaction was a hypothetical that
-    # over-weighted self-perceived behavior; experience adds
-    # subjective signal we don't act on. The remaining tolerance
-    # questions (loss_floor, growth_vs_safety) measure tolerance
-    # through concrete numeric tradeoffs which clients answer more
-    # consistently.
+    # over-weighted self-perceived behavior; experience adds subjective
+    # signal we don't act on. The remaining tolerance questions
+    # (loss_floor, growth_vs_safety) measure tolerance through concrete
+    # numeric tradeoffs which clients answer more consistently.
     {"id": "loss_floor", "section": "Tolerance",
-     "text": "Largest one-year loss you could accept before changing strategy",
+     "text": "What is the largest one-year loss you could accept before changing strategy?",
      "type": "select", "options": [
         ("5% or less",         20),
         ("Up to 10%",          40),
@@ -650,41 +657,22 @@ PROFILE_QUESTIONS = [
         ("More than 35%",      95),
     ]},
     {"id": "growth_vs_safety", "section": "Tolerance",
-     "text": "Pick the portfolio that best matches your preference",
+     "text": "Of these portfolios, which best matches your preference?",
      "type": "select", "options": [
         ("Best year +6%  / worst year -2%",    20),
         ("Best year +12% / worst year -8%",    45),
         ("Best year +20% / worst year -18%",   65),
         ("Best year +30% / worst year -30%",   85),
     ]},
-    {"id": "market_view", "section": "Outlook",
-     "text": "Your view on US equity markets over the next 3 years",
-     "type": "select", "options": [
-        ("Significantly higher",   75),
-        ("Modestly higher",        65),
-        ("Roughly flat",           50),
-        ("Modestly lower",         40),
-        ("Significantly lower",    30),
-        ("No strong view",         55),
-    ]},
-    {"id": "inflation_concern", "section": "Outlook",
-     "text": "How concerned are you about inflation eroding your savings?",
-     "type": "select", "options": [
-        ("Not concerned",        70),
-        ("Slightly concerned",   60),
-        ("Moderately concerned", 50),
-        ("Very concerned",       45),
-        ("Extremely concerned",  40),
-    ]},
-    {"id": "recession_concern", "section": "Outlook",
-     "text": "How likely is a recession in the next 18 months?",
-     "type": "select", "options": [
-        ("Very unlikely",      70),
-        ("Somewhat unlikely",  60),
-        ("About 50/50",        50),
-        ("Somewhat likely",    45),
-        ("Very likely",        40),
-    ]},
+    # market_view, inflation_concern, and recession_concern were removed
+    # in the 2026-04-30 follow-up trim. These were "outlook" questions
+    # asking the client to forecast macro conditions — useful in theory
+    # but in practice they introduced more noise than signal: clients
+    # tended to answer based on whatever they read in the news that
+    # week, and the scoring weight (15% of overall) was big enough to
+    # shift their risk profile based on transient mood. The remaining
+    # outlook questions (esg_preference, priorities) capture preferences
+    # that are stable over time.
     {"id": "esg_preference", "section": "Outlook",
      "text": "How important is ESG / sustainable investing to you?",
      "type": "select", "options": [
@@ -709,7 +697,7 @@ PROFILE_QUESTIONS = [
 
 
 def score_profile(answers: dict) -> dict:
-    """Capacity 50% + Tolerance 35% + Outlook 15% — same weighting as prototype.
+    """Capacity 60% + Tolerance 40% — outlook dropped in 2026-04-30 trim.
 
     Goals questions feed into capacity because what the money is FOR affects
     how much risk the portfolio reasonably needs to take. Wealth-building and
@@ -719,8 +707,7 @@ def score_profile(answers: dict) -> dict:
     section_scores = {"capacity": [], "tolerance": [], "outlook": []}
     # Capacity = the financial cushion / horizon that lets the portfolio
     # take risk. After 2026-04-30 trim: dropped major_expense,
-    # primary_goal, goal_amount, goal_timeline (3-year expense + specific-
-    # goal questions removed).
+    # primary_goal, goal_amount, goal_timeline.
     capacity_qs  = {"occupation","income_band","income_stability","net_worth",
                     "withdrawal_horizon","withdrawal_rate","emergency_fund",
                     # Goals
@@ -729,7 +716,14 @@ def score_profile(answers: dict) -> dict:
     # volatility. After 2026-04-30 trim: dropped drawdown_reaction
     # (hypothetical-behavior bias) and experience (subjective signal).
     tolerance_qs = {"loss_floor","growth_vs_safety"}
-    outlook_qs   = {"market_view","inflation_concern","recession_concern"}
+    # Outlook = client's macro view. After 2026-04-30 follow-up trim:
+    # dropped market_view, inflation_concern, recession_concern. The
+    # set is empty for now — esg_preference and priorities don't fit
+    # the "outlook" forecasting bucket; they're more about preferences
+    # and feed scoring elsewhere. With nothing in the outlook bucket,
+    # the overall score weighting collapses to capacity 50% +
+    # tolerance 35% (rebalanced below).
+    outlook_qs   = set()
 
     for q in PROFILE_QUESTIONS:
         qid = q["id"]; ans = answers.get(qid)
@@ -759,7 +753,14 @@ def score_profile(answers: dict) -> dict:
     cap = _avg(section_scores["capacity"])
     tol = _avg(section_scores["tolerance"])
     out = _avg(section_scores["outlook"])
-    overall = int(round(min(99, max(1, 0.50*cap + 0.35*tol + 0.15*out))))
+    # Weighting: with the 2026-04-30 follow-up trim outlook has no
+    # questions feeding it, so it's dropped from the overall formula.
+    # Capacity and tolerance rebalance from 50/35 (out of 85) to a
+    # clean 60/40 split. If outlook questions are added back later,
+    # restore the third term — old formula was 0.50*cap + 0.35*tol +
+    # 0.15*out. The outlook_score field is still returned in the
+    # result dict (defaults to 50) so any UI reading it still works.
+    overall = int(round(min(99, max(1, 0.60*cap + 0.40*tol))))
     return {
         "overall_score":   overall,
         "capacity_score":  int(round(cap)),
@@ -991,7 +992,7 @@ def render_login():
     onboarding screens based on fr_step:
         welcome  → landing page with single CTA
         prequiz  → first/last name + age (only fields needed before quiz)
-        quiz     → 18 questions across 5 sections (Goals included)
+        quiz     → 15 questions across 5 sections (Goals included)
         results  → score reveal (no gate yet — show first, ask second)
         register → email + phone (req'd) + address + zip (optional) → save
     """
@@ -1633,7 +1634,6 @@ def render_dashboard():
         unsafe_allow_html=True,
     )
 
-    # ── Real tabs replace the old visual-only bottom nav ───────────────────
     # Order matches the natural reading flow: high-level summary → portfolio
     # detail → forward-looking plan → personal info → human contact. "My Info"
     # was added in the 2026-04-30 update so clients can edit their own
@@ -1669,7 +1669,7 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             f'  </div>'
             f'  <h3 style="margin:0 0 6px">Take your first checkup</h3>'
             f'  <p style="color:{THEME["ink2"]};margin:0 0 18px;font-size:0.93rem">'
-            f'    18 questions in 5 short sections — about 5 minutes.'
+            f'    15 questions in 5 short sections — about 4 minutes.'
             f'  </p>'
             f'</div>',
             unsafe_allow_html=True,
@@ -1736,10 +1736,10 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             # supporting text) so it reads as a soft annotation rather
             # than competing with the button.
             #
-            # when_text is computed locally here rather than threaded in
-            # from render_dashboard() — _render_home_tab is a separate
-            # function and can't see the parent's locals. Profile dict
-            # is what's actually in scope and that's all we need.
+            # when_text is computed locally here from the `profile` param
+            # rather than threaded in from render_dashboard() — this
+            # function has its own scope and can't see the parent's
+            # locals. Profile is passed in, so it's all we need.
             _updated_str = (profile.get("updated_at")
                             or profile.get("date_completed"))
             if _updated_str:
@@ -2483,10 +2483,7 @@ def _render_my_info_tab():
     if not is_editing:
         # ── READ-ONLY VIEW ──
         # Use the same icon vocabulary as the Advisor tab so the two
-        # surfaces feel paired (mail = email, phone = phone, etc.). Icons
-        # are inlined here rather than refactored into helpers because the
-        # Advisor tab still has its own copies and merging would be a
-        # separate refactor.
+        # surfaces feel paired (mail = email, phone = phone, etc.).
         _icon_mail_mi = (
             f'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" '
             f'stroke="{THEME["primary"]}" stroke-width="1.8" '
@@ -2813,7 +2810,7 @@ def render_edit_profile():
             f'<div class="fr-eyebrow">Risk Profile</div>'
             f'<h1 class="fr-headline" style="font-size:1.6rem">Tell us about yourself</h1>'
             f'<div style="color:{THEME["ink2"]};font-size:0.92rem">'
-            f'  18 questions across 5 sections — Context, Goals, Horizon, Tolerance, Outlook.'
+            f'  15 questions across 5 sections — Context, Goals, Horizon, Tolerance, Outlook.'
             f'</div>',
             unsafe_allow_html=True,
         )
