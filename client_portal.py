@@ -3180,6 +3180,19 @@ def render_edit_holdings():
 # ─────────────────────────────────────────────────────────────────────────────
 # ROUTER
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Diagnostic hook: if the URL contains ?selftest=1, run the data_store
+# selftest and stop. Lets us verify GitHub credentials are working end-to-end
+# without touching any real app flow. Remove this block once data_store is
+# wired in for real and the selftest is no longer needed.
+if st.query_params.get("selftest") == "1":
+    try:
+        import data_store
+        data_store.render_selftest_page()
+    except Exception as e:
+        st.error(f"Failed to import data_store: {type(e).__name__}: {e}")
+    st.stop()
+
 if st.session_state.fr_user is None:
     render_login()
 else:
