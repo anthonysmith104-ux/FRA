@@ -23,6 +23,7 @@ Files (anchored to this script's directory):
 from __future__ import annotations
 
 import os
+import json
 from datetime import datetime, date
 from typing import Optional
 
@@ -82,8 +83,13 @@ CLIENT_GOALS_FILE    = _data_path("client_goals.json")
 CLIENT_BUDGETS_FILE  = _data_path("client_budgets.json")
 
 # ── ADVISOR PROFILE ──────────────────────────────────────────────────────────
-# Single advisor profile shown on the Advisor tab. Edit these fields to swap
-# the photo, contact info, or company website without touching the UI code.
+# Default advisor profile — used as a fallback if firm_settings.json is
+# missing or unreadable. The JSON file is loaded below and used to override
+# any of these fields, so changes to the firm/advisor info don't require a
+# code change. Both apps (advisor + portal) read the same firm_settings.json
+# as a one-way sync source of truth: edit the JSON in the repo (or via the
+# advisor app's Settings tab in a future revision) and the portal picks up
+# the changes on next container reboot.
 ADVISOR = {
     "name":    "Sarah Whitfield, CFP®",
     "title":   "Senior Financial Advisor",
@@ -110,6 +116,39 @@ ADVISOR = {
         '</svg>'
     ),
 }
+
+
+# Try to load firm_settings.json (committed in the repo, written by the
+# advisor app). The JSON file uses different field names than the ADVISOR
+# dict (e.g. `advisor_name` vs `name`), so we map them explicitly. Any
+# field missing from the JSON falls back to the default above.
+def _load_firm_settings_into_advisor():
+    path = _data_path("firm_settings.json")
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            settings = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return
+    # Map JSON field names → ADVISOR dict keys. JSON uses verbose names
+    # like `advisor_name`; the ADVISOR dict uses short names like `name`.
+    field_map = {
+        "advisor_name":  "name",
+        "advisor_title": "title",
+        "firm_name":     "firm",
+        "advisor_email": "email",
+        "advisor_phone": "phone",
+        "firm_website":  "website",
+        "firm_address":  "address",
+        "advisor_bio":   "bio",
+    }
+    for json_key, advisor_key in field_map.items():
+        v = settings.get(json_key)
+        if v is not None and str(v).strip():
+            ADVISOR[advisor_key] = str(v).strip()
+
+_load_firm_settings_into_advisor()
 
 st.set_page_config(
     page_title="Foresight Risk Analytics",
