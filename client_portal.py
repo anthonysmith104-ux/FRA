@@ -66,10 +66,19 @@ except Exception as _e:
     print(f"[hubspot_sync] import failed: {_HUBSPOT_IMPORT_ERROR}")
 
 from shared import (
-    load_json as _shared_load_json,
-    update_json as _shared_update_json,
     is_valid_email, normalize_email,
     score_to_label, score_to_allocation,
+)
+
+# All shared JSON I/O now goes through data_store, which transparently
+# reads/writes to a GitHub-backed shared repo (configured in Streamlit
+# secrets) so the client portal and advisor app see the same data.
+# When secrets aren't configured (local dev), data_store falls back to
+# local-disk JSON in the same paths shared.load_json used. Drop-in
+# replacement — same signatures.
+from data_store import (
+    load_json   as _shared_load_json,
+    update_json as _shared_update_json,
 )
 
 # ── DATA FILE LOCATIONS ──────────────────────────────────────────────────────
@@ -118,21 +127,20 @@ ADVISOR = {
 }
 
 
-# Try to load firm_settings.json (committed in the repo, written by the
-# advisor app). The JSON file uses different field names than the ADVISOR
-# dict (e.g. `advisor_name` vs `name`), so we map them explicitly. Any
-# field missing from the JSON falls back to the default above.
+# Try to load firm_settings.json from the shared store. The JSON file uses
+# different field names than the ADVISOR dict (e.g. `advisor_name` vs
+# `name`), so we map them explicitly. Any field missing from the JSON
+# falls back to the hardcoded default above.
+#
+# Reads via data_store mean this picks up changes the advisor app makes,
+# without requiring a manual git commit + redeploy of the portal.
 def _load_firm_settings_into_advisor():
-    path = _data_path("firm_settings.json")
-    if not os.path.exists(path):
+    settings = _shared_load_json(
+        _data_path("firm_settings.json"),
+        default={},
+    )
+    if not isinstance(settings, dict) or not settings:
         return
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            settings = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return
-    # Map JSON field names → ADVISOR dict keys. JSON uses verbose names
-    # like `advisor_name`; the ADVISOR dict uses short names like `name`.
     field_map = {
         "advisor_name":  "name",
         "advisor_title": "title",
@@ -3192,6 +3200,17 @@ if st.query_params.get("selftest") == "1":
     except Exception as e:
         st.error(f"Failed to import data_store: {type(e).__name__}: {e}")
     st.stop()
+
+# Diagnostic banner — visible only when the data layer is in local-fallback
+# mode. Without this, a misconfigured deploy silently reads/writes to its
+# own ephemeral disk and never syncs with the advisor app.
+import data_store as _ds
+if not _ds.is_remote():
+    st.warning(
+        "⚠️ Shared data layer not connected — running in local-only mode. "
+        "Saves won't sync to the advisor app. "
+        "Add [github] secrets in Settings → Secrets to enable sync."
+    )
 
 if st.session_state.fr_user is None:
     render_login()
