@@ -1713,21 +1713,18 @@ def render_dashboard():
     holdings     = all_holdings.get(ck, {}) or {}
 
     # ── App bar ─────────────────────────────────────────────────────────────
-    bar_l, bar_r = st.columns([4, 1])
-    with bar_l:
-        st.markdown(
-            f'<div style="display:flex;align-items:center;gap:10px;padding-top:6px">'
-            f'  {logo_mark(THEME["primary"], 88)}'
-            f'  <span style="font-size:1.5rem;font-weight:700;letter-spacing:0.06em;'
-            f'               color:{THEME["ink"]};text-transform:uppercase">'
-            f'    {ADVISOR["firm"]}'
-            f'  </span>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-    with bar_r:
-        if st.button("Sign out", key="fr_logout_btn", use_container_width=True):
-            _logout()
+    # Sign-out button moved to the bottom of the page (after the tabs) so
+    # the top of the screen is reserved for branding and the user's data.
+    st.markdown(
+        f'<div style="display:flex;align-items:center;gap:10px;padding-top:6px">'
+        f'  {logo_mark(THEME["primary"], 88)}'
+        f'  <span style="font-size:1.5rem;font-weight:700;letter-spacing:0.06em;'
+        f'               color:{THEME["ink"]};text-transform:uppercase">'
+        f'    {ADVISOR["firm"]}'
+        f'  </span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
     if st.session_state.fr_flash:
         st.success(st.session_state.fr_flash)
@@ -1770,6 +1767,20 @@ def render_dashboard():
     with tab_advisor:
         _render_advisor_tab()
 
+    # ── Sign out (bottom of page) ──────────────────────────────────────────
+    # Placed after the tabs so it sits at the bottom of whichever tab the
+    # user is on. Constrained-width so it doesn't span the whole viewport
+    # — same column proportions as the welcome screen's CTA for visual
+    # consistency. Subtle styling (not type="primary") since this is a
+    # destructive/exit action, not the primary thing the user came to do.
+    st.markdown('<div style="height:32px"></div>', unsafe_allow_html=True)
+    _so_l, _so_c, _so_r = st.columns([1, 2, 1])
+    with _so_c:
+        if st.button("Sign out", key="fr_logout_btn",
+                     use_container_width=True):
+            _logout()
+    st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
+
 
 def _render_home_tab(profile: dict, holdings: dict, ck: str):
     """Original dashboard body — score hero, vitals snapshot, trend, holdings.
@@ -1801,9 +1812,15 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
         # rendering as an empty padded white box above the content.
         h1, h2 = st.columns([1.05, 1])
         with h1:
+            # `staticPlot=True` disables ALL chart interactions (zoom, pan,
+            # scroll-zoom, hover-zoom). This stops the chart from intercepting
+            # touch/scroll gestures when the user is trying to scroll the
+            # page — without it, dragging within the chart's bounding box
+            # pans the chart instead of scrolling. The risk ring is purely
+            # presentational; there's nothing to hover or zoom into.
             st.plotly_chart(make_risk_ring(overall, height=300),
                 use_container_width=True,
-                config={"displayModeBar": False})
+                config={"displayModeBar": False, "staticPlot": True})
         with h2:
             cap = int(profile.get("capacity_score", 50))
             tol = int(profile.get("tolerance_score", 50))
@@ -2155,9 +2172,11 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             f'</div>',
             unsafe_allow_html=True,
         )
+        # See risk ring above — staticPlot stops the chart from eating
+        # touch scroll events.
         st.plotly_chart(make_sparkline(series, height=120),
             use_container_width=True,
-            config={"displayModeBar": False})
+            config={"displayModeBar": False, "staticPlot": True})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
