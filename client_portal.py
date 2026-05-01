@@ -1285,8 +1285,8 @@ def _screen_quiz():
         f'  <div style="display:flex;align-items:center;justify-content:space-between;'
         f'              margin-bottom:14px">'
         f'    <div style="display:flex;align-items:center;gap:10px">'
-        f'      {logo_mark(THEME["primary"], 22)}'
-        f'      <span style="font-size:0.78rem;font-weight:600;letter-spacing:0.12em;'
+        f'      {logo_mark(THEME["primary"], 88)}'
+        f'      <span style="font-size:1.5rem;font-weight:700;letter-spacing:0.06em;'
         f'                   color:{THEME["ink"]};text-transform:uppercase">'
         f'        {ADVISOR["firm"]}'
         f'      </span>'
@@ -1444,8 +1444,8 @@ def _screen_results():
     st.markdown(
         f'<div style="max-width:560px;margin:20px auto 0;padding:0 28px">'
         f'  <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
-        f'    {logo_mark(THEME["primary"], 22)}'
-        f'    <span style="font-size:0.78rem;font-weight:600;letter-spacing:0.12em;'
+        f'    {logo_mark(THEME["primary"], 88)}'
+        f'    <span style="font-size:1.5rem;font-weight:700;letter-spacing:0.06em;'
         f'                 color:{THEME["ink"]};text-transform:uppercase">'
         f'      {ADVISOR["firm"]}'
         f'    </span>'
@@ -1542,8 +1542,8 @@ def _screen_register():
     st.markdown(
         f'<div style="max-width:520px;margin:20px auto 0;padding:0 28px">'
         f'  <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
-        f'    {logo_mark(THEME["primary"], 22)}'
-        f'    <span style="font-size:0.78rem;font-weight:600;letter-spacing:0.12em;'
+        f'    {logo_mark(THEME["primary"], 88)}'
+        f'    <span style="font-size:1.5rem;font-weight:700;letter-spacing:0.06em;'
         f'                 color:{THEME["ink"]};text-transform:uppercase">'
         f'      {ADVISOR["firm"]}'
         f'    </span>'
@@ -1709,8 +1709,8 @@ def render_dashboard():
     with bar_l:
         st.markdown(
             f'<div style="display:flex;align-items:center;gap:10px;padding-top:6px">'
-            f'  {logo_mark(THEME["primary"], 22)}'
-            f'  <span style="font-size:0.78rem;font-weight:600;letter-spacing:0.12em;'
+            f'  {logo_mark(THEME["primary"], 88)}'
+            f'  <span style="font-size:1.5rem;font-weight:700;letter-spacing:0.06em;'
             f'               color:{THEME["ink"]};text-transform:uppercase">'
             f'    {ADVISOR["firm"]}'
             f'  </span>'
@@ -1939,15 +1939,11 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
     # having to navigate to the Advisor tab. The full profile + bio + book-
     # a-call CTA still live on the dedicated Advisor tab.
     a = ADVISOR
-    company_logo_svg = (
-        f'<svg width="22" height="22" viewBox="0 0 24 24" '
-        f'xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
-        f'<rect x="2" y="2" width="20" height="20" rx="5" '
-        f'fill="{THEME["primary"]}"/>'
-        f'<path d="M6 16 L11 8 L13 12 L18 6" stroke="#FFFFFF" '
-        f'stroke-width="2" fill="none" stroke-linecap="round" '
-        f'stroke-linejoin="round"/></svg>'
-    )
+    # Use logo_mark() instead of a hand-drawn generic icon — when
+    # firm_logo.png exists it returns an <img> tag with the real logo,
+    # otherwise falls back to the hexagon SVG. Same visual size (22px)
+    # as the previous teal-square icon.
+    company_logo_svg = logo_mark(THEME["primary"], 22)
     st.markdown(
         f'<div style="background:{THEME["surface2"]};border:1px solid {THEME["line"]};'
         f'            border-radius:14px;padding:14px 16px;margin-top:18px;'
