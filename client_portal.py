@@ -1169,9 +1169,12 @@ def _screen_welcome():
     )
     st.markdown(welcome_html, unsafe_allow_html=True)
 
-    # Spacer pushes the CTA toward the bottom of the visible area, matching
-    # the mockup's vertical rhythm
-    st.markdown('<div style="height:120px"></div>', unsafe_allow_html=True)
+    # Tight spacer — buttons sit close under the "Encrypted" trust signal
+    # rather than being pushed to the bottom of the viewport. (Previously
+    # 120px to match the mockup's vertical rhythm; the long gap left an
+    # uncomfortable empty band on mobile, so it's collapsed to a small
+    # breathing-room margin.)
+    st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
 
     _spc_l, _cta, _spc_r = st.columns([1, 2, 1])
     with _cta:
