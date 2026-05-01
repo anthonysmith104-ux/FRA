@@ -314,7 +314,7 @@ st.markdown(
             background: currentColor;
         }}
         .fr-greeting {{
-            font-size: 0.85rem; color: {THEME['ink2']}; margin-bottom: 4px;
+            font-size: 1.275rem; color: {THEME['ink2']}; margin-bottom: 4px;
         }}
         .fr-headline {{
             font-size: 1.5rem; font-weight: 600; color: {THEME['ink']};
@@ -361,19 +361,25 @@ st.markdown(
         .stTabs [data-baseweb="tab-list"] {{
             background: transparent;
             border-bottom: 1px solid {THEME['line']};
-            gap: 28px;                  /* generous spacing between tabs */
-            padding: 0 4px;             /* keeps first tab from kissing the edge */
+            gap: 14px;                  /* tighter spacing — fits all 5 tabs on mobile */
+            padding: 0 2px;             /* minimal edge padding */
             margin-bottom: 18px;        /* breathing room before tab content */
         }}
         .stTabs [data-baseweb="tab"] {{
             color: {THEME['muted']};
             background: transparent;
             font-weight: 600;
-            font-size: 0.95rem;
-            padding: 12px 4px;          /* taller hit-area, slim horizontal */
+            font-size: 0.88rem;         /* slightly smaller — more tabs per row */
+            padding: 12px 2px;          /* taller hit-area, slim horizontal */
             min-height: auto;
-            letter-spacing: 0.01em;
+            letter-spacing: 0.005em;    /* tightened from 0.01em for narrow widths */
             transition: color 0.15s ease;
+            white-space: nowrap;        /* keep "Financial Goals" on one line */
+        }}
+        /* Desktop gets a bit more room — re-expand spacing above ~520px wide. */
+        @media (min-width: 520px) {{
+            .stTabs [data-baseweb="tab-list"] {{ gap: 22px; }}
+            .stTabs [data-baseweb="tab"] {{ font-size: 0.95rem; padding: 12px 4px; }}
         }}
         .stTabs [data-baseweb="tab"]:hover {{
             color: {THEME['ink2']};
@@ -1749,11 +1755,12 @@ def render_dashboard():
     # Order matches the natural reading flow: high-level summary → portfolio
     # detail → forward-looking plan → personal info → human contact. "My Info"
     # was added in the 2026-04-30 update so clients can edit their own
-    # contact details without having to message the advisor; placed left of
-    # Advisor since the natural pairing is "my info / their info".
+    # contact details without having to message the advisor; placed at the
+    # far right (rightmost = "settings-like" convention; Advisor sits to
+    # its left as "their info to my info").
     (tab_home, tab_goals, tab_holdings,
-     tab_my_info, tab_advisor) = st.tabs(
-        ["Home", "Financial Goals", "Holdings", "My Info", "Advisor"]
+     tab_advisor, tab_my_info) = st.tabs(
+        ["Home", "Financial Goals", "Holdings", "Advisor", "My Info"]
     )
 
     with tab_home:
@@ -1762,10 +1769,10 @@ def render_dashboard():
         _render_plan_tab(ck)
     with tab_holdings:
         _render_holdings_tab(holdings, ck)
-    with tab_my_info:
-        _render_my_info_tab()
     with tab_advisor:
         _render_advisor_tab()
+    with tab_my_info:
+        _render_my_info_tab()
 
     # ── Sign out (bottom of page) ──────────────────────────────────────────
     # Placed after the tabs so it sits at the bottom of whichever tab the
