@@ -76,25 +76,10 @@ from shared import (
 # When secrets aren't configured (local dev), data_store falls back to
 # local-disk JSON in the same paths shared.load_json used. Drop-in
 # replacement — same signatures.
-#
-# TEMPORARY DIAGNOSTIC: catch ImportError and show its actual message on
-# the page rather than letting Streamlit redact it into a useless generic
-# error. Remove this try/except wrapper once the import is verified to
-# work in production.
-try:
-    from data_store import (
-        load_json   as _shared_load_json,
-        update_json as _shared_update_json,
-    )
-except ImportError as _e:
-    import streamlit as _st_diag
-    import traceback as _tb_diag
-    _st_diag.error(
-        "❌ data_store import failed. Actual error:\n\n"
-        f"**{type(_e).__name__}:** {_e}\n\n"
-        "Full traceback:\n```\n" + _tb_diag.format_exc() + "\n```"
-    )
-    _st_diag.stop()
+from data_store import (
+    load_json   as _shared_load_json,
+    update_json as _shared_update_json,
+)
 
 # ── DATA FILE LOCATIONS ──────────────────────────────────────────────────────
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -3203,29 +3188,6 @@ def render_edit_holdings():
 # ─────────────────────────────────────────────────────────────────────────────
 # ROUTER
 # ─────────────────────────────────────────────────────────────────────────────
-
-# Diagnostic hook: if the URL contains ?selftest=1, run the data_store
-# selftest and stop. Lets us verify GitHub credentials are working end-to-end
-# without touching any real app flow. Remove this block once data_store is
-# wired in for real and the selftest is no longer needed.
-if st.query_params.get("selftest") == "1":
-    try:
-        import data_store
-        data_store.render_selftest_page()
-    except Exception as e:
-        st.error(f"Failed to import data_store: {type(e).__name__}: {e}")
-    st.stop()
-
-# Diagnostic banner — visible only when the data layer is in local-fallback
-# mode. Without this, a misconfigured deploy silently reads/writes to its
-# own ephemeral disk and never syncs with the advisor app.
-import data_store as _ds
-if not _ds.is_remote():
-    st.warning(
-        "⚠️ Shared data layer not connected — running in local-only mode. "
-        "Saves won't sync to the advisor app. "
-        "Add [github] secrets in Settings → Secrets to enable sync."
-    )
 
 if st.session_state.fr_user is None:
     render_login()
