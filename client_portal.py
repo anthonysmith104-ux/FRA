@@ -1130,34 +1130,28 @@ def _screen_welcome():
         '<rect x="4" y="11" width="16" height="10" rx="2"/>'
         '<path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>'
     )
-    _icon_shield = (
-        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" '
-        f'stroke="{THEME["muted"]}" stroke-width="1.8" stroke-linecap="round" '
-        'stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px">'
-        '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>'
+    # Build the welcome markup as a single unindented HTML string. Streamlit
+    # runs markdown before applying unsafe_allow_html, and lines indented 4+
+    # spaces get parsed as code blocks — which can leak phantom whitespace
+    # nodes into the rendered DOM (visible as ghost selection regions to
+    # the right of the headline). Keeping the HTML on one logical string
+    # without leading indentation avoids that.
+    welcome_html = (
+        f'<div style="max-width:520px;margin:30px auto 0;padding:0 28px;text-align:center">'
+        f'<div style="display:flex;align-items:center;justify-content:center;margin-bottom:36px">'
+        f'{logo_mark(THEME["primary"], 160)}'
+        f'</div>'
+        f'<h1 style="font-size:1.5rem;line-height:1.3;color:{THEME["ink"]};'
+        f'font-weight:500;margin:14px auto 28px;letter-spacing:-0.015em;text-align:center">'
+        f'Get your free financial risk profile<br/>in less than 3 minutes!'
+        f'</h1>'
+        f'<div style="display:flex;gap:24px;color:{THEME["muted"]};'
+        f'font-size:0.92rem;margin-bottom:24px;align-items:center;justify-content:center">'
+        f'<span>{_icon_lock}Encrypted</span>'
+        f'</div>'
+        f'</div>'
     )
-
-    st.markdown(
-        f'<div style="max-width:520px;margin:30px auto 0;padding:0 28px;'
-        f'            text-align:center">'
-        f'  <div style="display:flex;align-items:center;justify-content:center;'
-        f'              margin-bottom:36px">'
-        f'    {logo_mark(THEME["primary"], 160)}'
-        f'  </div>'
-        f'  <h1 style="font-size:1.5rem;line-height:1.3;color:{THEME["ink"]};'
-        f'             font-weight:500;margin:14px auto 28px;'
-        f'             letter-spacing:-0.015em;text-align:center">'
-        f'    Get your free financial risk profile<br/>'
-        f'    in less than 3 minutes!'
-        f'  </h1>'
-        f'  <div style="display:flex;gap:24px;color:{THEME["muted"]};'
-        f'              font-size:0.92rem;margin-bottom:24px;align-items:center;'
-        f'              justify-content:center">'
-        f'    <span>{_icon_lock}Encrypted</span>'
-        f'  </div>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(welcome_html, unsafe_allow_html=True)
 
     # Spacer pushes the CTA toward the bottom of the visible area, matching
     # the mockup's vertical rhythm
