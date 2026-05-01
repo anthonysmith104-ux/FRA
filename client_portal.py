@@ -76,10 +76,25 @@ from shared import (
 # When secrets aren't configured (local dev), data_store falls back to
 # local-disk JSON in the same paths shared.load_json used. Drop-in
 # replacement — same signatures.
-from data_store import (
-    load_json   as _shared_load_json,
-    update_json as _shared_update_json,
-)
+#
+# TEMPORARY DIAGNOSTIC: catch ImportError and show its actual message on
+# the page rather than letting Streamlit redact it into a useless generic
+# error. Remove this try/except wrapper once the import is verified to
+# work in production.
+try:
+    from data_store import (
+        load_json   as _shared_load_json,
+        update_json as _shared_update_json,
+    )
+except ImportError as _e:
+    import streamlit as _st_diag
+    import traceback as _tb_diag
+    _st_diag.error(
+        "❌ data_store import failed. Actual error:\n\n"
+        f"**{type(_e).__name__}:** {_e}\n\n"
+        "Full traceback:\n```\n" + _tb_diag.format_exc() + "\n```"
+    )
+    _st_diag.stop()
 
 # ── DATA FILE LOCATIONS ──────────────────────────────────────────────────────
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
