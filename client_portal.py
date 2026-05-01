@@ -148,7 +148,57 @@ def _load_firm_settings_into_advisor():
         if v is not None and str(v).strip():
             ADVISOR[advisor_key] = str(v).strip()
 
+
 _load_firm_settings_into_advisor()
+
+
+# ── Logo / photo asset loading ────────────────────────────────────────────────
+# Load firm_logo.png and advisor_photo.png from disk if present, encode as
+# base64 data URIs so they can be embedded directly in HTML/SVG markup
+# without separate image requests. If a file is missing or can't be read,
+# the helper returns None and the calling code falls back to the SVG
+# default (hexagon mark for the logo, generic silhouette for the photo).
+import base64 as _b64
+
+def _load_image_as_data_uri(filename: str, mime: str = "image/png") -> Optional[str]:
+    """Read a PNG file from the script's directory and return a data URI,
+    or None if the file is missing or unreadable. Used for firm_logo.png
+    and advisor_photo.png — both are seed assets committed to the repo.
+    """
+    p = _data_path(filename)
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, "rb") as f:
+            raw = f.read()
+        return f"data:{mime};base64,{_b64.b64encode(raw).decode('ascii')}"
+    except OSError:
+        return None
+
+
+# These run once at module import. Globals stay None if the files aren't
+# in the repo, and downstream code uses the SVG fallback.
+FIRM_LOGO_DATA_URI    = _load_image_as_data_uri("firm_logo.png")
+ADVISOR_PHOTO_DATA_URI = _load_image_as_data_uri("advisor_photo.png")
+
+# If we have an advisor photo, swap it into the ADVISOR dict so existing
+# code paths (which read `a["photo_svg"]`) get the real photo instead of
+# the generic silhouette. We render it as an SVG containing an <image>
+# element so the existing markup that just drops `photo_svg` inline still
+# works — same outer dimensions, same circular treatment, just a real
+# face inside the circle.
+if ADVISOR_PHOTO_DATA_URI:
+    ADVISOR["photo_svg"] = (
+        '<svg viewBox="0 0 80 80" width="80" height="80" '
+        'xmlns="http://www.w3.org/2000/svg">'
+        '<defs>'
+        '<clipPath id="adv_photo_clip"><circle cx="40" cy="40" r="40"/></clipPath>'
+        '</defs>'
+        f'<image href="{ADVISOR_PHOTO_DATA_URI}" '
+        'x="0" y="0" width="80" height="80" '
+        'preserveAspectRatio="xMidYMid slice" clip-path="url(#adv_photo_clip)"/>'
+        '</svg>'
+    )
 
 st.set_page_config(
     page_title="Foresight Risk Analytics",
@@ -823,7 +873,21 @@ def score_band(score: int) -> tuple[str, str, str]:
 # VISUAL PRIMITIVES — direct ports of the prototype's SVG components
 # ─────────────────────────────────────────────────────────────────────────────
 def logo_mark(color: str = None, size: int = 26) -> str:
-    """Hexagon outline + inner pulse-line glyph — port of LogoMark."""
+    """Returns either:
+    - An <img> tag wrapping the firm's PNG logo (if firm_logo.png is in the
+      repo and loaded successfully into FIRM_LOGO_DATA_URI), OR
+    - The default hexagon-with-pulse SVG glyph (the original prototype mark).
+
+    Either output renders inline at `size` x `size` pixels with display:block,
+    so the call sites' surrounding flex layout stays unchanged.
+    """
+    if FIRM_LOGO_DATA_URI:
+        return (
+            f'<img src="{FIRM_LOGO_DATA_URI}" '
+            f'width="{size}" height="{size}" '
+            f'alt="Firm logo" '
+            f'style="display:block;object-fit:contain"/>'
+        )
     color = color or THEME["primary"]
     return (
         f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" style="display:block">'
@@ -1074,7 +1138,7 @@ def _screen_welcome():
         f'    {logo_mark(THEME["primary"], 40)}'
         f'    <span style="font-size:1.1rem;font-weight:600;letter-spacing:0.12em;'
         f'                 color:{THEME["ink"]};text-transform:uppercase">'
-        f'      Foresight Risk'
+        f'      {ADVISOR["firm"]}'
         f'    </span>'
         f'  </div>'
         f'  <h1 style="font-size:1.5rem;line-height:1.25;color:{THEME["ink"]};'
@@ -1224,7 +1288,7 @@ def _screen_quiz():
         f'      {logo_mark(THEME["primary"], 22)}'
         f'      <span style="font-size:0.78rem;font-weight:600;letter-spacing:0.12em;'
         f'                   color:{THEME["ink"]};text-transform:uppercase">'
-        f'        Foresight Risk'
+        f'        {ADVISOR["firm"]}'
         f'      </span>'
         f'    </div>'
         f'    <span style="font-size:0.78rem;color:{THEME["muted"]};'
@@ -1383,7 +1447,7 @@ def _screen_results():
         f'    {logo_mark(THEME["primary"], 22)}'
         f'    <span style="font-size:0.78rem;font-weight:600;letter-spacing:0.12em;'
         f'                 color:{THEME["ink"]};text-transform:uppercase">'
-        f'      Foresight Risk'
+        f'      {ADVISOR["firm"]}'
         f'    </span>'
         f'  </div>'
         f'  <div class="fr-eyebrow">Profile complete</div>'
@@ -1481,7 +1545,7 @@ def _screen_register():
         f'    {logo_mark(THEME["primary"], 22)}'
         f'    <span style="font-size:0.78rem;font-weight:600;letter-spacing:0.12em;'
         f'                 color:{THEME["ink"]};text-transform:uppercase">'
-        f'      Foresight Risk'
+        f'      {ADVISOR["firm"]}'
         f'    </span>'
         f'  </div>'
         f'  <div class="fr-eyebrow">Almost done</div>'
@@ -1648,7 +1712,7 @@ def render_dashboard():
             f'  {logo_mark(THEME["primary"], 22)}'
             f'  <span style="font-size:0.78rem;font-weight:600;letter-spacing:0.12em;'
             f'               color:{THEME["ink"]};text-transform:uppercase">'
-            f'    Foresight Risk'
+            f'    {ADVISOR["firm"]}'
             f'  </span>'
             f'</div>',
             unsafe_allow_html=True,
