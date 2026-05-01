@@ -239,6 +239,16 @@ st.markdown(
 
         #MainMenu, footer, header[data-testid="stHeader"] {{ visibility: hidden; }}
 
+        /* Hide Streamlit's auto-generated header-anchor link icons. They
+           appear as a small chain icon next to every <h1>/<h2>/<h3> in
+           markdown blocks and look like a broken/dead link to users. */
+        .stApp h1 a, .stApp h2 a, .stApp h3 a,
+        .stApp h4 a, .stApp h5 a, .stApp h6 a,
+        [data-testid="stHeaderActionElements"],
+        [data-testid="stMarkdownHeadingActionElements"] {{
+            display: none !important;
+        }}
+
         .stApp {{
             background: {THEME['bg']};
             color: {THEME['ink']};
