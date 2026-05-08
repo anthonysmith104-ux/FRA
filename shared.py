@@ -184,10 +184,10 @@ def sharpe_ratio(ann_return: float, ann_vol: float,
 
 
 # ── Canonical risk score (was duplicated in app.py and risk_assessment.py) ────
-# Spec from app.py:
-#   • vol_score        = vol × 4.2 × 100        (vol expressed as decimal)
-#   • dd_score         = |max_dd| × 2.0 × 100   (dd expressed as decimal)
-#   • real_rate_score  = duration × 1.2 × 4.2   (bonds only, when provided)
+# Spec:
+#   • vol_score        = vol × 3.8 × 100        (vol expressed as decimal)
+#   • dd_score         = |max_dd| × 1.9 × 100   (dd expressed as decimal)
+#   • real_rate_score  = duration × 1.2 × 3.8   (bonds only, when provided)
 #   • raw              = max(vol_score, dd_score, real_rate_score) + credit_adj
 #   • credit_adj       = 0/+1/+3/+5  (govt/IG/HY/EM)
 #   • Equity LOG COMPRESSION above raw 80:
@@ -195,9 +195,32 @@ def sharpe_ratio(ann_return: float, ann_vol: float,
 #   • Class caps: cash ≤ 5, bonds ≤ 55, equity ≤ 95 (with compression),
 #     crypto BTC = 91, crypto alt 90-95, leveraged 96-99.
 #
+# RECALIBRATION (May 2026): vol multiplier reduced from 4.2 → 3.8 and
+# drawdown multiplier from 2.0 → 1.9 so SPY (vol ~17%, dd ~34%) lands at
+# ~65 instead of ~71. This matches the firm's calibration target — "S&P
+# 500 should be high-aggressive but not topping the scale". All other
+# scores rescale proportionally:
+#   • Equities: drop ~3-6 points
+#   • Diversified ETF portfolios: drop ~2-4 points
+#   • Bonds: drop ~1-2 points
+#   • Cash, crypto, leveraged caps: unchanged
+# The SPY anchor (17% vol × 3.8 = 64.6, 34% dd × 1.9 = 64.6) is symmetric
+# by design — keeping vol and dd as roughly co-binding constraints means
+# either path produces the same final score for a "typical" equity index,
+# avoiding edge cases where a high-vol/low-dd or high-dd/low-vol asset
+# scores anomalously.
+#
 # `sharpe` accepted for backward-compat but no longer used.
 
 _CREDIT_ADJ = {"govt": 0, "ig": 1, "hy": 3, "em": 5}
+
+# Risk-score multipliers. Edit these (and the SPY-anchor comment above)
+# to recalibrate the entire app's risk-score scale in one place. Both
+# app.py and risk_assessment.py route through compute_risk_score(), so
+# this is genuinely the single source of truth.
+_VOL_MULTIPLIER = 3.8
+_DD_MULTIPLIER  = 1.9
+_DUR_MULTIPLIER = 1.2  # bond-duration component is multiplied by VOL_MULTIPLIER downstream
 
 
 def compute_risk_score(ann_vol: float,
@@ -231,10 +254,10 @@ def compute_risk_score(ann_vol: float,
     asset_class = asset_class or "equity"
     credit_tier = credit_tier or "govt"
 
-    # Component scores
-    vol_score = vol_pct * 4.2
-    dd_score  = dd_pct  * 2.0
-    rr_score  = dur * 1.2 * 4.2 if dur > 0 else 0
+    # Component scores (multipliers tuned to land SPY at ~65 — see header).
+    vol_score = vol_pct * _VOL_MULTIPLIER
+    dd_score  = dd_pct  * _DD_MULTIPLIER
+    rr_score  = dur * _DUR_MULTIPLIER * _VOL_MULTIPLIER if dur > 0 else 0
 
     raw = max(vol_score, dd_score, rr_score) + _CREDIT_ADJ.get(credit_tier, 0)
 
@@ -261,23 +284,47 @@ def compute_risk_score(ann_vol: float,
 
 
 def score_to_label(score: int) -> tuple[str, str]:
-    """(label, hex_color) for a 1-99 score."""
-    if score <= 15: return "Conservative",              "#16a34a"
-    if score <= 30: return "Moderately Conservative",   "#65a30d"
-    if score <= 45: return "Moderate",                  "#d97706"
-    if score <= 60: return "Moderately Aggressive",     "#ea580c"
-    if score <= 75: return "Aggressive",                "#dc2626"
-    return              "Very Aggressive",              "#991b1b"
+    """(label, hex_color) for a 1-99 score.
+
+    Eight-tier ladder anchored to the recalibrated formula (vol×3.8, dd×1.9):
+        ≤15  Extremely Conservative   (T-bills / pure cash)
+        16-30 Conservative             (heavy bond + modest equity sleeve)
+        31-44 Moderately Conservative  (e.g. Schwab 16/84 → 32/68)
+        45-54 Moderate                 (e.g. Schwab 40/60 → 56/44)
+        55-64 Moderately Aggressive    (e.g. Schwab 64/36 → 88/12)
+        65-74 Aggressive               (e.g. Schwab 96/04, SPY)
+        75-84 Very Aggressive          (concentrated equity, single names)
+        85+   Extremely Aggressive     (leveraged ETFs, crypto, single high-vol names)
+
+    Colors run a green→amber→red gradient with the two new extremes
+    (Extremely Conservative, Extremely Aggressive) getting darker shades
+    of green and red respectively to read as 'beyond the normal range'."""
+    if score <= 15: return "Extremely Conservative",     "#15803d"  # darker green
+    if score <= 30: return "Conservative",               "#16a34a"  # green
+    if score <= 44: return "Moderately Conservative",    "#65a30d"  # yellow-green
+    if score <= 54: return "Moderate",                   "#d97706"  # amber
+    if score <= 64: return "Moderately Aggressive",      "#ea580c"  # orange
+    if score <= 74: return "Aggressive",                 "#dc2626"  # red
+    if score <= 84: return "Very Aggressive",            "#b91c1c"  # darker red
+    return              "Extremely Aggressive",          "#7f1d1d"  # very dark red
 
 
 def score_to_allocation(score: int) -> tuple[int, int, str]:
-    """(equity%, bond%, description) for a 1-99 score."""
-    if score <= 15: return 20, 80,  "Very conservative — capital preservation focus"
-    if score <= 30: return 35, 65,  "Conservative — income with limited growth"
-    if score <= 45: return 55, 45,  "Balanced — moderate growth and stability"
-    if score <= 60: return 70, 30,  "Growth-oriented — higher equity allocation"
-    if score <= 75: return 85, 15,  "Aggressive growth — significant equity exposure"
-    return              100,  0,   "Maximum growth — primarily equities"
+    """(equity%, bond%, description) for a 1-99 score.
+
+    Equity/bond targets follow the 8-tier label ladder with smooth
+    progression from 0% equity (extreme conservative) to 100% equity
+    (extremely aggressive). Used as a high-level guide only — actual
+    portfolio construction goes through allocation_for_risk_score()
+    in app.py which handles cash sleeve and rounding."""
+    if score <= 15: return  10, 90,  "Extremely conservative — capital preservation, near-zero equity"
+    if score <= 30: return  25, 75,  "Conservative — income with minimal growth exposure"
+    if score <= 44: return  45, 55,  "Moderately conservative — balanced toward stability"
+    if score <= 54: return  60, 40,  "Moderate — balanced growth and stability"
+    if score <= 64: return  75, 25,  "Moderately aggressive — growth-oriented with bond cushion"
+    if score <= 74: return  90, 10,  "Aggressive — significant equity exposure with limited bonds"
+    if score <= 84: return 100,  0,  "Very aggressive — concentrated equity, no bond allocation"
+    return              100,  0,    "Extremely aggressive — leveraged or speculative concentration"
 
 
 # ── Secure token generation (for proposal sharing) ────────────────────────────
