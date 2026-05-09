@@ -9053,9 +9053,20 @@ with main_tab1:
                     _scoring_stats = {}
                     try:
                         _start_10y = end_pcm - relativedelta(years=_SCORING_YEARS)
-                        _cmp_p_10y, _ = get_prices_cached(
+                        # Use proxy-stitched prices so short-history tickers
+                        # (e.g. SGOV ~2yr, FBTC ~1yr) get back-filled with
+                        # their proxy's older history. Without this, PCM's
+                        # 10yr vol diverges from every other scoring path
+                        # in the app — which all use get_prices_with_proxies
+                        # via _cached_portfolio_vol. Two scoring paths
+                        # against different price series produce different
+                        # diversification-adjusted risk scores for the
+                        # SAME tickers + weights.
+                        _cmp_p_10y, _ = get_prices_with_proxies(
                             tuple(_cmp_tickers),
-                            str(_start_10y), str(_today))
+                            str(_start_10y), str(_today),
+                            min_days=max(60, int(_SCORING_YEARS * 60)),
+                        )
                         if not _cmp_p_10y.empty:
                             for _sname, _swts in _CMP_DEFS.items():
                                 _s10 = port_stats_from_prices(_cmp_p_10y, _swts, _SCORING_YEARS)
