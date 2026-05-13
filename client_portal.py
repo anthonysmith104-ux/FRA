@@ -1,16 +1,24 @@
 """client_portal.py — Foresight Risk Analytics client portal.
 
-Matches the "Risk Checkup" mobile prototype's clinical aesthetic:
-    • Light teal-on-white palette (Clinical theme)
-    • Hexagon-with-pulse logo mark
-    • RiskRing score visualization (1-99, health-band colors)
-    • 2x2 Vitals grid
-    • Sparkline trend card with period selector
-    • Dark advisor CTA button
-    • Bottom nav (Home / Plan / Advisor / Me)
+White-labelable wealth-firm client portal. Foresight Risk Analytics is the
+product (this code); the firm using it (currently MRB Capital Group) is
+defined by firm_settings.json — colors, copy, logos, advisor identity all
+come from there via mrb_design.load_settings(). To onboard a new firm,
+swap firm_settings.json for theirs and the portal repaints automatically.
 
-Shared with risk_assessment.py and app.py via shared.py — same JSON files,
-same atomic storage, same scoring helpers.
+Layout:
+    • Brand crest + firm-name header bar
+    • Navy + gold palette (from firm_settings.brand)
+    • Crest-badge risk score visualization (1-99, navy/gold motif)
+    • 2x2 Vitals grid (Risk Capacity, Risk Tolerance, Net Worth, Cash)
+    • Financial Goals progress card
+    • Tabs: Home / Financial Goals / Holdings / Advisor / My Info
+
+Shared with the advisor app (app.py) via:
+    • shared.py — scoring helpers, normalization
+    • data_store.py — atomic JSON I/O backed by GitHub
+    • mrb_design.py — design tokens, SVG generators, color/copy lookups
+    • firm_settings.json — single source of truth for firm branding
 
 Run:
     streamlit run client_portal.py
@@ -19,6 +27,7 @@ Files (anchored to this script's directory):
     ra_users.json           — user records
     risk_profiles.json      — risk profile + Q&A
     client_holdings.json    — per-client holdings
+    firm_settings.json      — firm branding + design tokens (v2.4+)
 """
 from __future__ import annotations
 
@@ -70,6 +79,16 @@ from shared import (
     score_to_label, score_to_allocation,
 )
 
+# Design system — colors, fonts, copy, and SVG helpers. All visual tokens
+# come from firm_settings.json via load_settings(); the app stays brand-
+# agnostic and can be repointed at a different firm by swapping the
+# settings file. See mrb_design.py docstring for full details.
+from mrb_design import (
+    load_settings,
+    resolve_color_key,
+    pick_alignment_tier,
+)
+
 # All shared JSON I/O now goes through data_store, which transparently
 # reads/writes to a GitHub-backed shared repo (configured in Streamlit
 # secrets) so the client portal and advisor app see the same data.
@@ -91,70 +110,61 @@ CLIENT_HOLDINGS_FILE = _data_path("client_holdings.json")
 CLIENT_GOALS_FILE    = _data_path("client_goals.json")
 CLIENT_BUDGETS_FILE  = _data_path("client_budgets.json")
 
-# ── ADVISOR PROFILE ──────────────────────────────────────────────────────────
-# Default advisor profile — used as a fallback if firm_settings.json is
-# missing or unreadable. The JSON file is loaded below and used to override
-# any of these fields, so changes to the firm/advisor info don't require a
-# code change. Both apps (advisor + portal) read the same firm_settings.json
-# as a one-way sync source of truth: edit the JSON in the repo (or via the
-# advisor app's Settings tab in a future revision) and the portal picks up
-# the changes on next container reboot.
+# ── ADVISOR & FIRM PROFILE ───────────────────────────────────────────────────
+# All firm and advisor identity comes from firm_settings.json via mrb_design.
+# The dict below is just the shape the rendering code expects — every value
+# gets overwritten on module import by _load_firm_settings_into_advisor()
+# reading the v2.4 nested schema. The fallback strings are intentionally
+# obvious placeholders so a misconfigured deploy is visible at a glance
+# rather than silently shipping someone else's brand.
 ADVISOR = {
-    "name":    "Sarah Whitfield, CFP®",
-    "title":   "Senior Financial Advisor",
-    "firm":    "Foresight Wealth Partners",
-    "email":   "sarah.whitfield@foresightwealth.com",
-    "phone":   "(612) 555-0142",
-    "website": "https://www.foresightwealth.com",
-    "address": "200 South Sixth Street, Suite 1200, Minneapolis, MN 55402",
-    "bio":     ("Sarah has spent fifteen years helping families plan for "
-                "retirement, education, and legacy goals. She's a Certified "
-                "Financial Planner™ and a fiduciary — meaning she's legally "
-                "required to act in your best interest."),
-    # Generic SVG avatar — neutral, no real likeness.
-    "photo_svg": (
-        '<svg viewBox="0 0 80 80" width="80" height="80" '
-        'xmlns="http://www.w3.org/2000/svg">'
-        '<defs><linearGradient id="adv_bg" x1="0" y1="0" x2="1" y2="1">'
-        '<stop offset="0" stop-color="#0E5C5E"/>'
-        '<stop offset="1" stop-color="#0E7C86"/></linearGradient></defs>'
-        '<circle cx="40" cy="40" r="40" fill="url(#adv_bg)"/>'
-        '<circle cx="40" cy="32" r="13" fill="#FFFFFF" opacity="0.95"/>'
-        '<path d="M16 70 C 18 56, 28 50, 40 50 S 62 56, 64 70 Z" '
-        'fill="#FFFFFF" opacity="0.95"/>'
-        '</svg>'
-    ),
+    "name":    "(advisor name unset)",
+    "title":   "(title unset)",
+    "firm":    "(firm name unset)",
+    "email":   "",
+    "phone":   "",
+    "website": "",
+    "address": "",
+    "bio":     "",
+    # Default photo — neutral SVG silhouette. Replaced at module-import
+    # time if assets/advisor_photo.png is present. Colors below are
+    # rebuilt from settings AFTER load_settings runs (see below), so
+    # this initial value is harmless — it's replaced before render.
+    "photo_svg": "",
 }
 
+# Load the design system. All subsequent reads of colors, fonts, and copy
+# go through SETTINGS or the resolve_color_key / format_proposal_copy
+# helpers. Reading this once at module scope means a settings change
+# requires a container restart, which is the right granularity for
+# brand changes.
+SETTINGS = load_settings()
 
-# Try to load firm_settings.json from the shared store. The JSON file uses
-# different field names than the ADVISOR dict (e.g. `advisor_name` vs
-# `name`), so we map them explicitly. Any field missing from the JSON
-# falls back to the hardcoded default above.
-#
-# Reads via data_store mean this picks up changes the advisor app makes,
-# without requiring a manual git commit + redeploy of the portal.
+
 def _load_firm_settings_into_advisor():
-    settings = _shared_load_json(
-        _data_path("firm_settings.json"),
-        default={},
-    )
-    if not isinstance(settings, dict) or not settings:
-        return
-    field_map = {
-        "advisor_name":  "name",
-        "advisor_title": "title",
-        "firm_name":     "firm",
-        "advisor_email": "email",
-        "advisor_phone": "phone",
-        "firm_website":  "website",
-        "firm_address":  "address",
-        "advisor_bio":   "bio",
-    }
-    for json_key, advisor_key in field_map.items():
-        v = settings.get(json_key)
-        if v is not None and str(v).strip():
-            ADVISOR[advisor_key] = str(v).strip()
+    """Read firm + advisor identity from settings v2.4 nested schema.
+
+    Maps settings["firm"] and settings["advisor"] into the ADVISOR dict
+    that the rendering code consumes. Clean break from the legacy flat
+    schema (advisor_name, firm_name, ...) — v2.4 uses firm.name,
+    advisor.name, etc.
+    """
+    firm = SETTINGS.get("firm", {}) or {}
+    advisor = SETTINGS.get("advisor", {}) or {}
+
+    # Firm identity (rendered as the brand line in headers)
+    if firm.get("name"):     ADVISOR["firm"]    = firm["name"].strip()
+    if firm.get("website"):  ADVISOR["website"] = firm["website"].strip()
+
+    # Advisor identity
+    if advisor.get("name"):   ADVISOR["name"]  = advisor["name"].strip()
+    if advisor.get("title"):  ADVISOR["title"] = advisor["title"].strip()
+    if advisor.get("email"):  ADVISOR["email"] = advisor["email"].strip()
+    if advisor.get("phone"):  ADVISOR["phone"] = advisor["phone"].strip()
+
+    # Optional fields — not all firms will populate these
+    if firm.get("address"):    ADVISOR["address"] = firm["address"].strip()
+    if advisor.get("bio"):     ADVISOR["bio"]     = advisor["bio"].strip()
 
 
 _load_firm_settings_into_advisor()
@@ -189,6 +199,25 @@ def _load_image_as_data_uri(filename: str, mime: str = "image/png") -> Optional[
 FIRM_LOGO_DATA_URI    = _load_image_as_data_uri("firm_logo.png")
 ADVISOR_PHOTO_DATA_URI = _load_image_as_data_uri("advisor_photo.png")
 
+# Build the default advisor photo SVG using brand colors. This used to
+# hardcode the teal Clinical palette (#0E5C5E → #0E7C86); now it pulls
+# navy + cream from settings so the placeholder doesn't fight the brand
+# layer when the real photo isn't uploaded yet.
+_NAVY = resolve_color_key("brand.primary.navy", SETTINGS)
+_GOLD = resolve_color_key("brand.accent.gold", SETTINGS)
+ADVISOR["photo_svg"] = (
+    '<svg viewBox="0 0 80 80" width="80" height="80" '
+    'xmlns="http://www.w3.org/2000/svg">'
+    '<defs><linearGradient id="adv_bg" x1="0" y1="0" x2="1" y2="1">'
+    f'<stop offset="0" stop-color="{_NAVY}"/>'
+    f'<stop offset="1" stop-color="{_GOLD}"/></linearGradient></defs>'
+    '<circle cx="40" cy="40" r="40" fill="url(#adv_bg)"/>'
+    '<circle cx="40" cy="32" r="13" fill="#FFFFFF" opacity="0.95"/>'
+    '<path d="M16 70 C 18 56, 28 50, 40 50 S 62 56, 64 70 Z" '
+    'fill="#FFFFFF" opacity="0.95"/>'
+    '</svg>'
+)
+
 # If we have an advisor photo, swap it into the ADVISOR dict so existing
 # code paths (which read `a["photo_svg"]`) get the real photo instead of
 # the generic silhouette. We render it as an SVG containing an <image>
@@ -209,32 +238,51 @@ if ADVISOR_PHOTO_DATA_URI:
     )
 
 st.set_page_config(
-    page_title="Foresight Risk Analytics",
+    page_title=f'{SETTINGS["firm"]["name"]} · Risk Profile',
     page_icon="🩺",
     layout="centered",
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# THEME — "Clinical" from the prototype (teal on white)
+# THEME — derived from firm_settings.json via mrb_design
 # ─────────────────────────────────────────────────────────────────────────────
+# Same dict shape as the legacy "Clinical" theme so all 170+ downstream
+# THEME["..."] references continue to work without changes — only the
+# values are different. When firm_settings.json changes (e.g. a different
+# firm's brand swaps in), this dict rebuilds on next container restart
+# and every styled element repaints automatically.
+#
+# Mapping rationale:
+#   bg            → cream surface (was light gray)
+#   surface       → white (cards)
+#   surface2      → cream_warm (featured surfaces, advisor box)
+#   line          → light border
+#   ink/ink2/muted → navy-tinted text scale
+#   primary       → NAVY (was teal) — brand structural color
+#   primary_soft  → cream_warm (was light teal background)
+#   accent        → GOLD (was deeper teal) — brand accent
+#   healthy/caution/risk → semantic green/amber/red for alignment tiers
+#   chip          → cream — neutral chip surface
+_B = SETTINGS["brand"]
+_S = SETTINGS["brand"]["semantic"]
 THEME = {
-    "bg":           "#F4F7F9",
-    "surface":      "#FFFFFF",
-    "surface2":     "#EEF3F6",
-    "line":         "#E1E8EE",
-    "ink":          "#0B1F2A",
-    "ink2":         "#3F5260",
-    "muted":        "#6B7E8A",
-    "primary":      "#0E5C5E",
-    "primary_soft": "#D8ECEC",
-    "accent":       "#0E7C86",
-    "healthy":      "#16A34A",
-    "healthy_soft": "#DCF5E4",
-    "caution":      "#C2700A",
-    "caution_soft": "#FBEBD2",
-    "risk":         "#C2410C",
-    "risk_soft":    "#FCDED0",
-    "chip":         "#F1F5F8",
+    "bg":           _B["surface"]["cream"],
+    "surface":      _B["surface"]["white"],
+    "surface2":     _B["surface"]["cream_warm"],
+    "line":         _B["border"]["light"],
+    "ink":          _B["text"]["primary"],
+    "ink2":         _B["text"]["secondary"],
+    "muted":        _B["text"]["muted"],
+    "primary":      _B["primary"]["navy"],
+    "primary_soft": _B["surface"]["cream_warm"],
+    "accent":       _B["accent"]["gold"],
+    "healthy":      _S["success"],
+    "healthy_soft": _S["success_bg"],
+    "caution":      _S["warning"],
+    "caution_soft": _S["warning_bg"],
+    "risk":         _S["danger"],
+    "risk_soft":    _S["danger_bg"],
+    "chip":         _B["surface"]["cream"],
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -243,7 +291,7 @@ THEME = {
 st.markdown(
     f"""
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+Pro:wght@400;500;600;700&display=swap');
 
         #MainMenu, footer, header[data-testid="stHeader"] {{ visibility: hidden; }}
 
@@ -264,7 +312,8 @@ st.markdown(
         }}
         .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5 {{
             color: {THEME['ink']} !important;
-            font-weight: 600;
+            font-family: 'Source Serif Pro', Georgia, serif;
+            font-weight: 500;
             letter-spacing: -0.01em;
         }}
 
@@ -325,7 +374,8 @@ st.markdown(
             font-size: 1.275rem; color: {THEME['ink2']}; margin-bottom: 4px;
         }}
         .fr-headline {{
-            font-size: 1.5rem; font-weight: 600; color: {THEME['ink']};
+            font-family: 'Source Serif Pro', Georgia, serif;
+            font-size: 1.5rem; font-weight: 500; color: {THEME['ink']};
             letter-spacing: -0.015em; line-height: 1.18; margin: 0 0 14px 0;
         }}
         .fr-headline-accent {{ color: {THEME['primary']}; }}
@@ -944,53 +994,74 @@ def pulse_line(color: str = None, width: int = 56, height: int = 14,
     )
 
 
-def make_risk_ring(score: int, height: int = 320) -> go.Figure:
-    """Plotly port of the prototype's RiskRing: colored arc + tick marks +
-    centered score & label chip."""
-    import numpy as np
-    label, band_color, band_soft = score_band(score)
-    pct = max(0, min(99, score)) / 99.0
+def make_risk_ring(score: int, height: int = 320) -> str:
+    """Crest medallion risk badge — gold concentric rings + serif numeral.
 
-    n = 200
-    theta_full = np.linspace(0, 2*np.pi, n)
-    bg_x = np.cos(theta_full); bg_y = np.sin(theta_full)
-    n_fg = max(4, int(n * pct))
-    theta_fg = np.linspace(np.pi/2, np.pi/2 - 2*np.pi*pct, n_fg)
-    fg_x = np.cos(theta_fg); fg_y = np.sin(theta_fg)
+    This used to return a Plotly figure (RiskRing). Now it returns an HTML
+    string containing an SVG crest badge that matches the design system's
+    crest_badge spec. The visual is the same kind of "circular emblem with
+    the risk number inside" but with the navy + gold + serif aesthetic
+    of the wealth-management brand rather than the clinical / dashboard
+    look.
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=bg_x, y=bg_y, mode="lines",
-        line=dict(color=THEME["line"], width=12),
-        hoverinfo="skip", showlegend=False))
-    fig.add_trace(go.Scatter(x=fg_x, y=fg_y, mode="lines",
-        line=dict(color=band_color, width=12, shape="spline"),
-        hoverinfo="skip", showlegend=False))
+    Call sites use st.markdown(html, unsafe_allow_html=True) instead of
+    st.plotly_chart. The `height` argument is interpreted as the outer
+    diameter in pixels and the inner content scales proportionally.
 
-    tick_inner_r = 0.84; tick_outer_r = 0.92
-    for i in range(36):
-        a = (i * 10 - 90) * np.pi / 180
-        fig.add_trace(go.Scatter(
-            x=[np.cos(a)*tick_inner_r, np.cos(a)*tick_outer_r],
-            y=[np.sin(a)*tick_inner_r, np.sin(a)*tick_outer_r],
-            mode="lines", line=dict(color=THEME["line"], width=1),
-            hoverinfo="skip", showlegend=False,
-        ))
+    Returns an HTML string (not a Plotly figure).
+    """
+    label, _, _ = score_band(score)
+    navy   = resolve_color_key("brand.primary.navy", SETTINGS)
+    gold   = resolve_color_key("brand.accent.gold", SETTINGS)
+    cream  = resolve_color_key("brand.surface.cream", SETTINGS)
+    muted  = resolve_color_key("brand.text.muted", SETTINGS)
 
-    fig.add_annotation(x=0, y=0.34, text="RISK SCORE", showarrow=False,
-        font=dict(family="Inter", size=11, color=THEME["muted"]))
-    fig.add_annotation(x=0, y=0.0, text=str(score), showarrow=False,
-        font=dict(family="Inter", size=64, color=THEME["ink"]))
-    fig.add_annotation(x=0, y=-0.42, text=f"  {label.upper()}  ",
-        showarrow=False, bgcolor=band_soft, borderpad=6,
-        font=dict(family="Inter", size=11, color=band_color))
+    # Outer diameter and proportional inner ring. The crest spec uses
+    # 140 outer / 124 inner; scale both proportionally with the
+    # caller-supplied height so the badge fits whatever space it's in
+    # without redesigning. 320 → 200 size is a good dashboard default.
+    outer = int(height * 0.625)   # 200 for height=320
+    inner = int(outer * 0.886)    # 177 for outer=200
+    num_pt = int(outer * 0.42)    # 84pt for outer=200
+    eyebrow_pt = max(9, int(outer * 0.065))   # ~13pt for outer=200
+    of99_pt = max(10, int(outer * 0.07))      # ~14pt for outer=200
 
-    fig.update_xaxes(visible=False, range=[-1.2, 1.2],
-                     scaleanchor="y", scaleratio=1)
-    fig.update_yaxes(visible=False, range=[-1.2, 1.2])
-    fig.update_layout(height=height, margin=dict(l=0, r=0, t=0, b=0),
-                      paper_bgcolor="rgba(0,0,0,0)",
-                      plot_bgcolor="rgba(0,0,0,0)")
-    return fig
+    # Two concentric gold rings (the crest "ring within a ring"
+    # signature) with the score and label centered inside.
+    return (
+        f'<div style="display:flex;flex-direction:column;align-items:center;'
+        f'            justify-content:center;padding:8px 0">'
+        f'  <div style="width:{outer}px;height:{outer}px;border-radius:50%;'
+        f'              border:2.5px solid {gold};background:{cream};'
+        f'              display:flex;align-items:center;justify-content:center;'
+        f'              flex-shrink:0">'
+        f'    <div style="width:{inner}px;height:{inner}px;border-radius:50%;'
+        f'                border:0.5px solid {gold};'
+        f'                display:flex;flex-direction:column;'
+        f'                align-items:center;justify-content:center">'
+        f'      <div style="font-size:{eyebrow_pt}px;letter-spacing:0.18em;'
+        f'                  text-transform:uppercase;color:{gold};'
+        f'                  font-weight:500;margin-bottom:4px">'
+        f'        Risk number'
+        f'      </div>'
+        f'      <div style="font-family:\'Source Serif Pro\',Georgia,serif;'
+        f'                  font-size:{num_pt}px;font-weight:500;color:{navy};'
+        f'                  line-height:0.95;letter-spacing:-0.04em">'
+        f'        {int(score)}'
+        f'      </div>'
+        f'      <div style="font-size:{of99_pt}px;color:{muted};'
+        f'                  margin-top:6px;letter-spacing:0.04em">'
+        f'        / 99'
+        f'      </div>'
+        f'    </div>'
+        f'  </div>'
+        f'  <div style="font-family:\'Source Serif Pro\',Georgia,serif;'
+        f'              font-size:1.05rem;color:{navy};font-weight:500;'
+        f'              letter-spacing:0.02em;margin-top:14px">'
+        f'    {label}'
+        f'  </div>'
+        f'</div>'
+    )
 
 
 def make_sparkline(values: list, height: int = 120) -> go.Figure:
@@ -1830,15 +1901,12 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
         # rendering as an empty padded white box above the content.
         h1, h2 = st.columns([1.05, 1])
         with h1:
-            # `staticPlot=True` disables ALL chart interactions (zoom, pan,
-            # scroll-zoom, hover-zoom). This stops the chart from intercepting
-            # touch/scroll gestures when the user is trying to scroll the
-            # page — without it, dragging within the chart's bounding box
-            # pans the chart instead of scrolling. The risk ring is purely
-            # presentational; there's nothing to hover or zoom into.
-            st.plotly_chart(make_risk_ring(overall, height=300),
-                use_container_width=True,
-                config={"displayModeBar": False, "staticPlot": True})
+            # Crest medallion badge — replaces the legacy Plotly RiskRing.
+            # Renders as inline SVG/HTML via st.markdown rather than
+            # st.plotly_chart, so it scales cleanly on mobile and doesn't
+            # need staticPlot config to disable accidental gesture capture.
+            st.markdown(make_risk_ring(overall, height=300),
+                        unsafe_allow_html=True)
         with h2:
             cap = int(profile.get("capacity_score", 50))
             tol = int(profile.get("tolerance_score", 50))
