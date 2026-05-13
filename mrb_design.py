@@ -41,6 +41,7 @@ from typing import Any, Mapping
 # ─────────────────────────────────────────────────────────────────────────────
 
 _REQUIRED_TOP_LEVEL_KEYS = (
+    "firm_id",
     "firm", "advisor", "brand", "typography", "layout",
     "proposal_copy", "chart_palette",
     "donut_geometry", "gauge_geometry",
