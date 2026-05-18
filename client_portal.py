@@ -548,7 +548,27 @@ def find_user(email: str) -> Optional[dict]:
     return None
 
 def register_user(first: str, last: str, email: str, phone: str = "") -> tuple[bool, str]:
-    """Atomic upsert under a single lock."""
+    """Atomic upsert under a single lock.
+
+    Idempotency note (bug fix for "email already exists on first try"):
+    data_store.update_json uses optimistic locking with retry. If the
+    very first PUT succeeds at the GitHub end but the success response
+    is lost to the client (network blip, proxy timeout, etc.), the
+    retry path re-reads the just-committed state — which now contains
+    the user we *just* wrote — and the second call to _mutate would
+    see the email as "already taken" and report a spurious conflict.
+    Users hit this and worked around it by registering with a second
+    email; the original email was left as a ghost record they could
+    still sign in with.
+
+    Mitigation: _mutate compares the existing record's identifying
+    fields against the new_user we're attempting to write. If they
+    match exactly, the "conflict" is our own retry and we return
+    success. A genuine conflict — same email key registered by a
+    different person — still surfaces correctly because at least one
+    identifying field (typically first_name, last_name, or phone)
+    will differ.
+    """
     key = normalize_email(email)
     if key is None: return False, "Please enter a valid email address."
     first = (first or "").strip()
@@ -561,7 +581,32 @@ def register_user(first: str, last: str, email: str, phone: str = "") -> tuple[b
     }
     conflict = {"exists": False}
     def _mutate(users):
-        if key in users: conflict["exists"] = True; return
+        existing = users.get(key)
+        if existing is not None:
+            # Compare every identifying field. ALL must match for this
+            # to be safely treated as our own retry. Using a tuple of
+            # the four fields gives a single comparison that's robust
+            # to dict-ordering differences and to extra fields that
+            # downstream code (update_user, HubSpot sync, etc.) may
+            # have added on top of the original record.
+            _our_fingerprint = (
+                new_user["first_name"],
+                new_user["last_name"],
+                new_user["phone"],
+                new_user["created_at"],
+            )
+            _their_fingerprint = (
+                existing.get("first_name", ""),
+                existing.get("last_name", ""),
+                existing.get("phone", ""),
+                existing.get("created_at", ""),
+            )
+            if _our_fingerprint == _their_fingerprint:
+                # Our own write coming back through the retry path —
+                # silently succeed (the write already landed).
+                return
+            conflict["exists"] = True
+            return
         users[key] = new_user
     _shared_update_json(USERS_FILE, _mutate)
     if conflict["exists"]: return False, "An account with this email already exists."
