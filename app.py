@@ -2253,7 +2253,7 @@ def generate_three_tier_proposals(client_risk_score, advisor_notes="", prioritie
     # ── Options 1 (conservative) and 3 (aggressive) via corridor optimizer ──
     # Run a constrained re-optimization of the user's existing holdings:
     #   • Option 1: minimize variance, weights within ±50% of submitted
-    #   • Option 3: maximize Sharpe ratio, weights within ±50% of submitted
+    #   • Option 3: maximize expected return, weights within ±50% of submitted
     # Same tickers as Option 2, just rebalanced toward each objective.
     # If the optimization can't run (no price data, scipy issues, etc.),
     # fall back to the legacy ±15% bond/equity tilt via _shift_tier.
@@ -2286,7 +2286,7 @@ def generate_three_tier_proposals(client_risk_score, advisor_notes="", prioritie
         rationale = (
             f"{direction_text} — re-optimized within ±50% of the submitted "
             f"allocation. Same holdings as Option 2; weights tilted to "
-            f"{'minimize volatility' if 'conservative' in direction_text else 'maximize Sharpe ratio'}."
+            f"{'minimize volatility' if 'conservative' in direction_text else 'maximize expected return'}."
         )
         return {
             "label":         label,
@@ -2300,7 +2300,7 @@ def generate_three_tier_proposals(client_risk_score, advisor_notes="", prioritie
             "priority_tilts": [
                 ("Min-volatility re-optimization within ±50% corridor"
                  if "conservative" in direction_text
-                 else "Max-Sharpe re-optimization within ±50% corridor")
+                 else "Max-return re-optimization within ±50% corridor")
             ],
             "priority_flags": [],
             "save_to_profile": False,
@@ -2319,7 +2319,7 @@ def generate_three_tier_proposals(client_risk_score, advisor_notes="", prioritie
     )
 
     _aggr_opt = _optimize_within_corridor(
-        user_tickers, user_weights, objective="max_sharpe", corridor=0.5,
+        user_tickers, user_weights, objective="max_return", corridor=0.5,
     )
     aggressive_tier = _tier_from_opt(
         _aggr_opt, balanced_tier,
@@ -2379,8 +2379,12 @@ def _optimize_within_corridor(user_tickers, user_weights, objective="min_vol",
         Submitted weights as percentages (sum to 100). Tickers missing from
         the dict are treated as zero (and therefore can stay at zero).
     objective : str
-        "min_vol"     → minimize variance (Option 1, conservative)
-        "max_sharpe"  → maximize Sharpe ratio (Option 3, aggressive)
+        "min_vol"     → minimize variance (Option 2, conservative)
+        "max_return"  → maximize expected return (Option 3, aggressive)
+        "max_sharpe"  → maximize Sharpe ratio (legacy; available but not
+                        used by the standard 3-option proposal flow since
+                        max-Sharpe can produce a less-aggressive portfolio
+                        when the base is poorly diversified)
     corridor : float
         ±multiplicative deviation from base weight, expressed as a fraction.
         Default 0.5 = ±50%. So a holding at 20% gets bounds [10%, 30%].
@@ -2479,6 +2483,23 @@ def _optimize_within_corridor(user_tickers, user_weights, objective="min_vol",
         if objective == "max_sharpe":
             model = MeanRisk(
                 objective_function=ObjectiveFunction.MAXIMIZE_RATIO,
+                risk_measure=RiskMeasure.VARIANCE,
+                prior_estimator=prior,
+                min_weights=dict(zip(present, min_w_k)),
+                max_weights=dict(zip(present, max_w_k)),
+            )
+        elif objective == "max_return":
+            # "More aggressive" means just that: tilt weights toward
+            # holdings with the highest expected return, accepting more
+            # volatility. Previously this branch labeled max-Sharpe as
+            # "more aggressive," but max-Sharpe can land on a LESS
+            # volatile portfolio if the base is already poorly diversified
+            # — exactly what happened with Cole J's TSLA-heavy portfolio
+            # (max-Sharpe trimmed concentration → lower vol → lower risk
+            # score than the base). MAXIMIZE_RETURN biases toward the
+            # higher-vol assets within the corridor instead.
+            model = MeanRisk(
+                objective_function=ObjectiveFunction.MAXIMIZE_RETURN,
                 risk_measure=RiskMeasure.VARIANCE,
                 prior_estimator=prior,
                 min_weights=dict(zip(present, min_w_k)),
@@ -4474,6 +4495,98 @@ def _compute_period_returns(portfolios, periods=None):
     return out
 
 
+def _compute_period_price_series(portfolios, periods=None):
+    """Compute cumulative-return TIME SERIES for each (name, tickers,
+    weights) across each notable historical window.
+
+    Counterpart to `_compute_period_returns` which returns just the
+    final scalar. This one returns the full per-day path so the caller
+    can draw line charts of how the portfolio moved through the event
+    window, not just where it ended up.
+
+    Args:
+        portfolios: list of (name, tickers, weights) tuples. Weights are
+            in percent (0-100); will be normalized.
+        periods:   optional override list of (label, start, end, desc).
+            Defaults to NOTABLE_PERIODS.
+
+    Returns:
+        dict of {portfolio_name: {period_label: list[(date_str, ret)]}}
+        where each list is the cumulative-return curve indexed at the
+        window's start (start = 0.0, e.g. -0.18 at trough = -18%).
+        Missing data → None for that (portfolio, period) cell.
+
+        Also includes a "_periods" key listing the period labels in
+        order. Sized lists match daily trading days within the window.
+    """
+    import pandas as _pd
+
+    periods = periods or NOTABLE_PERIODS
+    out = {"_periods": [p[0] for p in periods]}
+
+    for name, tickers, weights in portfolios:
+        out[name] = {}
+        if not tickers or not weights:
+            for label, *_ in periods:
+                out[name][label] = None
+            continue
+
+        # Normalize weights to fractions
+        total_w = sum(weights)
+        if total_w <= 0:
+            for label, *_ in periods:
+                out[name][label] = None
+            continue
+        w_norm = [w / total_w for w in weights]
+
+        for label, start, end, _desc in periods:
+            try:
+                prices, _ = get_prices_with_proxies(
+                    tuple(tickers), start, end, min_days=20,
+                )
+                if prices is None or (hasattr(prices, "empty") and prices.empty):
+                    out[name][label] = None
+                    continue
+                if isinstance(prices, _pd.Series):
+                    prices = prices.to_frame()
+
+                cols = [t for t in tickers if t in prices.columns]
+                if not cols:
+                    out[name][label] = None
+                    continue
+                prices = prices[cols].dropna(how="all").ffill().dropna()
+                if prices.empty or len(prices) < 10:
+                    out[name][label] = None
+                    continue
+
+                # Re-normalize weights against the tickers we actually have
+                idx = [tickers.index(c) for c in cols]
+                w_eff = [w_norm[i] for i in idx]
+                w_sum = sum(w_eff)
+                if w_sum <= 0:
+                    out[name][label] = None
+                    continue
+                w_eff = [w / w_sum for w in w_eff]
+
+                # Per-ticker cumulative return path = price/price.iloc[0] - 1.
+                # Then portfolio path = weighted sum of per-ticker paths.
+                # Buy-and-hold approximation (no daily rebalancing) — same
+                # convention as _compute_period_returns. For short event
+                # windows the drift between this and rebal-daily is small.
+                norm = prices.div(prices.iloc[0])
+                weighted = norm.mul(w_eff, axis=1).sum(axis=1)
+                series = (weighted - 1.0)
+                # Tuple format: (ISO date string, decimal return)
+                out[name][label] = [
+                    (d.strftime("%Y-%m-%d"), float(v))
+                    for d, v in series.items()
+                ]
+            except Exception:
+                out[name][label] = None
+
+    return out
+
+
 def _resolve_advisory_fee_pct(proposal: dict | None,
                               client_profile: dict | None,
                               firm_settings: dict | None) -> float:
@@ -4690,50 +4803,265 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         sections:       dict of bool flags — legacy keys preserved
     Returns PDF bytes.
     """
-    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.pagesizes import letter, landscape
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.lib import colors
-    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
+    from reportlab.platypus import (SimpleDocTemplate, BaseDocTemplate,
+                                    PageTemplate, Frame, NextPageTemplate,
+                                    Paragraph, Spacer,
                                     Table, TableStyle, HRFlowable, PageBreak,
                                     KeepTogether, Flowable, Image)
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
-    from reportlab.graphics.shapes import Drawing, Wedge, Rect, String, Circle
+    from reportlab.graphics.shapes import (Drawing, Wedge, Rect, String,
+                                            Circle, Line, PolyLine, Path)
     from reportlab.graphics.charts.piecharts import Pie
     from reportlab.graphics import renderPDF
     from datetime import datetime as _dt
 
-    # ── CLIENT PROPOSAL PALETTE ────────────────────────────────
-    NAVY        = colors.HexColor("#274C77")
-    NAVY_DEEP   = colors.HexColor("#1A3454")
-    NAVY_MID    = colors.HexColor("#3D6A9B")
-    ACCENT      = colors.HexColor("#6096BA")   # mid blue
-    ACCENT_SOFT = colors.HexColor("#A3CEF1")   # sky blue
-    CHARCOAL    = colors.HexColor("#2A3541")
-    SLATE       = colors.HexColor("#4A5563")
-    GRAY        = colors.HexColor("#8B8C89")   # warm gray
-    GRAY_SOFT   = colors.HexColor("#B0B1AE")
-    BORDER      = colors.HexColor("#D4D9DB")
-    BORDER_SOFT = colors.HexColor("#E7ECEF")
-    BG_SOFT     = colors.HexColor("#E7ECEF")
-    BG_LIGHT    = colors.HexColor("#F3F5F7")
+    # Design system — colors and ticker palette come from firm_settings.json
+    # via mrb_design. This is the Phase 1 PDF restyle: same layout, new brand
+    # palette (MRB navy + gold + Schwab-inspired chart palette). Later phases
+    # rebuild the layout itself. The constant names below are preserved so
+    # the 2,000+ lines of platypus flowable code that reference them need
+    # zero edits — only the underlying hex values change.
+    from mrb_design import (load_settings, get_ticker_color,
+                            lump_to_other, pick_alignment_tier)
+    _SETTINGS = load_settings()
+    _B = _SETTINGS["brand"]
+    _CHART_TICKERS = _SETTINGS["chart_palette"]["tickers"]
+
+    # ── CLIENT PROPOSAL PALETTE — sourced from firm_settings.json ─────
+    # Constant names preserved from the legacy "mid-blue snapshot" palette
+    # so downstream layout code keeps working unchanged. Mapping:
+    #   NAVY/NAVY_DEEP/NAVY_MID  → MRB navy family
+    #   ACCENT/ACCENT_SOFT       → MRB gold (was mid/sky blue — biggest
+    #                              visual change; ACCENT is now the brand
+    #                              accent everywhere it was previously
+    #                              used as a structural blue)
+    #   CHARCOAL/SLATE/GRAY/...  → text scale on the new palette
+    #   BG_SOFT/BG_LIGHT/BORDER  → cream surfaces + soft borders
+    NAVY        = colors.HexColor(_B["primary"]["navy"])         # #1a2b4a
+    NAVY_DEEP   = colors.HexColor(_B["primary"]["navy_dark"])    # #0e1830
+    NAVY_MID    = colors.HexColor(_B["primary"]["navy_light"])   # #2b3d5e
+    ACCENT      = colors.HexColor(_B["accent"]["gold"])          # #b8943f
+    ACCENT_SOFT = colors.HexColor(_B["accent"]["gold_light"])    # #d4b676
+    CHARCOAL    = colors.HexColor(_B["text"]["primary"])         # #1a2030
+    SLATE       = colors.HexColor(_B["text"]["secondary"])       # #4a4a4a
+    GRAY        = colors.HexColor(_B["text"]["tertiary"])        # #6b6b6b
+    GRAY_SOFT   = colors.HexColor(_B["text"]["muted"])           # #888888
+    BORDER      = colors.HexColor(_B["border"]["medium"])        # #d8d8d8
+    BORDER_SOFT = colors.HexColor(_B["border"]["light"])         # #e8e4dc
+    BG_SOFT     = colors.HexColor(_B["surface"]["cream"])        # #fafaf6
+    BG_LIGHT    = colors.HexColor(_B["surface"]["cream_warm"])   # #fbf8ef
     WHITE       = colors.white
     BLACK       = colors.black
 
-    # Pie palette — mirrors the on-screen Sasha Trubetskoy 19-color set
-    # (minus brown/beige/maroon per user spec) so PDFs match the app.
-    PDF_PIE_PALETTE = [
-        colors.HexColor("#e6194B"), colors.HexColor("#3cb44b"),
-        colors.HexColor("#ffe119"), colors.HexColor("#4363d8"),
-        colors.HexColor("#f58231"), colors.HexColor("#911eb4"),
-        colors.HexColor("#42d4f4"), colors.HexColor("#f032e6"),
-        colors.HexColor("#bfef45"), colors.HexColor("#fabed4"),
-        colors.HexColor("#469990"), colors.HexColor("#dcbeff"),
-        colors.HexColor("#aaffc3"), colors.HexColor("#808000"),
-        colors.HexColor("#ffd8b1"), colors.HexColor("#000075"),
-        colors.HexColor("#a9a9a9"),
+    # Pie palette — 8 distinct slots per advisor revision. The previous
+    # iterations had two collision problems:
+    #   • 7-slot fallback had near-duplicate purples and cyans (two
+    #     wedges in the same hue family that read as the same color).
+    #   • 10-slot draft included orange and steel-blue slots that the
+    #     advisor wanted removed.
+    # The final 8 slots are maximally distinct on the cream BG_SOFT
+    # background (#fafaf6) and avoid both NAVY (#1a2b4a — structural)
+    # and ACCENT (#b8943f — brand gold), neither of which should
+    # appear in a pie segment.
+    #
+    # Pairs with the 8-cap enforced by the local lump_to_other()
+    # wrapper directly below: portfolios with up to 8 named holdings
+    # get a distinct color per holding; anything beyond the 8th
+    # collapses into the gray "Other" wedge (chart_palette.
+    # other_bucket.other_color, #888888).
+    #
+    # IMPLEMENTATION NOTE: writes the new array directly back into
+    # _CHART_TICKERS["_fallback_palette"], so every downstream call
+    # to mrb_design.get_ticker_color(_, _SETTINGS) navigates through
+    # the same dict and resolves hash-based assignments against the
+    # new 8 slots. Explicit per-ticker overrides elsewhere in
+    # chart_palette.tickers (e.g. SCHZ → teal, SCHD → berry) are
+    # unaffected.
+    _CHART_TICKERS["_fallback_palette"] = [
+        "#5b3cb4",  # violet
+        "#1890a8",  # teal
+        "#1c6e3a",  # forest green
+        "#8a9030",  # olive
+        "#c5302b",  # crimson
+        "#b03878",  # berry pink
+        "#7a4a28",  # bronze
+        "#516172",  # slate
     ]
+    _FALLBACK = _CHART_TICKERS["_fallback_palette"]
+    PDF_PIE_PALETTE = [colors.HexColor(h) for h in _FALLBACK]
 
+    # ── Local hard-cap wrapper around mrb_design.lump_to_other ─────
+    # The 8-slot palette above must never be asked to color more than
+    # 8 named wedges. mrb_design's upstream lump_to_other reads its
+    # threshold from chart_palette.other_bucket (config key managed
+    # in mrb_design / firm_settings.json); if that config doesn't
+    # match the PDF palette size, the pie would ask for colors it
+    # doesn't have and md5-hash would collide multiple holdings onto
+    # the same slot — exactly the visual problem the palette redesign
+    # set out to fix. This wrapper enforces the cap independently of
+    # the upstream config: it calls the upstream function first, then
+    # post-processes the result so at most 8 named holdings remain,
+    # with the smallest extras folded into the existing 'Other' row
+    # (creating one if upstream didn't return any).
+    _orig_lump_to_other = lump_to_other
+    _OTHER_LABEL = _SETTINGS["chart_palette"]["other_bucket"]["other_label"]
+
+    def lump_to_other(tickers, weights, settings, _max_named=8,
+                      _orig=_orig_lump_to_other,
+                      _other_lbl=_OTHER_LABEL):
+        ts, ws, has_other = _orig(tickers, weights, settings)
+        named = []
+        other_w = 0.0
+        for t, w in zip(ts, ws):
+            if t == _other_lbl:
+                other_w += float(w or 0)
+            else:
+                named.append((t, float(w or 0)))
+        if len(named) <= _max_named:
+            return ts, ws, has_other
+        # Excess named holdings — keep the top 8 by weight, fold the
+        # rest into Other. Sort by weight desc, then take the first 8.
+        named.sort(key=lambda tw: -tw[1])
+        keep = named[:_max_named]
+        drop = named[_max_named:]
+        for _, w in drop:
+            other_w += w
+        new_ts = [t for t, _ in keep]
+        new_ws = [w for _, w in keep]
+        if other_w > 0:
+            new_ts.append(_other_lbl)
+            new_ws.append(other_w)
+        return new_ts, new_ws, other_w > 0
+
+    def PDF_TICKER_COLOR(ticker):
+        """Stable per-ticker color resolution for PDF pie segments.
+
+        Wraps mrb_design.get_ticker_color() so the same SCHD always gets the
+        same berry-pink in the PDF as on screen. Unknown tickers fall back
+        to a deterministic md5-hashed slot in the fallback palette.
+
+        NOTE: This is the per-ticker "preferred" lookup. For pie charts
+        and their matching legends, call resolve_chart_colors(tickers)
+        below instead — it enforces no-duplicates WITHIN a single chart
+        while still giving each ticker its preferred color where the
+        slot isn't already taken.
+        """
+        return colors.HexColor(get_ticker_color(ticker, _SETTINGS))
+
+    def resolve_chart_colors(tickers):
+        """Return a distinct color per ticker for a single chart.
+
+        Tony's requirements, in priority order:
+          1. NO two wedges in a single chart may share a color.
+          2. Same ticker should get the same color across charts when
+             possible (so SCHD's berry stays consistent between the
+             cover donut, the current-portfolio donut on page 2, and
+             the legend swatch in the proposed comparison cards).
+
+        Algorithm — greedy first-fit on a fixed deterministic ordering:
+          • Pass 1: walk the input list in order. For each ticker, take
+            its "preferred" color from PDF_TICKER_COLOR (which resolves
+            either an explicit anchor like SCHZ→teal or an md5-hashed
+            palette slot for unknown tickers). If that color isn't
+            already used in this chart, take it.
+          • Pass 2: any tickers whose preferred color collided with an
+            earlier ticker fall through to the next unused slot in the
+            8-color palette, again in palette order. This is
+            deterministic — same input list always produces the same
+            output list — so the pie chart and its legend (which both
+            call this function with the same ticker list) get matching
+            colors.
+
+        Goal #1 (no duplicates) is always satisfied as long as the
+        ticker list has ≤ palette_size + 1 entries (the +1 being the
+        reserved "Other" gray, which doesn't compete for palette slots).
+        The local lump_to_other wrapper above enforces this cap.
+
+        Goal #2 (cross-chart stability) is best-effort: explicit
+        anchors are always honored on first occurrence; tickers that
+        only differ between charts in their position-after-collision
+        may shift slots between charts. Anchored tickers (SCHZ, SCHD,
+        etc.) effectively never shift because their explicit hex is
+        outside the collision-prone md5 path.
+        """
+        def _hex_of(c):
+            return "#{:02x}{:02x}{:02x}".format(
+                int(round(c.red   * 255)),
+                int(round(c.green * 255)),
+                int(round(c.blue  * 255)),
+            )
+
+        # "Other" color resolution — different versions of mrb_design's
+        # chart_palette settings have placed this key at different
+        # paths (chart_palette.other_color as a sibling of
+        # other_bucket, vs. chart_palette.other_bucket.other_color
+        # nested inside it). Try both, fall back to GRAY_SOFT
+        # (#888888 — the brand muted-gray, which is what the original
+        # PDF_TICKER_COLOR returned for "Other" via get_ticker_color).
+        _other_color = GRAY_SOFT
+        _cp = _SETTINGS.get("chart_palette", {}) if isinstance(_SETTINGS, dict) else {}
+        _ob = _cp.get("other_bucket", {}) if isinstance(_cp, dict) else {}
+        for _candidate in (_ob.get("other_color"), _cp.get("other_color")):
+            if isinstance(_candidate, str) and _candidate.startswith("#"):
+                try:
+                    _other_color = colors.HexColor(_candidate)
+                except (ValueError, TypeError):
+                    pass
+                break
+        # "Other" label — known-good path, but be defensive anyway.
+        _other_label = _ob.get("other_label", "Other") if isinstance(_ob, dict) else "Other"
+
+        n = len(tickers)
+        result = [None] * n
+        used_hexes = set()
+        # Palette slots still up for reassignment, in palette order so
+        # the second pass is deterministic.
+        available_palette = list(PDF_PIE_PALETTE)
+
+        # Pass 1 — claim preferred color when free
+        for i, t in enumerate(tickers):
+            if t == _other_label or t == "Other":
+                result[i] = _other_color
+                # Other's gray sits OUTSIDE the 8-slot palette, so it
+                # doesn't consume an available slot, but we do mark it
+                # used so a downstream re-resolution doesn't collide.
+                used_hexes.add(_hex_of(_other_color))
+                continue
+            preferred = colors.HexColor(get_ticker_color(t, _SETTINGS))
+            ph = _hex_of(preferred)
+            if ph not in used_hexes:
+                result[i] = preferred
+                used_hexes.add(ph)
+                # If preferred came from the palette (anchor matches a
+                # palette slot, or md5 fallback hit), remove that slot
+                # from the pool so Pass 2 doesn't reassign it.
+                available_palette = [
+                    c for c in available_palette if _hex_of(c) != ph
+                ]
+
+        # Pass 2 — fill colliders with next available palette slot
+        for i, t in enumerate(tickers):
+            if result[i] is not None:
+                continue
+            if available_palette:
+                chosen = available_palette.pop(0)
+                result[i] = chosen
+                used_hexes.add(_hex_of(chosen))
+            else:
+                # Out of slots — only reachable if the input violated
+                # the lump_to_other cap. Return preferred color anyway
+                # (may duplicate); preferable to crashing.
+                result[i] = colors.HexColor(get_ticker_color(t, _SETTINGS))
+
+        return result
+
+    # Tier colors — remapped to the new palette. "conservative" stays navy,
+    # "balanced" picks up the brand gold (was the structural blue), and
+    # "aggressive" deepens to navy_dark for visual hierarchy.
     TIER_COLORS = {
         "conservative": NAVY,
         "balanced":     ACCENT,
@@ -4742,22 +5070,318 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
     }
 
     buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=letter,
-        rightMargin=0.55*inch, leftMargin=0.55*inch,
-        topMargin=0.55*inch,   bottomMargin=0.65*inch,
-        title=f"Portfolio Snapshot — {client_profile.get('client_name','Client')}",
-        author="Portfolio Intelligence",
+    # BaseDocTemplate with three PageTemplates so we can switch
+    # orientation per page via NextPageTemplate:
+    #   - 'cover'     : portrait letter, used for page 1 only (uses
+    #                   _on_first_page callback for the dotted top rule)
+    #   - 'portrait'  : portrait letter, default for all later pages
+    #   - 'landscape' : landscape letter, used for the Holdings (page 2)
+    #                   and Recommendations pages
+    # Margins are identical across templates so the body content area
+    # stays predictable. The on-page callbacks read _doc.pagesize so the
+    # nav stripe + footer scale automatically to whichever orientation
+    # is active.
+    _portrait_size  = letter            # (612, 792)
+    _landscape_size = landscape(letter) # (792, 612)
+    _margins = dict(
+        leftMargin=0.55*inch, rightMargin=0.55*inch,
+        topMargin=0.55*inch,  bottomMargin=0.65*inch,
     )
 
+    def _make_frame(pagesize, name):
+        _pw, _ph = pagesize
+        return Frame(
+            _margins['leftMargin'],
+            _margins['bottomMargin'],
+            _pw - _margins['leftMargin'] - _margins['rightMargin'],
+            _ph - _margins['topMargin'] - _margins['bottomMargin'],
+            id=name, showBoundary=0,
+            leftPadding=0, rightPadding=0,
+            topPadding=0, bottomPadding=0,
+        )
+
+    # ── PAGE CALLBACKS ─────────────────────────────────────────
+    # Defined here (above the PageTemplate constructors) because Python
+    # treats `def` as an assignment, so referencing these names from the
+    # PageTemplate(...) calls below would otherwise raise UnboundLocalError
+    # if the defs lived further down in the function.
+    # Page background / footer (later pages)
+    def _on_page(canvas, _doc):
+        # Read page dimensions from the ACTIVE page template's pagesize
+        # so the callback adapts when we switch between portrait and
+        # landscape templates. Falling back to _doc.pagesize (the
+        # BaseDocTemplate default) would draw the nav stripe at portrait
+        # width on landscape pages, leaving a visible gap on the right.
+        _tmpl = getattr(_doc, 'pageTemplate', None)
+        _pw, _ph = (_tmpl.pagesize if _tmpl and _tmpl.pagesize
+                     else _doc.pagesize)
+        canvas.saveState()
+        # Thin nav stripe at top
+        canvas.setFillColor(NAVY)
+        canvas.rect(0, _ph - 0.20*inch, _pw, 0.20*inch, fill=1, stroke=0)
+        canvas.setFillColor(ACCENT)
+        canvas.rect(0, _ph - 0.24*inch, _pw, 0.04*inch, fill=1, stroke=0)
+        # Footer
+        canvas.setFillColor(GRAY)
+        canvas.setFont("Helvetica", 7.5)
+        canvas.drawString(
+            0.55*inch, 0.35*inch,
+            f"Confidential — {client_profile.get('client_name','Client')}  ·  "
+            f"Prepared {_dt.now().strftime('%B %d, %Y')}"
+        )
+        canvas.drawRightString(
+            _pw - 0.55*inch, 0.35*inch,
+            f"Page {_doc.page}"
+        )
+        canvas.setStrokeColor(BORDER)
+        canvas.setLineWidth(0.5)
+        canvas.line(0.55*inch, 0.50*inch, _pw - 0.55*inch, 0.50*inch)
+        canvas.restoreState()
+
+    def _on_first_page(canvas, _doc):
+        _tmpl = getattr(_doc, 'pageTemplate', None)
+        _pw, _ph = (_tmpl.pagesize if _tmpl and _tmpl.pagesize
+                     else _doc.pagesize)
+        # Cover page header — full-bleed solid navy band with a small
+        # cream-filled logo box inset on the left, firm name to its
+        # right, and advisor info right-aligned. Gold accent rule
+        # beneath. Matches the thin navy + gold nav stripe drawn at
+        # the top of every other page (see _on_page), just taller so
+        # it can hold the branding content. The cover Frame (see
+        # _make_cover_frame) starts below this band so flowable content
+        # doesn't render inside the navy fill.
+
+        # Resolve firm/advisor info from settings via closure — these
+        # are bound in the outer function scope by the time this
+        # callback fires during doc.build. Defensive try/except in
+        # case the variables aren't populated for some edge case.
+        try:
+            _hdr_firm     = _firm_name or ""
+            _hdr_adv_name = _adv_name or ""
+            _hdr_adv_title= _adv_title or ""
+            _hdr_email    = _adv_email or ""
+            _hdr_phone    = _adv_phone or ""
+            _hdr_website  = _firm_website or ""
+            _hdr_logo_ok  = _has_logo
+        except NameError:
+            _hdr_firm = _hdr_adv_name = _hdr_adv_title = ""
+            _hdr_email = _hdr_phone = _hdr_website = ""
+            _hdr_logo_ok = False
+
+        canvas.saveState()
+
+        # Wordmark color matches the body antique gold (ACCENT) so the
+        # masthead's gold reads as the same color as the document's
+        # other gold accents (PORTFOLIO & RISK PROFILE REVIEW title,
+        # eyebrows, inner badge rings, etc.) rather than the lighter
+        # champagne shade used previously. The accent stripe beneath
+        # the navy band also uses ACCENT to match.
+
+        # ── Header band: navy fill + gold accent rule below ──
+        _band_h   = 1.15 * inch
+        _accent_h = 0.05 * inch
+        canvas.setFillColor(NAVY)
+        canvas.rect(0, _ph - _band_h, _pw, _band_h, fill=1, stroke=0)
+        canvas.setFillColor(ACCENT)
+        canvas.rect(0, _ph - _band_h - _accent_h,
+                    _pw, _accent_h, fill=1, stroke=0)
+
+        # ── Cream logo box inset on the left ──
+        _box_w = _box_h = 0.75 * inch
+        _box_x = 0.30 * inch
+        _box_y = _ph - _band_h + (_band_h - _box_h) / 2.0
+        canvas.setFillColor(BG_SOFT)
+        canvas.rect(_box_x, _box_y, _box_w, _box_h, fill=1, stroke=0)
+
+        if _hdr_logo_ok:
+            try:
+                _img_pad = 3
+                canvas.drawImage(
+                    FIRM_LOGO_PATH,
+                    _box_x + _img_pad,
+                    _box_y + _img_pad,
+                    _box_w - 2 * _img_pad,
+                    _box_h - 2 * _img_pad,
+                    preserveAspectRatio=True,
+                    mask='auto',
+                )
+            except Exception:
+                pass
+
+        # ── Resolve wordmark font ──
+        # Try to register Cormorant Garamond Medium from a few plausible
+        # paths. Falls back to Times-Bold if the .ttf isn't found so the
+        # PDF always builds. Drop CormorantGaramond-Medium.ttf into the
+        # repo (root, ./fonts/, or alongside app.py) to enable it.
+        _word_font = "Times-Bold"
+        try:
+            import os as _os
+            from reportlab.pdfbase import pdfmetrics as _pdfm
+            from reportlab.pdfbase.ttfonts import TTFont as _TTFont
+            _font_name = "CormorantGaramond-Medium"
+            try:
+                _pdfm.getFont(_font_name)
+                _word_font = _font_name
+            except KeyError:
+                _candidate_paths = [
+                    "fonts/CormorantGaramond-Medium.ttf",
+                    "CormorantGaramond-Medium.ttf",
+                ]
+                try:
+                    _here = _os.path.dirname(_os.path.abspath(__file__))
+                    _candidate_paths.extend([
+                        _os.path.join(_here, "fonts",
+                                       "CormorantGaramond-Medium.ttf"),
+                        _os.path.join(_here,
+                                       "CormorantGaramond-Medium.ttf"),
+                    ])
+                except (NameError, OSError):
+                    pass
+                for _p in _candidate_paths:
+                    if _os.path.exists(_p):
+                        try:
+                            _pdfm.registerFont(_TTFont(_font_name, _p))
+                            _word_font = _font_name
+                            break
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # ── Wordmark + website: positioned LEFT, immediately to the
+        # right of the logo box, instead of right-anchored. The wordmark
+        # ("MRB CAPITAL GROUP") in Cormorant Garamond Medium (or
+        # Times-Bold fallback) 22pt gold, with a gold 1.8pt underline
+        # rule beneath it that spans the natural width of the text, and
+        # the firm website rendered in gold italic (Helvetica-Oblique
+        # 9pt) directly under the rule. Layout shifts the wordmark from
+        # the right of the band to the left so the firm identity sits
+        # as a unified anchor with the logo on the left half. ──
+        _word_text = (_hdr_firm or "MRB CAPITAL GROUP").upper()
+        _word_size = 22
+        _word_x = _box_x + _box_w + 0.15 * inch
+        _word_y = _ph - 0.50 * inch
+        _word_natural_w = canvas.stringWidth(
+            _word_text, _word_font, _word_size)
+        canvas.setFillColor(ACCENT)
+        canvas.setFont(_word_font, _word_size)
+        canvas.drawString(_word_x, _word_y, _word_text)
+
+        # Underline rule beneath the wordmark
+        _rule_y = _word_y - 5
+        canvas.setStrokeColor(ACCENT)
+        canvas.setLineWidth(1.8)
+        canvas.line(_word_x, _rule_y,
+                    _word_x + _word_natural_w, _rule_y)
+
+        # Website beneath the underline, italic gold Helvetica
+        if _hdr_website:
+            _site_y = _word_y - 20
+            canvas.setFont("Helvetica-Oblique", 9)
+            canvas.setFillColor(ACCENT)
+            canvas.drawString(_word_x, _site_y, _hdr_website)
+
+        # ── Advisor info stack: 3 lines right-anchored ──
+        #   Line 1: "Name · Title" combined in cream Helvetica-Bold 11pt
+        #   Line 2: email in cream Helvetica 8.5pt
+        #   Line 3: phone in cream Helvetica 8.5pt
+        # (Website intentionally omitted from the right stack — it now
+        # lives under the wordmark on the left.)
+        _right_x = _pw - 0.55 * inch
+        canvas.setFillColor(colors.white)
+
+        _adv_y = _ph - 0.42 * inch
+        if _hdr_adv_name or _hdr_adv_title:
+            if _hdr_adv_name and _hdr_adv_title:
+                _line_adv = f"{_hdr_adv_name} · {_hdr_adv_title}"
+            else:
+                _line_adv = _hdr_adv_name or _hdr_adv_title
+            canvas.setFont("Helvetica-Bold", 11)
+            canvas.drawRightString(_right_x, _adv_y, _line_adv)
+
+        if _hdr_email:
+            canvas.setFont("Helvetica", 8.5)
+            canvas.drawRightString(_right_x, _ph - 0.62 * inch, _hdr_email)
+        if _hdr_phone:
+            canvas.setFont("Helvetica", 8.5)
+            canvas.drawRightString(_right_x, _ph - 0.78 * inch, _hdr_phone)
+
+        # ── Footer ──
+        canvas.setFillColor(GRAY)
+        canvas.setFont("Helvetica", 7.5)
+        canvas.drawString(
+            0.55*inch, 0.35*inch,
+            f"Confidential — {client_profile.get('client_name','Client')}  ·  "
+            f"Prepared {_dt.now().strftime('%B %d, %Y')}"
+        )
+        canvas.drawRightString(
+            _pw - 0.55*inch, 0.35*inch,
+            f"Page {_doc.page}"
+        )
+        canvas.setStrokeColor(BORDER)
+        canvas.setLineWidth(0.5)
+        canvas.line(0.55*inch, 0.50*inch, _pw - 0.55*inch, 0.50*inch)
+        canvas.restoreState()
+
+    def _make_cover_frame(pagesize, name):
+        """Frame for the cover page — top margin extended so flowable
+        content starts BELOW the full-bleed navy header band drawn by
+        _on_first_page. Band is 1.15" navy + 0.05" champagne accent;
+        we add ~0.10" of breathing room before the first flowable."""
+        _pw, _ph = pagesize
+        _cover_top = 1.30 * inch
+        return Frame(
+            _margins['leftMargin'],
+            _margins['bottomMargin'],
+            _pw - _margins['leftMargin'] - _margins['rightMargin'],
+            _ph - _cover_top - _margins['bottomMargin'],
+            id=name, showBoundary=0,
+            leftPadding=0, rightPadding=0,
+            topPadding=0, bottomPadding=0,
+        )
+
+    _cover_tmpl = PageTemplate(
+        id='cover',
+        frames=[_make_cover_frame(_portrait_size, 'cover_frame')],
+        pagesize=_portrait_size,
+        onPage=_on_first_page,
+    )
+    _portrait_tmpl = PageTemplate(
+        id='portrait',
+        frames=[_make_frame(_portrait_size, 'portrait_frame')],
+        pagesize=_portrait_size,
+        onPage=_on_page,
+    )
+    _landscape_tmpl = PageTemplate(
+        id='landscape',
+        frames=[_make_frame(_landscape_size, 'landscape_frame')],
+        pagesize=_landscape_size,
+        onPage=_on_page,
+    )
+
+    doc = BaseDocTemplate(
+        buf,
+        pagesize=_portrait_size,    # default; overridden per-template
+        title=f"Portfolio Snapshot — {client_profile.get('client_name','Client')}",
+        author="Portfolio Intelligence",
+        **_margins,
+    )
+    doc.addPageTemplates([_cover_tmpl, _portrait_tmpl, _landscape_tmpl])
+
     # ── TYPOGRAPHY ─────────────────────────────────────────────
+    # Phase 1: display headings move to Times-Roman serif for editorial
+    # voice (cover title, section headers). Tracked-caps eyebrows stay in
+    # Helvetica-Bold because serifs render poorly at <9pt with letter-
+    # spacing. Body copy stays in Helvetica for readability — established
+    # editorial pattern: serif headlines, sans body. Body bold/italic
+    # variants stay Helvetica too.
     snapshot_title = ParagraphStyle(
         "snap_title", fontSize=26, leading=30, textColor=CHARCOAL,
-        fontName="Helvetica-Bold", alignment=TA_LEFT, spaceAfter=2,
+        fontName="Times-Roman", alignment=TA_LEFT, spaceAfter=2,
     )
     h1 = ParagraphStyle(
-        "h1", fontSize=16, leading=20, textColor=NAVY,
-        fontName="Helvetica-Bold", alignment=TA_LEFT,
+        "h1", fontSize=17.6, leading=22, textColor=NAVY,
+        fontName="Times-Roman", alignment=TA_LEFT,
         spaceBefore=8, spaceAfter=3,
     )
     h1_eyebrow = ParagraphStyle(
@@ -4766,7 +5390,7 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
     )
     h2 = ParagraphStyle(
         "h2", fontSize=13, leading=16, textColor=NAVY,
-        fontName="Helvetica-Bold", alignment=TA_LEFT,
+        fontName="Times-Roman", alignment=TA_LEFT,
         spaceBefore=8, spaceAfter=3,
     )
     h3 = ParagraphStyle(
@@ -4801,60 +5425,827 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
     # ── HELPERS ────────────────────────────────────────────────
 
     def risk_badge(score, label="RISK", size=0.55*inch, needle_color=None):
-        """Render the boxed 'RISK N' badge from the reference design.
+        """Crest medallion risk badge — gold concentric rings + serif numeral.
 
-        Small bordered square with 'RISK' label on top and big number
-        below. Returns a Drawing.
+        Phase 2: replaces the legacy boxed "RISK N" badge with the crest
+        design from the cover mockups. Two concentric rings (navy outer,
+        gold inner) around a Times-Roman numeral, with an optional
+        eyebrow above and "/ 99" below. Renders proportionally at any
+        size — the same helper drives the 0.8" cover hero badge and the
+        0.45" mini badges in tier comparison ribbons. `needle_color` is
+        kept in the signature for backward compatibility with existing
+        call sites but no longer affects the design (the crest is always
+        navy + gold, since color is now a structural element of the
+        brand, not a per-instance choice).
+
+        Args:
+            score: Integer risk score (1–99) or "—" / None for placeholder.
+            label: Eyebrow text above the number. Defaults to "RISK".
+                   Set to None/empty to omit the eyebrow (used at tiny sizes).
+            size: Outer diameter in points. The whole badge scales
+                  proportionally — fonts, ring thickness, padding all
+                  derived from this single number.
+            needle_color: Legacy param, ignored. Kept so existing call
+                          sites don't need editing.
+
+        Returns:
+            ReportLab Drawing, sized (size × 1.05, size × 1.05) to give
+            the outer ring a tiny bit of breathing room.
         """
         d = Drawing(size * 1.05, size * 1.05)
-        # Colored ring/border
-        border_color = needle_color or NAVY
-        d.add(Rect(0, 0, size, size, strokeColor=border_color,
-                   strokeWidth=1.2, fillColor=WHITE))
-        # Tiny colored bar on top with RISK label
-        bar_h = size * 0.26
-        d.add(Rect(0, size - bar_h, size, bar_h,
-                   strokeColor=border_color, strokeWidth=0,
-                   fillColor=border_color))
-        d.add(String(size/2, size - bar_h*0.72, label,
-                     fontName="Helvetica-Bold", fontSize=7,
-                     fillColor=WHITE, textAnchor="middle"))
-        # Big score number
+        cx, cy = size / 2, size / 2
+
+        # Outer navy ring — thickness proportional to size so small
+        # badges don't have hairline borders and large ones don't have
+        # chunky ones. Cream fill inside the ring so the numeral sits
+        # on a clean cream face rather than the page background
+        # showing through.
+        outer_stroke = max(0.8, size * 0.022)
+        d.add(Circle(cx, cy, size / 2 - outer_stroke / 2,
+                     strokeColor=NAVY, strokeWidth=outer_stroke,
+                     fillColor=BG_SOFT))
+
+        # Inner gold ring — sits inset from the outer edge. The gold
+        # accent inside the navy frame mirrors the framed-plaque feel
+        # used throughout the document's editorial chrome.
+        inner_radius = size / 2 - (size * 0.08)
+        d.add(Circle(cx, cy, inner_radius,
+                     strokeColor=ACCENT, strokeWidth=0.8,
+                     fillColor=None))
+
+        # ── RISK GAUGE — quarter-arc gradient at top of badge ─────
+        # A 90° arc spanning -45° to +45° (where 0° = top, clockwise
+        # positive) gets a green→amber→red gradient overlaid on the
+        # gold inner ring. A thin navy tick marks the score's position
+        # on the gauge. The arc is rendered as N short line segments
+        # with interpolated colors at each midpoint since ReportLab
+        # graphics primitives don't natively gradient-fill an arc.
+        # Gated on `show_chrome` so mini-badges (< 0.6") skip the
+        # gauge to avoid visual clutter at small sizes.
+        if size >= 0.6 * inch:
+            _gauge_r       = inner_radius
+            _gauge_stroke  = max(1.5, size * 0.035)
+            _arc_start_deg = -45.0
+            _arc_span_deg  = 90.0
+            _stop_green    = colors.HexColor("#97C459")
+            _stop_amber    = colors.HexColor("#FAC775")
+            _stop_red      = colors.HexColor("#F09595")
+            _n_seg = 60
+            for _i in range(_n_seg):
+                _t0 = _i / _n_seg
+                _t1 = (_i + 1) / _n_seg
+                _a0 = np.radians(_arc_start_deg + _t0 * _arc_span_deg)
+                _a1 = np.radians(_arc_start_deg + _t1 * _arc_span_deg)
+                _x0 = cx + _gauge_r * np.sin(_a0)
+                _y0 = cy + _gauge_r * np.cos(_a0)
+                _x1 = cx + _gauge_r * np.sin(_a1)
+                _y1 = cy + _gauge_r * np.cos(_a1)
+                _tmid = (_t0 + _t1) / 2
+                if _tmid < 0.5:
+                    _u = _tmid * 2
+                    _ca, _cb = _stop_green, _stop_amber
+                else:
+                    _u = (_tmid - 0.5) * 2
+                    _ca, _cb = _stop_amber, _stop_red
+                _r = _ca.red   * (1 - _u) + _cb.red   * _u
+                _g = _ca.green * (1 - _u) + _cb.green * _u
+                _b = _ca.blue  * (1 - _u) + _cb.blue  * _u
+                _seg = Line(_x0, _y0, _x1, _y1)
+                _seg.strokeColor = colors.Color(_r, _g, _b)
+                _seg.strokeWidth = _gauge_stroke
+                _seg.strokeLineCap = 1   # round caps so segments blend
+                d.add(_seg)
+
+            # Navy tick at score position. Maps score 1..99 to angle
+            # -45° → +45° linearly. Tick is a radial line from just
+            # inside the gauge to just outside, perpendicular to the
+            # arc at the score point. Skipped when score isn't a
+            # parseable int (e.g. "—" placeholder).
+            try:
+                _sc_int = (
+                    int(score) if score not in ("—", None, "") else None
+                )
+            except (ValueError, TypeError):
+                _sc_int = None
+            if _sc_int is not None:
+                _sc_int = max(1, min(99, _sc_int))
+                _frac = _sc_int / 99.0
+                _t_ang = np.radians(
+                    _arc_start_deg + _frac * _arc_span_deg)
+                _tick_in  = _gauge_r - max(2.5, size * 0.04)
+                _tick_out = _gauge_r + max(2.5, size * 0.04)
+                _txi = cx + _tick_in  * np.sin(_t_ang)
+                _tyi = cy + _tick_in  * np.cos(_t_ang)
+                _txo = cx + _tick_out * np.sin(_t_ang)
+                _tyo = cy + _tick_out * np.cos(_t_ang)
+                _tick = Line(_txi, _tyi, _txo, _tyo)
+                _tick.strokeColor = NAVY
+                _tick.strokeWidth = 1.5
+                _tick.strokeLineCap = 1
+                d.add(_tick)
+
+        # Resolve the score for display
         try:
-            n = str(int(score)) if score != "—" else "—"
+            n = str(int(score)) if score not in ("—", None, "") else "—"
         except (ValueError, TypeError):
             n = "—"
-        d.add(String(size/2, (size - bar_h)/2 - 5, n,
-                     fontName="Helvetica-Bold", fontSize=18,
-                     fillColor=CHARCOAL, textAnchor="middle"))
+
+        # Decide whether to show chrome (eyebrow text + "/ 99" footer)
+        # based on size. At small sizes (mini badges) the chrome competes
+        # with the numeral, so we show only the number. Threshold: ~0.6"
+        # outer diameter. The two chrome elements are gated independently:
+        # the eyebrow only renders when a label is provided, but the
+        # "/ 99" footer renders whenever the badge is big enough — this
+        # lets caller render bare-label side badges (e.g. TOLERANCE /
+        # CAPACITY) that still show "/ 99" so the score reads as a ratio
+        # consistent with the eyebrow'd center badge.
+        show_chrome = size >= 0.6 * inch
+
+        if show_chrome:
+            # Eyebrow text — only when a label is provided. Tiny tracked
+            # caps in navy, positioned above the numeral.
+            if label:
+                eyebrow_pt = max(5.5, size * 0.075)
+                eyebrow_y = cy + size * 0.22
+                d.add(String(cx, eyebrow_y, label.upper(),
+                             fontName="Helvetica-Bold", fontSize=eyebrow_pt,
+                             fillColor=NAVY, textAnchor="middle"))
+            # Big serif numeral — centered. When the eyebrow is shown
+            # (center badges with label="PROFILE"), the numeral sits at
+            # ~36% of badge diameter so it fits between the eyebrow and
+            # the "/ 99" footer. When there's NO eyebrow (side badges
+            # like TOLERANCE / CAPACITY), the numeral can grow to fill
+            # the freed space at the top of the circle — bumped to
+            # ~46% of diameter so the badge doesn't look half-empty.
+            num_pt = size * 0.46 if not label else size * 0.36
+            num_y = cy - num_pt * 0.32   # vertical centering tweak
+            d.add(String(cx, num_y, n,
+                         fontName="Times-Roman", fontSize=num_pt,
+                         fillColor=NAVY, textAnchor="middle"))
+            # "/ 99" below the number — always shown at chrome sizes
+            of_pt = max(5.5, size * 0.085)
+            of_y = cy - size * 0.28
+            d.add(String(cx, of_y, "/ 99",
+                         fontName="Helvetica", fontSize=of_pt,
+                         fillColor=GRAY_SOFT, textAnchor="middle"))
+        else:
+            # Compact form — just the numeral, centered in the badge
+            num_pt = size * 0.48
+            num_y = cy - num_pt * 0.32
+            d.add(String(cx, num_y, n,
+                         fontName="Times-Roman", fontSize=num_pt,
+                         fillColor=NAVY, textAnchor="middle"))
+
+        return d
+
+    def portfolio_badge(score, label="PORTFOLIO", size=0.55*inch,
+                        chrome=None, filled=False):
+        """Square badge for PORTFOLIO risk scores.
+
+        Counterpart to risk_badge() (the client crest). The shape rule
+        across the document:
+            circle = client (a person's risk profile)
+            square = portfolio (a basket of securities)
+
+        Two visual variants:
+          • Outlined (default, filled=False): cream fill, navy outer
+            edge, gold inner ring inset, navy numeral. Used for the
+            current portfolio + side comparison cards.
+          • Nested-frame (filled=True): the "crest" hero treatment —
+            thick gold outer frame, cream gap, thick navy inner frame,
+            cream interior holding a navy eyebrow + serif numeral +
+            gold "/ 99". Used for the PROPOSED portfolio anywhere it
+            needs to anchor as the headline option. The `filled` name
+            is preserved for caller compatibility even though the new
+            variant is no longer a solid navy fill.
+
+        Chrome (eyebrow text + "/ 99" footer):
+          • chrome=True:  always render chrome
+          • chrome=False: never render chrome (just the numeral)
+          • chrome=None (default): size-aware — chrome at ≥0.6 inch,
+            bare numeral below. Matches risk_badge's threshold for
+            cross-badge consistency.
+
+        Args:
+            score: Integer 1-99 or "—" / None for placeholder.
+            label: Eyebrow text. Default "PORTFOLIO". Has no effect
+                   if chrome is False (or auto-disabled at small size).
+            size: Badge edge length.
+            chrome: Tri-state override for chrome rendering — see above.
+            filled: True for the nested-frame hero variant (PROPOSED
+                    portfolio crest). Default False for the simple
+                    outlined cream-fill variant.
+
+        Returns:
+            ReportLab Drawing, sized (size × 1.05, size × 1.05) to give
+            the outer edge a tiny bit of breathing room.
+        """
+        W = size * 1.05
+        H = size * 1.05
+        d = Drawing(W, H)
+        cx, cy = W / 2, H / 2
+
+        bx = (W - size) / 2
+        by = (H - size) / 2
+
+        if filled:
+            # NESTED-FRAME hero variant — concentric squares around a
+            # cream interior. Both frames are stroke-only; the cream
+            # fill comes from a backdrop rect that fills the whole
+            # badge so the gap between frames also reads as cream.
+            face_fill   = BG_SOFT      # carried for text-color logic
+            num_color   = NAVY         # navy serif numeral
+            eyebrow_col = NAVY         # navy bold eyebrow
+            of_color    = ACCENT       # gold "/ 99"
+
+            # Cream backdrop (full badge area)
+            d.add(Rect(bx, by, size, size,
+                       strokeColor=None, strokeWidth=0,
+                       fillColor=BG_SOFT))
+
+            # Outer GOLD frame — thick stroke, inset by half-stroke so
+            # the stroke sits on the badge edge instead of bleeding
+            # outside (ReportLab centers strokes on the path).
+            gold_stroke = max(2.0, size * 0.055)
+            d.add(Rect(bx + gold_stroke/2, by + gold_stroke/2,
+                       size - gold_stroke, size - gold_stroke,
+                       strokeColor=ACCENT, strokeWidth=gold_stroke,
+                       fillColor=None))
+
+            # Inner NAVY frame — inset from the gold frame by `gap`.
+            # The cream backdrop shows through both the gap and the
+            # navy frame's interior.
+            gap = size * 0.10
+            navy_stroke = max(2.0, size * 0.055)
+            d.add(Rect(bx + gap + navy_stroke/2,
+                       by + gap + navy_stroke/2,
+                       size - 2*gap - navy_stroke,
+                       size - 2*gap - navy_stroke,
+                       strokeColor=NAVY, strokeWidth=navy_stroke,
+                       fillColor=None))
+        else:
+            # OUTLINED variant — original cream face, navy outer edge,
+            # gold inner ring inset. Top edge of the inner inset now
+            # carries a green→amber→red gradient gauge (matching the
+            # quarter-arc gauge on the round risk_badge counterpart)
+            # with a navy tick at the score position. The bottom, left,
+            # and right edges remain solid gold so the inset still
+            # reads as a complete square frame.
+            face_fill   = BG_SOFT
+            num_color   = NAVY
+            eyebrow_col = NAVY
+            of_color    = GRAY_SOFT
+
+            outer_stroke = max(0.8, size * 0.022)
+            d.add(Rect(bx, by, size, size,
+                       strokeColor=NAVY, strokeWidth=outer_stroke,
+                       fillColor=face_fill))
+            inset = size * 0.08
+
+            # Inset rect bounds (top-left, top-right, bot-left, bot-right
+            # in ReportLab y-up coords: by+inset is BOTTOM, by+size-inset
+            # is TOP).
+            _ix0 = bx + inset
+            _ix1 = bx + size - inset
+            _iy0 = by + inset
+            _iy1 = by + size - inset
+            _inset_w = _ix1 - _ix0
+            # Gauge owns middle 80% of top edge; gold endcaps cover the
+            # outer 10% on each side. Tick can only ride within the
+            # gauge zone — it never crosses the gold endcaps.
+            _ec_w = _inset_w * 0.10
+            _gauge_x0 = _ix0 + _ec_w
+            _gauge_x1 = _ix1 - _ec_w
+            _gauge_w  = _gauge_x1 - _gauge_x0
+
+            # Bottom / left / right edges — solid gold lines (always).
+            d.add(Line(_ix0, _iy0, _ix1, _iy0,
+                       strokeColor=ACCENT, strokeWidth=0.8))
+            d.add(Line(_ix0, _iy0, _ix0, _iy1,
+                       strokeColor=ACCENT, strokeWidth=0.8))
+            d.add(Line(_ix1, _iy0, _ix1, _iy1,
+                       strokeColor=ACCENT, strokeWidth=0.8))
+
+            # Top edge — branches by size:
+            #   • size >= 0.6": gold ENDCAPS on the outer 10% each
+            #     side, with the gauge gradient strip filling the
+            #     middle 80%. Tick rides within the gauge zone.
+            #   • size < 0.6": ONE CONTINUOUS gold line across the
+            #     entire top edge. The gauge gradient would be too
+            #     small to read at compact sizes, and the prior
+            #     endcaps-only treatment left a visible gap across
+            #     the middle of the top edge — making the inset
+            #     frame's gold look broken on small badges (the
+            #     comparison-#2 and #3 cards). Per advisor.
+            if size >= 0.6 * inch:
+                d.add(Line(_ix0, _iy1, _gauge_x0, _iy1,
+                           strokeColor=ACCENT, strokeWidth=0.8))
+                d.add(Line(_gauge_x1, _iy1, _ix1, _iy1,
+                           strokeColor=ACCENT, strokeWidth=0.8))
+            else:
+                d.add(Line(_ix0, _iy1, _ix1, _iy1,
+                           strokeColor=ACCENT, strokeWidth=0.8))
+
+            # Gauge gradient strip on middle 80% of top edge. Same
+            # green→amber→red palette as the risk_badge gauge and
+            # the Risk Spectrum bar. Rendered as N small rectangles
+            # since ReportLab doesn't natively gradient-fill rects.
+            if size >= 0.6 * inch:
+                _stop_green = colors.HexColor("#97C459")
+                _stop_amber = colors.HexColor("#FAC775")
+                _stop_red   = colors.HexColor("#F09595")
+                _gauge_h = max(2.2, size * 0.05)
+                _gauge_y = _iy1 - _gauge_h / 2
+                _n_slices = 50
+                for _i in range(_n_slices):
+                    _t = (_i + 0.5) / _n_slices
+                    if _t < 0.5:
+                        _u = _t * 2
+                        _ca, _cb = _stop_green, _stop_amber
+                    else:
+                        _u = (_t - 0.5) * 2
+                        _ca, _cb = _stop_amber, _stop_red
+                    _r = _ca.red   * (1 - _u) + _cb.red   * _u
+                    _g = _ca.green * (1 - _u) + _cb.green * _u
+                    _b = _ca.blue  * (1 - _u) + _cb.blue  * _u
+                    _slice_x = _gauge_x0 + _gauge_w * (_i / _n_slices)
+                    _slice_w = _gauge_w / _n_slices + 0.4
+                    d.add(Rect(_slice_x, _gauge_y,
+                               _slice_w, _gauge_h,
+                               fillColor=colors.Color(_r, _g, _b),
+                               strokeColor=None,
+                               strokeWidth=0))
+
+                # Navy tick at score position. Tick crosses the gauge
+                # strip vertically; ride confined to the middle 80%.
+                try:
+                    _sc_int = (
+                        int(score) if score not in ("—", None, "") else None
+                    )
+                except (ValueError, TypeError):
+                    _sc_int = None
+                if _sc_int is not None:
+                    _sc_int = max(1, min(99, _sc_int))
+                    _frac = _sc_int / 99.0
+                    _tx = _gauge_x0 + _frac * _gauge_w
+                    _tick_half = _gauge_h / 2 + max(2.0, size * 0.035)
+                    _tick = Line(_tx, _iy1 - _tick_half,
+                                 _tx, _iy1 + _tick_half)
+                    _tick.strokeColor = NAVY
+                    _tick.strokeWidth = 1.5
+                    _tick.strokeLineCap = 1
+                    d.add(_tick)
+
+        # Resolve the score for display
+        try:
+            n = str(int(score)) if score not in ("—", None, "") else "—"
+        except (ValueError, TypeError):
+            n = "—"
+
+        # Chrome decision: explicit override wins, else size-aware.
+        if chrome is None:
+            show_chrome = size >= 0.6 * inch
+        else:
+            show_chrome = bool(chrome)
+
+        if show_chrome:
+            # Eyebrow — only when caller passed a label. Tighter
+            # vertical offset on the filled (nested-frame) variant
+            # because the inner navy frame eats ~10% on each side, so
+            # the usable interior is ~80% of the outer badge.
+            _eye_off = size * 0.20 if filled else size * 0.22
+            _of_off  = size * 0.24 if filled else size * 0.28
+            if label:
+                eyebrow_pt = max(5.5, size * 0.075)
+                d.add(String(cx, cy + _eye_off, label.upper(),
+                             fontName="Helvetica-Bold", fontSize=eyebrow_pt,
+                             fillColor=eyebrow_col, textAnchor="middle"))
+            # Big serif numeral
+            num_pt = size * 0.36
+            d.add(String(cx, cy - num_pt * 0.32, n,
+                         fontName="Times-Roman", fontSize=num_pt,
+                         fillColor=num_color, textAnchor="middle"))
+            # "/ 99" footer
+            of_pt = max(5.5, size * 0.085)
+            d.add(String(cx, cy - _of_off, "/ 99",
+                         fontName="Helvetica", fontSize=of_pt,
+                         fillColor=of_color, textAnchor="middle"))
+        else:
+            # Compact form — just the numeral, centered. Numeral fills
+            # more of the face since there's no eyebrow/footer to make
+            # room for. Scaled down slightly on the nested-frame variant
+            # so the numeral doesn't crowd the inner navy frame.
+            num_pt = size * (0.40 if filled else 0.48)
+            d.add(String(cx, cy - num_pt * 0.32, n,
+                         fontName="Times-Roman", fontSize=num_pt,
+                         fillColor=num_color, textAnchor="middle"))
+
+        return d
+
+    def portfolio_badge_horizontal(score, width=1.00*inch, height=0.45*inch):
+        """Horizontal pill variant of portfolio_badge — used in the
+        three-card comparison row so the PROPOSED card's PORTFOLIO
+        badge fits in the SAME vertical space as the side cards'
+        compact score boxes. Without this, the much taller square
+        chromed badge (0.85") inflated the header row height and
+        pushed the proposed card's allocation bar / donut / legend
+        ~32pt below the side cards' content, breaking horizontal
+        alignment across the three cards.
+
+        Layout (wider than tall):
+            ┌──────────────────────────┐
+            │ ▓▓▓▓▓│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ │  ← gauge stripe + tick
+            │                          │
+            │ PORTFOLIO         28     │  ← eyebrow + numeral
+            └──────────────────────────┘
+
+        Returns a Drawing sized (width × height) with no extra
+        breathing-room padding (caller controls outer spacing via
+        the surrounding Table).
+        """
+        W = width
+        H = height
+        d = Drawing(W, H)
+
+        # Outer frame — cream fill, thin navy outline matching the
+        # square badge's outlined variant.
+        outer_stroke = max(0.6, H * 0.025)
+        d.add(Rect(0, 0, W, H,
+                   strokeColor=NAVY, strokeWidth=outer_stroke,
+                   fillColor=BG_SOFT))
+
+        # Gauge stripe across the top — same green→amber→red gradient
+        # as the square chromed badge and the Risk Spectrum bar.
+        # Inset from edges so it doesn't touch the outline.
+        inset = max(1.5, H * 0.06)
+        gauge_h = max(2.2, H * 0.10)
+        gauge_y0 = H - inset - gauge_h          # bottom edge of stripe
+        gauge_x0 = inset
+        gauge_x1 = W - inset
+        gauge_w  = gauge_x1 - gauge_x0
+
+        _stop_green = colors.HexColor("#97C459")
+        _stop_amber = colors.HexColor("#FAC775")
+        _stop_red   = colors.HexColor("#F09595")
+        _n_slices = 50
+        for _i in range(_n_slices):
+            _t = (_i + 0.5) / _n_slices
+            if _t < 0.5:
+                _u = _t * 2
+                _ca, _cb = _stop_green, _stop_amber
+            else:
+                _u = (_t - 0.5) * 2
+                _ca, _cb = _stop_amber, _stop_red
+            _r = _ca.red   * (1 - _u) + _cb.red   * _u
+            _g = _ca.green * (1 - _u) + _cb.green * _u
+            _b = _ca.blue  * (1 - _u) + _cb.blue  * _u
+            _slice_x = gauge_x0 + gauge_w * (_i / _n_slices)
+            _slice_w = gauge_w / _n_slices + 0.4
+            d.add(Rect(_slice_x, gauge_y0, _slice_w, gauge_h,
+                       fillColor=colors.Color(_r, _g, _b),
+                       strokeColor=None, strokeWidth=0))
+
+        # Navy tick at score position. Tick rides the full gauge
+        # span (1..99 maps across the inset-to-inset width) and
+        # extends slightly above/below the stripe for visibility.
+        try:
+            _sc_int = (
+                int(score) if score not in ("—", None, "") else None
+            )
+        except (ValueError, TypeError):
+            _sc_int = None
+        if _sc_int is not None:
+            _sc_int = max(1, min(99, _sc_int))
+            _frac = _sc_int / 99.0
+            _tx = gauge_x0 + _frac * gauge_w
+            _gauge_cy = gauge_y0 + gauge_h / 2
+            _tick_half = gauge_h / 2 + max(1.5, H * 0.06)
+            _tick = Line(_tx, _gauge_cy - _tick_half,
+                         _tx, _gauge_cy + _tick_half)
+            _tick.strokeColor = NAVY
+            _tick.strokeWidth = 1.4
+            _tick.strokeLineCap = 1
+            d.add(_tick)
+
+        # Resolve display string for the score.
+        try:
+            n = str(int(score)) if score not in ("—", None, "") else "—"
+        except (ValueError, TypeError):
+            n = "—"
+
+        # Text row sits in the area below the gauge stripe. Vertically
+        # center the baseline of both the eyebrow and the numeral on
+        # the midpoint of that area (numeral baseline gets the usual
+        # -fontSize*0.32 nudge so its visual center aligns; eyebrow
+        # gets a smaller nudge proportional to its own size).
+        text_area_top    = gauge_y0 - max(0.5, H * 0.02)
+        text_area_bottom = inset
+        text_cy = (text_area_top + text_area_bottom) / 2
+
+        # "PORTFOLIO" eyebrow on the left
+        eye_pt = max(5.0, H * 0.17)
+        d.add(String(inset + 2, text_cy - eye_pt * 0.32, "PORTFOLIO",
+                     fontName="Helvetica-Bold", fontSize=eye_pt,
+                     fillColor=NAVY, textAnchor="start"))
+
+        # Numeral on the right (Times-Roman serif, same as square
+        # badge for cross-badge consistency).
+        num_pt = max(11.0, H * 0.50)
+        d.add(String(W - inset - 2, text_cy - num_pt * 0.32, n,
+                     fontName="Times-Roman", fontSize=num_pt,
+                     fillColor=NAVY, textAnchor="end"))
+
+        return d
+
+    def cover_spectrum_band(profile, current_score, total_width=7.4*inch,
+                             align_pct=None, align_color=None):
+        """Compact two-marker spectrum band for the cover page.
+
+        Per advisor revision pass: numbers and marker symbols are all
+        SIZED UP from the previous compact version, and the current-
+        portfolio dot is now an EMPTY navy outline circle (no fill) so
+        the gold profile tick visually "wins" as the target while the
+        current-portfolio circle reads as the marker to move.
+
+        Layout: PROFILE numeral sits ABOVE the band (gold, Times-Bold
+        14pt); PORTFOLIO numeral sits BELOW (navy). The two captions on
+        opposite sides of the band makes their identity unambiguous and
+        lets them sit close together horizontally without colliding.
+
+        A light cream-gray panel sits behind the gradient band to give
+        the spectrum a clear container distinct from the surrounding
+        page background.
+
+        Shows the client's profile target (gold tick) and the current
+        portfolio's score (empty navy circle) on a green→amber→red
+        gradient.
+
+        Args:
+            profile: Client profile score (1–99), int or None.
+            current_score: Current portfolio score (1–99), int or None.
+            total_width: Usable width in points.
+
+        Returns:
+            ReportLab Drawing.
+        """
+        W = total_width
+        # 60pt compact spectrum height. Layout top to bottom: legend row
+        # (eyebrow on left, legend keys on right) · profile numeral ·
+        # gradient bar · portfolio numeral · endpoint labels.
+        H = 60
+        d = Drawing(W, H)
+
+        # Background panel — pale cream surface (BG_SOFT). Reads as
+        # "lifted card on the cover" rather than a contrasting fill;
+        # the wrapping navy box around the drawing already supplies the
+        # structural containment.
+        _panel_fill = BG_SOFT
+        d.add(Rect(0, 0, W, H,
+                   fillColor=_panel_fill, strokeColor=None))
+
+        # Gradient stops — saturated Tailwind 100-level tints rather
+        # than the semantic_bg tokens.
+        stop_green = colors.HexColor("#97C459")   # green-200
+        stop_amber = colors.HexColor("#FAC775")   # amber-100
+        stop_red   = colors.HexColor("#F09595")   # red-200
+
+        # Caption row at the top — 10pt down from the drawing top so
+        # the eyebrow has clear breathing room. Eyebrow color is NAVY
+        # (was ACCENT) to match the new navy treatment of endpoint
+        # labels below — anchors the spectrum chrome in the same color
+        # family as the body navy text.
+        _top_y = H - 10
+        d.add(String(W * 0.03, _top_y, "RISK SPECTRUM",
+                     fontName="Helvetica-Bold", fontSize=8,
+                     fillColor=NAVY, textAnchor="start"))
+        if align_pct is not None:
+            _eyebrow_w = 4.6 * len("RISK SPECTRUM")
+            _align_x = W * 0.03 + _eyebrow_w + 6
+            _align_col = (colors.HexColor(align_color)
+                          if align_color else NAVY)
+            d.add(String(_align_x, _top_y, "·",
+                         fontName="Helvetica", fontSize=8,
+                         fillColor=GRAY, textAnchor="start"))
+            d.add(String(_align_x + 8, _top_y,
+                         f"{align_pct:.0f}% aligned",
+                         fontName="Helvetica-Bold", fontSize=8,
+                         fillColor=_align_col, textAnchor="start"))
+
+        # Right-side legend — walks right→left so labels can stack next
+        # to their corresponding symbols. Symbol-to-text gap is 3pt.
+        legend_y = _top_y
+        legend_x = W * 0.97
+        # 1) Portfolio (rightmost): empty navy outline circle + label
+        d.add(String(legend_x, legend_y, "Your portfolio",
+                     fontName="Helvetica", fontSize=8,
+                     fillColor=CHARCOAL, textAnchor="end"))
+        _portfolio_text_w = 60
+        _portfolio_dot_x = legend_x - _portfolio_text_w - 3
+        d.add(Circle(_portfolio_dot_x, legend_y + 3, 3.5,
+                     fillColor=None,
+                     strokeColor=NAVY, strokeWidth=1.2))
+        # 2) Profile: gold tick + "Your profile" label (to the left).
+        _profile_text_right = _portfolio_dot_x - 12
+        d.add(String(_profile_text_right, legend_y, "Your profile",
+                     fontName="Helvetica", fontSize=8,
+                     fillColor=CHARCOAL, textAnchor="end"))
+        _profile_text_w = 50
+        _profile_tick_x = _profile_text_right - _profile_text_w - 3
+        d.add(Line(_profile_tick_x, legend_y - 2,
+                   _profile_tick_x, legend_y + 7,
+                   strokeColor=ACCENT, strokeWidth=2.0))
+
+        # Gradient band — 10pt thick ribbon, centered vertically.
+        band_left  = W * 0.05
+        band_right = W * 0.95
+        band_h     = 10
+        band_y     = (H - band_h) / 2
+        band_len   = band_right - band_left
+        n_slices   = 80
+        for i in range(n_slices):
+            t = i / (n_slices - 1)
+            if t < 0.5:
+                u = t * 2
+                a, b = stop_green, stop_amber
+            else:
+                u = (t - 0.5) * 2
+                a, b = stop_amber, stop_red
+            r = a.red   * (1 - u) + b.red   * u
+            g = a.green * (1 - u) + b.green * u
+            bl = a.blue * (1 - u) + b.blue * u
+            slice_x = band_left + band_len * t
+            slice_w = band_len / n_slices + 0.5
+            d.add(Rect(slice_x, band_y, slice_w, band_h,
+                       fillColor=colors.Color(r, g, bl),
+                       strokeColor=None))
+
+        # Profile tick — gold vertical line extending 4pt above and
+        # below the band. Numeral above the tick in 11pt Times-Bold
+        # gold (bumped from 9pt per advisor revision pass so the
+        # profile score reads at the same weight class as the bigger
+        # portfolio marker below).
+        if profile is not None:
+            try:
+                pv = int(profile)
+                pf_frac = min(99, max(1, pv)) / 99.0
+                pf_x = band_left + band_len * pf_frac
+                d.add(Line(pf_x, band_y - 4, pf_x, band_y + band_h + 4,
+                           strokeColor=ACCENT, strokeWidth=2.5))
+                d.add(String(pf_x, band_y + band_h + 6, str(pv),
+                             fontName="Times-Bold", fontSize=11,
+                             fillColor=ACCENT, textAnchor="middle"))
+            except (ValueError, TypeError):
+                pass
+
+        # Current portfolio dot — EMPTY navy outline circle (no fill)
+        # so the underlying gradient color shows through the marker.
+        # Per advisor revision pass: radius bumped 5→7pt and stroke
+        # 1.5→1.8pt so the marker scales with the bigger Risk Summary
+        # circles above. Numeral 11pt Times-Bold (was 9pt) below band.
+        if current_score is not None:
+            try:
+                cv = int(current_score)
+                cf_frac = min(99, max(1, cv)) / 99.0
+                cd_x = band_left + band_len * cf_frac
+                d.add(Circle(cd_x, band_y + band_h / 2, 7,
+                             fillColor=None,
+                             strokeColor=NAVY, strokeWidth=1.8))
+                d.add(String(cd_x, band_y - 12, str(cv),
+                             fontName="Times-Bold", fontSize=11,
+                             fillColor=NAVY, textAnchor="middle"))
+            except (ValueError, TypeError):
+                pass
+
+        # Endpoint labels at the bottom — bold NAVY at 8.5pt (was
+        # CHARCOAL 9.5pt). Navy ties the endpoints to the new navy
+        # treatment of the RISK SPECTRUM eyebrow above, anchoring the
+        # spectrum chrome in a single color family.
+        d.add(String(band_left, 3, "Conservative",
+                     fontName="Helvetica-Bold", fontSize=8.5,
+                     fillColor=NAVY, textAnchor="start"))
+        d.add(String(band_right, 3, "Aggressive",
+                     fontName="Helvetica-Bold", fontSize=8.5,
+                     fillColor=NAVY, textAnchor="end"))
+
+        return d
+
+    def speedometer_gauge(score, size_inches=1.0):
+        """Risk scale indicator for the recommendation cards.
+
+        Phase 3 (revised): the half-circle speedometer was too heavy.
+        Replaced with a lighter "Option B" treatment: a thin horizontal
+        track with two markers — a small gold vertical tick at the
+        client's profile score, and a navy dot at this option's score.
+        The reader can see at a glance both where the option sits on the
+        1-99 scale AND how it compares to the client's target profile.
+        The score numeral is NOT repeated here because the ribbon above
+        the card already shows it prominently.
+
+        Function name kept as speedometer_gauge for backward compatibility
+        with existing call sites — only the visual treatment changed.
+
+        Args:
+            score: Integer 1-99 or "—" / None for placeholder.
+            size_inches: Outer width of the drawing in inches.
+
+        Returns:
+            ReportLab Drawing. Short and wide.
+        """
+        W = size_inches * inch
+        H = 28
+        d = Drawing(W, H)
+
+        # Resolve the score safely
+        try:
+            v = int(score) if score not in ("—", None, "") else None
+        except (ValueError, TypeError):
+            v = None
+
+        # Client profile score — for the gold tick on the track. Read
+        # from outer scope (client_score) so the tick reflects the actual
+        # client this proposal is being built for. Falls back gracefully
+        # if client_score is missing or non-numeric.
+        try:
+            profile = (int(client_score)
+                       if client_score not in ("—", None, "") else None)
+        except (ValueError, TypeError):
+            profile = None
+
+        # Caption above the track, on the left, in gold tracked caps
+        d.add(String(W * 0.10, H - 8, "POSITION ON SCALE",
+                     fontName="Helvetica-Bold", fontSize=6.5,
+                     fillColor=ACCENT, textAnchor="start"))
+
+        # Track — thin pill with rounded ends, sits below the caption
+        track_y = H * 0.30
+        track_h = 3
+        track_left = W * 0.10
+        track_right = W * 0.90
+        track_len = track_right - track_left
+        d.add(Rect(track_left, track_y, track_len, track_h,
+                   fillColor=BORDER_SOFT, strokeColor=None,
+                   rx=track_h/2, ry=track_h/2))
+
+        # Profile tick — small gold vertical mark at the client's profile
+        # score. Sits BEHIND the score dot so a perfectly-aligned option
+        # (delta ≤ 1) still reads as "dot on the gold mark".
+        if profile is not None:
+            pf_frac = min(99, max(0, profile)) / 99.0
+            pf_x = track_left + track_len * pf_frac
+            d.add(Line(pf_x, track_y - 4, pf_x, track_y + track_h + 4,
+                       strokeColor=ACCENT, strokeWidth=1.8))
+
+        # Score dot — navy circle marker at the option's score
+        if v is not None:
+            frac = min(99, max(0, v)) / 99.0
+            marker_x = track_left + track_len * frac
+            d.add(Circle(marker_x, track_y + track_h/2, 4.5,
+                         fillColor=NAVY, strokeColor=WHITE, strokeWidth=1.2))
+
+        # Endpoint labels: muted "1" at left, "99" at right
+        d.add(String(track_left, track_y - 9, "1",
+                     fontName="Helvetica", fontSize=6.5,
+                     fillColor=GRAY_SOFT, textAnchor="start"))
+        d.add(String(track_right, track_y - 9, "99",
+                     fontName="Helvetica", fontSize=6.5,
+                     fillColor=GRAY_SOFT, textAnchor="end"))
+
+        # Profile reference label on the right side of the caption row
+        if profile is not None:
+            d.add(String(W * 0.90, H - 8,
+                         f"Your profile: {profile}",
+                         fontName="Helvetica", fontSize=6.5,
+                         fillColor=GRAY, textAnchor="end"))
+
         return d
 
     def pie_drawing(tickers, weights, size=2.2*inch):
         """Render a vector pie chart with the same styling as on-screen.
 
-        Sorts by weight descending, uses PDF_PIE_PALETTE cycling, tiny
-        donut hole, white slice separators.
+        Calls lump_to_other() first so portfolios with more than max_distinct
+        holdings (configured in chart_palette.other_bucket, default 10) get
+        a clean gray 'Other' wedge instead of an unreadable rainbow of
+        similar colors. The Other slice is positioned at the END of the
+        pie (smallest emphasis), and every other slice uses its stable
+        per-ticker color via PDF_TICKER_COLOR().
+
+        SCHD is always berry, GLDM always amber, etc. — the PDF and the
+        on-screen client portal use the same visual key.
         """
-        # Clean + sort
-        data = [(t, float(w)) for t, w in zip(tickers, weights)
-                if t and float(w or 0) > 0.05]
-        data.sort(key=lambda x: -x[1])
-        if not data:
+        # Apply lump-to-Other rule. Returns sorted (desc) tickers/weights
+        # with 'Other' at the end if any holdings were collapsed.
+        ts, ws, has_other = lump_to_other(tickers, weights, _SETTINGS)
+        if not ts:
             d = Drawing(size, size)
             d.add(String(size/2, size/2, "No data",
                          fontName="Helvetica", fontSize=9,
                          fillColor=GRAY, textAnchor="middle"))
             return d
 
-        # Stride through palette so adjacent slices contrast
-        n = len(data)
-        if n <= len(PDF_PIE_PALETTE):
-            stride = max(1, len(PDF_PIE_PALETTE) // max(n, 1))
-            colors_list = [PDF_PIE_PALETTE[(i * stride) % len(PDF_PIE_PALETTE)]
-                           for i in range(n)]
-        else:
-            colors_list = [PDF_PIE_PALETTE[i % len(PDF_PIE_PALETTE)]
-                           for i in range(n)]
+        # Per-chart distinct color resolution — see resolve_chart_colors().
+        # Guarantees no two wedges in this pie share a color while still
+        # giving each ticker its preferred color where available.
+        colors_list = resolve_chart_colors(ts)
 
         d = Drawing(size, size)
         p = Pie()
@@ -4862,19 +6253,19 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         p.y = 0
         p.width = size
         p.height = size
-        p.data = [v for _, v in data]
+        p.data = ws
         p.labels = None              # labels rendered in separate legend
         p.slices.strokeColor = WHITE
-        p.slices.strokeWidth = 1.3
+        p.slices.strokeWidth = 1.6
         p.startAngle = 90
         p.direction = "clockwise"
         for i, c in enumerate(colors_list):
             p.slices[i].fillColor = c
-        # Tiny donut hole — ReportLab Pie doesn't directly support,
-        # so overlay a white circle at center (18% of diameter)
+        # Donut hole — 32% of diameter so the ring is thinner and closer
+        # to the Schwab-style annular chart aesthetic (was 18%).
         d.add(p)
         cx, cy = size/2, size/2
-        d.add(Circle(cx, cy, size * 0.09, fillColor=WHITE,
+        d.add(Circle(cx, cy, size * 0.32, fillColor=WHITE,
                      strokeColor=None, strokeWidth=0))
         return d
 
@@ -4882,36 +6273,50 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         """Static legend rendered as a ReportLab Table: color swatch +
         ticker + weight. Mirrors the on-screen key column.
 
-        Auto-splits into 2 columns when > max_rows_per_col holdings.
+        Calls lump_to_other() so the legend exactly matches the pie. Auto-
+        splits into 2 columns when > max_rows_per_col rows. The Other row
+        (if present) sits at the end and renders in italic muted text with
+        the label "Other holdings" instead of the ticker symbol.
         """
-        data = [(t, float(w)) for t, w in zip(tickers, weights)
-                if t and float(w or 0) > 0.05]
-        data.sort(key=lambda x: -x[1])
-        if not data:
+        ts, ws, has_other = lump_to_other(tickers, weights, _SETTINGS)
+        if not ts:
             return Paragraph("—", body_small)
 
-        # Match colors to pie ordering
-        n = len(data)
-        if n <= len(PDF_PIE_PALETTE):
-            stride = max(1, len(PDF_PIE_PALETTE) // max(n, 1))
-            row_colors = [PDF_PIE_PALETTE[(i * stride) % len(PDF_PIE_PALETTE)]
-                          for i in range(n)]
-        else:
-            row_colors = [PDF_PIE_PALETTE[i % len(PDF_PIE_PALETTE)]
-                          for i in range(n)]
+        # Per-chart distinct color resolution — same call as pie_drawing
+        # above with the same ticker list, so the legend's swatches
+        # match the pie's wedges exactly.
+        row_colors = resolve_chart_colors(ts)
+        n = len(ts)
+
+        # Styles for the Other row (italic, muted, friendly label)
+        _other_lbl = _SETTINGS["chart_palette"]["other_bucket"]["other_label"]
+        body_other = ParagraphStyle(
+            "body_other", parent=body_small,
+            fontName="Helvetica-Oblique", textColor=GRAY,
+        )
+        body_pct_muted = ParagraphStyle(
+            "body_pct_muted", parent=body_small, textColor=GRAY,
+        )
 
         def _row(color, t, w):
             swatch = Drawing(10, 10)
             swatch.add(Rect(0, 0, 10, 10, fillColor=color,
                             strokeColor=None, strokeWidth=0))
+            if t == "Other":
+                return [swatch,
+                        Paragraph(_other_lbl, body_other),
+                        Paragraph(f"{w:.2f}%", body_pct_muted)]
             return [swatch,
                     Paragraph(f"<b>{t}</b>", body_small),
                     Paragraph(f"{w:.2f}%", body_small)]
 
+        # Build (ticker, weight) pairs for row construction
+        data = list(zip(ts, ws))
+
         # One column
         if n <= max_rows_per_col:
             rows = [_row(row_colors[i], t, w) for i, (t, w) in enumerate(data)]
-            tbl = Table(rows, colWidths=[0.22*inch, 0.7*inch, 0.6*inch])
+            tbl = Table(rows, colWidths=[0.22*inch, 0.95*inch, 0.6*inch])
             tbl.setStyle(TableStyle([
                 ("LEFTPADDING",    (0,0), (-1,-1), 2),
                 ("RIGHTPADDING",   (0,0), (-1,-1), 4),
@@ -4933,9 +6338,9 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         merged = []
         for lr, rr in zip(left, right):
             merged.append(lr + [Drawing(8, 1)] + rr)
-        tbl = Table(merged, colWidths=[0.22*inch, 0.6*inch, 0.55*inch,
+        tbl = Table(merged, colWidths=[0.22*inch, 0.85*inch, 0.55*inch,
                                         0.15*inch,
-                                        0.22*inch, 0.6*inch, 0.55*inch])
+                                        0.22*inch, 0.85*inch, 0.55*inch])
         tbl.setStyle(TableStyle([
             ("LEFTPADDING",    (0,0), (-1,-1), 2),
             ("RIGHTPADDING",   (0,0), (-1,-1), 3),
@@ -4952,62 +6357,149 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                           spaceBefore=2, spaceAfter=6)
 
     def section_header(eyebrow, title):
+        """Section header treatment: serif title + thin navy rule.
+        Eyebrow ("SECTION N") is no longer rendered — advisor removed
+        section numbering from all page headers. The argument is kept
+        in the signature for backward compatibility with existing
+        callers (pass any string, it won't appear in the output)."""
         return KeepTogether([
-            Paragraph(eyebrow.upper(), h1_eyebrow),
             Paragraph(title, h1),
-            thin_rule(ACCENT, 1),
+            thin_rule(NAVY, 0.6),
         ])
 
-    # Page background / footer (later pages)
-    def _on_page(canvas, _doc):
-        canvas.saveState()
-        # Thin nav stripe at top
-        canvas.setFillColor(NAVY)
-        canvas.rect(0, letter[1] - 0.20*inch, letter[0], 0.20*inch, fill=1, stroke=0)
-        canvas.setFillColor(ACCENT)
-        canvas.rect(0, letter[1] - 0.24*inch, letter[0], 0.04*inch, fill=1, stroke=0)
-        # Footer
-        canvas.setFillColor(GRAY)
-        canvas.setFont("Helvetica", 7.5)
-        canvas.drawString(
-            0.55*inch, 0.35*inch,
-            f"Confidential — {client_profile.get('client_name','Client')}  ·  "
-            f"Prepared {_dt.now().strftime('%B %d, %Y')}"
-        )
-        canvas.drawRightString(
-            letter[0] - 0.55*inch, 0.35*inch,
-            f"Page {_doc.page}"
-        )
-        canvas.setStrokeColor(BORDER)
-        canvas.setLineWidth(0.5)
-        canvas.line(0.55*inch, 0.50*inch, letter[0] - 0.55*inch, 0.50*inch)
-        canvas.restoreState()
+    # Shared style for section intro/description paragraphs. Used on
+    # pages 2-3 (holdings detail), page 4 (recommendations), page 7
+    # (historical backtest), page 8 (fee comparison), and any other
+    # section that wants a small italic caption between the section
+    # header rule and the section body. Helvetica-Oblique 8.5pt
+    # charcoal, left-aligned. Tight spacing so the paragraph hugs the
+    # rule above it.
+    _intro_desc_style = ParagraphStyle(
+        "intro_desc",
+        fontName="Helvetica-Oblique",
+        fontSize=8.5,
+        leading=11,
+        textColor=CHARCOAL,
+        alignment=TA_LEFT,
+        spaceBefore=0,
+        spaceAfter=0,
+    )
 
-    def _on_first_page(canvas, _doc):
-        # Dotted separator line across the top (reference-style)
-        canvas.saveState()
-        canvas.setStrokeColor(CHARCOAL)
-        canvas.setLineWidth(0.8)
-        canvas.setDash(1, 2)
-        canvas.line(0.55*inch, letter[1] - 0.55*inch,
-                    letter[0] - 0.55*inch, letter[1] - 0.55*inch)
-        # Footer
-        canvas.setDash()
-        canvas.setFillColor(GRAY)
-        canvas.setFont("Helvetica", 7.5)
-        canvas.drawString(
-            0.55*inch, 0.35*inch,
-            f"Confidential — {client_profile.get('client_name','Client')}  ·  "
-            f"Prepared {_dt.now().strftime('%B %d, %Y')}"
+    # ── CORNER BADGE FLOWABLE ─────────────────────────────────────
+    # A zero-height flowable that draws a portfolio_badge in the
+    # upper-right corner of the current page via the canvas, without
+    # affecting the text flow below. Lets the section header + rule +
+    # description on pages 2/3 use the same identical spacing pattern
+    # as page 4 (where there's no badge), instead of having the badge
+    # stretch the title row's height and create a gap between the rule
+    # and the description that the cell-embedded approach couldn't
+    # fully eliminate.
+    class _CornerBadge(Flowable):
+        def __init__(self, score, label="PORTFOLIO", size_inches=0.71):
+            Flowable.__init__(self)
+            self.score = score
+            self.label = label
+            self.size_inches = size_inches
+
+        def wrap(self, availWidth, availHeight):
+            return (0, 0)
+
+        def draw(self):
+            from reportlab.graphics import renderPDF as _renderPDF
+            canv = self.canv
+            badge = portfolio_badge(
+                score=self.score,
+                label=self.label,
+                size=self.size_inches * inch,
+                chrome=True,
+                filled=False,
+            )
+            page_w, page_h = canv._pagesize
+            margin = 0.55 * inch
+            badge_w = self.size_inches * inch
+            badge_total_h = self.size_inches * inch * 1.05  # chrome ~5%
+            # Target position: upper-right corner of page (page margins)
+            target_x = page_w - margin - badge_w
+            target_y = page_h - margin - badge_total_h
+            # The canvas has been translated to the flowable's location
+            # in the document flow; convert target page coordinates into
+            # the current canvas coordinate system before drawing.
+            abs_x, abs_y = canv.absolutePosition(0, 0)
+            _renderPDF.draw(
+                badge, canv,
+                target_x - abs_x, target_y - abs_y,
+            )
+
+    def _section_header_with_badge(eyebrow, title, score,
+                                    label="PORTFOLIO", intro_text=None):
+        """Section header for pages 2/3 (Current/Proposed Holdings).
+
+        Returns a LIST of flowables — callers must `story.extend(...)`
+        rather than `story.append(...)`. Structure:
+
+          [0] _CornerBadge — zero-size, draws the portfolio_badge in
+              the upper-right corner of the page via the canvas.
+          [1] KeepTogether([title, width-constrained rule]) — title in
+              standard h1 with default spacing; the rule sits in a Table
+              constrained to 6.55" so it stops short of the badge area.
+              Spacing matches page 4's section_header exactly.
+          [2] (if intro_text) description Table with spaceBefore=-4 —
+              identical to page 4's intro paragraph treatment so the
+              rule-to-description gap reads the same on both pages.
+
+        Eyebrow argument is kept for backward compatibility but no
+        longer rendered."""
+        flowables = []
+        # Float the badge in the upper-right corner via canvas — zero
+        # text-flow impact.
+        flowables.append(_CornerBadge(score, label, 0.71))
+
+        # Title + rule, identical to section_header() spacing but with
+        # a width-constrained rule that stops short of the badge area.
+        # NOTE: the Table wrapper swallows the inner HRFlowable's own
+        # spaceBefore/spaceAfter — those properties only apply when an
+        # HRFlowable is a top-level flowable, not when nested in a cell.
+        # So we re-apply them on the Table itself to reproduce the
+        # 2pt-above / 6pt-below spacing that section_header() gets
+        # for free from its bare HRFlowable.
+        _hdr_rule = Table(
+            [[thin_rule(NAVY, 0.6)]],
+            colWidths=[6.55*inch],
+            hAlign="LEFT",
         )
-        canvas.drawRightString(
-            letter[0] - 0.55*inch, 0.35*inch,
-            f"Page {_doc.page}"
-        )
-        canvas.setStrokeColor(BORDER)
-        canvas.setLineWidth(0.5)
-        canvas.line(0.55*inch, 0.50*inch, letter[0] - 0.55*inch, 0.50*inch)
-        canvas.restoreState()
+        _hdr_rule.setStyle(TableStyle([
+            ("LEFTPADDING",   (0,0), (-1,-1), 0),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 0),
+            ("TOPPADDING",    (0,0), (-1,-1), 0),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+        ]))
+        _hdr_rule.spaceBefore = 2
+        _hdr_rule.spaceAfter  = 6
+        flowables.append(KeepTogether([
+            Paragraph(title, h1),
+            _hdr_rule,
+        ]))
+
+        # Description: same pattern as page 4 (Recommendations) so the
+        # rule→description spacing matches exactly. Width-constrained
+        # to 6.38" (matching the rule's reach minus the 12pt visual
+        # gap that the rule otherwise has to the badge area).
+        if intro_text:
+            _desc_tbl = Table(
+                [[Paragraph(intro_text, _intro_desc_style)]],
+                colWidths=[6.38*inch],
+                hAlign="LEFT",
+            )
+            _desc_tbl.setStyle(TableStyle([
+                ("LEFTPADDING",   (0,0), (-1,-1), 0),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 0),
+                ("TOPPADDING",    (0,0), (-1,-1), 0),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+            ]))
+            _desc_tbl.spaceBefore = -4
+            flowables.append(_desc_tbl)
+
+        return flowables
 
     story = []
     tiers = proposal.get("tiers", {}) or {}
@@ -5025,7 +6517,7 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         "balanced":     ("Proposed",
                          "Your submitted holdings, verbatim"),
         "aggressive":   ("Slightly more aggressive",
-                         "Max-Sharpe re-optimization within ±50% corridor"),
+                         "Max-return re-optimization within ±50% corridor"),
         "alternate":    ("Broad-ETF Alternate",
                          "Clean-slate diversified option"),
     }
@@ -5235,100 +6727,93 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         _firm_settings = {}
 
     _has_logo = os.path.exists(FIRM_LOGO_PATH)
-    _firm_name     = (_firm_settings.get("firm_name")     or "").strip()
-    _adv_name      = (_firm_settings.get("advisor_name")  or "").strip()
-    _adv_title     = (_firm_settings.get("advisor_title") or "").strip()
-    _adv_email     = (_firm_settings.get("advisor_email") or "").strip()
-    _adv_phone     = (_firm_settings.get("advisor_phone") or "").strip()
-    _firm_website  = (_firm_settings.get("firm_website")  or "").strip()
+    # v2.5 schema: nested under firm.* and advisor.*. Use _SETTINGS which is
+    # the validated/loaded design system (from mrb_design.load_settings()
+    # at the top of this function), since that's guaranteed to have the
+    # right shape. Fall back to _firm_settings (raw JSON via legacy loader)
+    # in case _SETTINGS keys are missing in some deployment.
+    def _fs(*keys, default=""):
+        """Chained .get() across nested settings dicts. Returns first
+        truthy string found, or default. Tries _SETTINGS then _firm_settings
+        so we get the validated value if available, otherwise raw."""
+        for source in (_SETTINGS, _firm_settings):
+            cur = source
+            for k in keys:
+                if not isinstance(cur, dict):
+                    cur = None; break
+                cur = cur.get(k)
+            if cur and isinstance(cur, str) and cur.strip():
+                return cur.strip()
+        return default
+
+    _firm_name     = _fs("firm",    "name")
+    _adv_name      = _fs("advisor", "name")
+    _adv_title     = _fs("advisor", "title")
+    _adv_email     = _fs("advisor", "email")
+    _adv_phone     = _fs("advisor", "phone")
+    _firm_website  = _fs("firm",    "website")
     _has_any_firm_text = any([_firm_name, _adv_name, _adv_title,
                               _adv_email, _adv_phone, _firm_website])
 
-    if _has_logo or _has_any_firm_text:
-        # Left cell: logo (if present).
-        # Sized to 2.8" × 1.1" — 4× the area of the original 1.4" × 0.55"
-        # box, while staying within sensible bounds for a pro letterhead
-        # (the page is 7.5" usable width; logo column is ~3.0" leaving
-        # ~4.5" for firm/advisor text on the right).
-        if _has_logo:
-            try:
-                _logo_flow = Image(FIRM_LOGO_PATH, width=2.8*inch, height=1.1*inch,
-                                   kind="proportional")
-            except Exception:
-                _logo_flow = Paragraph("", body_small)
-        else:
-            _logo_flow = Paragraph("", body_small)
+    # ── COVER HEADER ─────────────────────────────────────────────
+    # The full-bleed navy header band (with cream logo box, firm name,
+    # and advisor info) is drawn directly by the _on_first_page canvas
+    # callback so it can extend edge-to-edge of the paper. The cover
+    # Frame's top is inset (see _make_cover_frame) to clear the band,
+    # so the first flowable below lands cleanly beneath the gold
+    # accent rule. _firm_name / _adv_* / _has_logo are still resolved
+    # above so the callback can read them via closure.
 
-        # Right cell: firm + advisor lines, right-aligned
-        _firm_right_style = ParagraphStyle(
-            "firm_right", fontSize=8.5, leading=11, textColor=CHARCOAL,
-            fontName="Helvetica", alignment=TA_RIGHT, spaceAfter=0,
-        )
-        _firm_right_bold = ParagraphStyle(
-            "firm_right_bold", parent=_firm_right_style,
-            fontName="Helvetica-Bold", textColor=NAVY, fontSize=9.5, leading=12,
-        )
-        _firm_lines = []
-        if _firm_name:
-            _firm_lines.append(Paragraph(_firm_name, _firm_right_bold))
-        if _adv_name or _adv_title:
-            _adv_line = _adv_name + (f" · {_adv_title}" if _adv_title and _adv_name else _adv_title)
-            _firm_lines.append(Paragraph(_adv_line, _firm_right_style))
-        _contact_bits = []
-        if _adv_email: _contact_bits.append(_adv_email)
-        if _adv_phone: _contact_bits.append(_adv_phone)
-        if _contact_bits:
-            _firm_lines.append(Paragraph(" · ".join(_contact_bits), _firm_right_style))
-        if _firm_website:
-            _firm_lines.append(Paragraph(_firm_website, _firm_right_style))
-
-        _branding_band = Table(
-            [[_logo_flow, _firm_lines or Paragraph("", body_small)]],
-            colWidths=[3.0*inch, 4.3*inch],
-        )
-        _branding_band.setStyle(TableStyle([
-            ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
-            ("LEFTPADDING",  (0,0), (-1,-1), 0),
-            ("RIGHTPADDING", (0,0), (-1,-1), 0),
-            ("TOPPADDING",   (0,0), (-1,-1), 0),
-            ("BOTTOMPADDING",(0,0), (-1,-1), 0),
-        ]))
-        story.append(_branding_band)
-        story.append(Spacer(1, 0.04*inch))
-        story.append(HRFlowable(width="100%", thickness=0.6, color=BORDER,
-                                 spaceBefore=2, spaceAfter=4))
-
-    # Header row: big "Snapshot Report" title on left, client vs current
+    # Header row: big "Risk Alignment Summary" title on left, client vs current
     # portfolio badges on the right
-    def _mini_badge_cell(score, label_top, label_bot, color):
+    def _mini_badge_cell(score, label_top, label_bot, color, shape="circle"):
+        """Big badge + label stack for the cover ribbon.
+
+        shape parameter routes the visual:
+            'circle' → risk_badge (client crest) — for client profile score
+            'square' → portfolio_badge — for any portfolio score
+
+        Renders the badge at 0.85" so the full chrome appears (eyebrow
+        cap, big serif numeral, "/ 99" footer). The badge IS the
+        primary visual; the side labels (PROFILE/PORTFOLIO + client
+        identity) are supporting type."""
+        badge = (portfolio_badge(score, label="PORTFOLIO", size=0.85*inch)
+                 if shape == "square"
+                 else risk_badge(score, label="PROFILE", size=0.85*inch,
+                                  needle_color=color))
         return Table(
-            [[risk_badge(score, size=0.45*inch, needle_color=color),
+            [[badge,
               Table([[Paragraph(f"<font color='{GRAY.hexval()}' size='7'><b>"
                                 f"{label_top.upper()}</b></font>", body_small)],
-                     [Paragraph(f"<font color='{CHARCOAL.hexval()}' size='9'><b>"
+                     [Paragraph(f"<font color='{CHARCOAL.hexval()}' size='10'><b>"
                                 f"{label_bot}</b></font>", body_small)]],
-                    colWidths=[1.3*inch])]],
-            colWidths=[0.55*inch, 1.3*inch],
+                    colWidths=[1.4*inch])]],
+            colWidths=[0.95*inch, 1.4*inch],
         )
-    _mini_badge_cell1 = _mini_badge_cell(client_score, "YOUR RISK", "Client Profile", NAVY)
-    _mini_badge_cell2 = _mini_badge_cell(current_score, "CURRENT", "Your Portfolio", ACCENT)
+    # Orphaned legacy: _mini_badge_cell1 / _mini_badge_cell2 used to
+    # appear in the cover's title ribbon as small client/portfolio
+    # badges next to "Risk Alignment Summary". The new cover layout
+    # uses a three-badge risk summary (Tolerance / Overall / Capacity)
+    # instead and doesn't reference these. Kept defined for backward
+    # compat in case downstream code or future revisions want them.
+    _mini_badge_cell1 = _mini_badge_cell(client_score, "YOUR RISK",
+                                          "Client Profile", NAVY,
+                                          shape="circle")
+    _mini_badge_cell2 = _mini_badge_cell(current_score, "CURRENT",
+                                          "Your Portfolio", ACCENT,
+                                          shape="square")
 
-    # ── Risk Alignment % ──────────────────────────────────────
-    # Compares the client's questionnaire-derived risk profile (client_score)
-    # to the engine score of their actual current portfolio (current_score).
-    # Direction-aware: shows the alignment % AND the magnitude/direction of
-    # the gap so the advisor can explain WHY a recommendation is needed.
-    #
-    # Formula: 100% - |gap|, clamped to [0, 100].
-    #   gap = current_score - client_score
-    #   gap > 0  → portfolio runs HOTTER than profile (over-aggressive)
-    #   gap < 0  → portfolio runs COOLER than profile (over-conservative)
-    #   gap = 0  → perfectly aligned
-    #
-    # Only renders when both scores are numeric. If client_score is "—" or
-    # current_score couldn't be computed, the badge collapses out and the
-    # header keeps just the two risk badges.
-    _alignment_cell = None
+    # ── Risk Alignment (computed for downstream copy, no badge or card) ──
+    # The previous design rendered both a third badge ("ALIGNMENT · +31")
+    # in the header ribbon AND a tinted callout card with a left rule.
+    # Both have been retired in favor of the cover_spectrum_band, which
+    # visualizes the same gap (client tick + portfolio dot on the gradient)
+    # without competing visual elements. We still compute the alignment
+    # values here in case downstream sections want to reference them.
+    _align_status    = None
+    _align_detail    = None
+    _align_signed_delta = None
+
     try:
         _cs = float(client_score)  if client_score  not in ("—", None, "") else None
         _ps = float(current_score) if current_score not in ("—", None, "") else None
@@ -5336,216 +6821,598 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         _cs = _ps = None
 
     if _cs is not None and _ps is not None:
-        _gap = _ps - _cs
-        _alignment_pct = max(0.0, min(100.0, 100.0 - abs(_gap)))
+        # pick_alignment_tier still gives us the status label, detail
+        # sentence, and signed delta for any downstream consumer.
+        _align_status, _align_detail, _color_key, _align_signed_delta = \
+            pick_alignment_tier(int(_cs), int(_ps), _SETTINGS)
 
-        # Color the alignment % by tier — green for tight, amber for moderate,
-        # red for poor. Thresholds match a typical advisor's framing of
-        # "actionable" gaps: ≤5pt is essentially aligned, 6-15pt is worth
-        # discussing, 16+ pt is a clear mismatch worth recommending against.
-        if abs(_gap) <= 5:
-            _align_color = colors.HexColor("#15803d")  # darker green
-            _align_verdict = "Aligned"
-        elif abs(_gap) <= 15:
-            _align_color = colors.HexColor("#d97706")  # amber
-            _align_verdict = "Slightly Misaligned"
+    # ── REPORT TITLE + PREPARED DATE ───────────────────────────────
+    # Eyebrow title + prepared date, sitting above the client identity
+    # block. Moved here from the firm branding band so all "who/what/
+    # when this report is for" elements live in one continuous
+    # letterhead-style group on the cover.
+    # Title bumped from 14pt to 20pt per advisor request — reads as a
+    # proper headline above the date and name, more presence on the
+    # cover.
+    _title_para = Paragraph(
+        f"<font face='Helvetica-Bold' size='20' color='{ACCENT.hexval()}'>"
+        f"PORTFOLIO &amp; RISK PROFILE REVIEW</font>",
+        ParagraphStyle("hdr_title", fontSize=20, leading=24,
+                       alignment=TA_LEFT, spaceBefore=2, spaceAfter=4),
+    )
+    _date_para = Paragraph(
+        f"<font face='Helvetica' size='9.5' color='{GRAY.hexval()}'>"
+        f"Prepared {_dt.now().strftime('%B %d, %Y')}</font>",
+        ParagraphStyle("hdr_date", fontSize=9.5, leading=12,
+                       alignment=TA_LEFT, spaceBefore=0, spaceAfter=2),
+    )
+    story.append(_title_para)
+    story.append(_date_para)
+    story.append(thin_rule(BORDER, 0.6))
+
+    # ── CLIENT NAME ────────────────────────────────────────────────
+    # Letterhead-style: client name in big serif. Age was previously
+    # appended after the name with a middle-dot separator; advisor
+    # asked to drop the age from the cover header (still available
+    # in the underlying client_profile if needed downstream, just not
+    # displayed). Keeps the cover line cleaner and more name-focused.
+    _client_name = client_profile.get("client_name", "—") or "—"
+    _name_html = (
+        f"<font face='Times-Roman' size='20' color='{NAVY.hexval()}'>"
+        f"{_client_name}</font>"
+    )
+    _name_para = Paragraph(
+        _name_html,
+        ParagraphStyle("cover_client_name", fontSize=20, leading=24,
+                       textColor=NAVY, fontName="Times-Roman",
+                       alignment=TA_LEFT, spaceBefore=4, spaceAfter=2),
+    )
+    story.append(Spacer(1, 0.05*inch))
+    story.append(_name_para)
+
+    # ── RETIREMENT AGE + HORIZON (under name+age, above priorities) ───
+    # Per advisor request: always show the client's target retirement
+    # age and, in parentheses, their retirement horizon (retirement age
+    # minus current age). When the horizon is zero or negative — i.e.
+    # the client is at or past their target retirement age — show
+    # "Currently retired" instead of the forward-looking "Age X (Y
+    # years)" line. Falls back to age 65 as a placeholder when no
+    # retirement field is populated in the client_profile, so the row
+    # always renders and the advisor can see at-a-glance that the
+    # client profile needs the retirement target wired in.
+    _retire_age = (
+        client_profile.get("retirement_age")
+        or client_profile.get("target_retirement_age")
+        or client_profile.get("retire_age")
+        or client_profile.get("retirement_target_age")
+        or 65   # default — update client_profile.retirement_age to override
+    )
+    try:
+        _ra_int = int(_retire_age)
+        _horizon = None
+        if _age_val not in (None, "", "—"):
+            try:
+                _horizon = _ra_int - int(_age_val)
+            except (ValueError, TypeError):
+                _horizon = None
+        _ret_html = (
+            f"<font color='{ACCENT.hexval()}' size='8'>"
+            f"<b>RETIREMENT</b></font>&nbsp;&nbsp;&nbsp;"
+            f"<font color='{CHARCOAL.hexval()}' size='10'>"
+        )
+        if _horizon is not None and _horizon <= 0:
+            # Currently retired — horizon is zero or negative
+            _ret_html += "Currently retired"
         else:
-            _align_color = colors.HexColor("#b91c1c")  # darker red
-            _align_verdict = "Misaligned"
+            _ret_html += f"Age {_ra_int}"
+            if _horizon is not None and _horizon > 0:
+                _years = "year" if _horizon == 1 else "years"
+                _ret_html += (
+                    f"&nbsp;&nbsp;"
+                    f"<font color='{GRAY.hexval()}'>"
+                    f"({_horizon} {_years})</font>"
+                )
+        _ret_html += "</font>"
+        _ret_para = Paragraph(
+            _ret_html,
+            ParagraphStyle("retire_line", fontSize=10, leading=13,
+                           textColor=CHARCOAL, fontName="Helvetica",
+                           alignment=TA_LEFT, spaceBefore=0,
+                           spaceAfter=2),
+        )
+        story.append(_ret_para)
+    except (ValueError, TypeError):
+        pass
 
-        # Direction phrasing: how the portfolio sits relative to the profile
-        if abs(_gap) < 1:
-            _direction_text = "matches profile"
-        elif _gap > 0:
-            _direction_text = f"+{abs(_gap):.0f} pts (more aggressive than profile)"
-        else:
-            _direction_text = f"−{abs(_gap):.0f} pts (more conservative than profile)"
+    # ── PRIORITIES (right under name) ──────────────────────────────
+    _PRIORITY_LBL = {
+        "capital_preservation": "Capital Preservation",
+        "insurance_planning":   "Insurance Planning",
+        "income_generation":    "Income Generation",
+        "capital_appreciation": "Capital Appreciation",
+        "diversification":      "Diversification",
+        "tax_efficiency":       "Tax Efficiency",
+        "liquidity":            "Liquidity",
+        "social_impact":        "Social/Impact",
+        "legacy_planning":      "Legacy Planning",
+    }
+    _pcs = client_profile.get("priorities") or []
+    if _pcs:
+        _chips_html = "&nbsp;&nbsp;&middot;&nbsp;&nbsp;".join(
+            _PRIORITY_LBL.get(p, p) for p in _pcs
+        )
+        _priorities_para = Paragraph(
+            f"<font color='{ACCENT.hexval()}' size='8'><b>PRIORITIES</b></font>"
+            f"&nbsp;&nbsp;&nbsp;"
+            f"<font color='{CHARCOAL.hexval()}' size='10'>"
+            f"{_chips_html}</font>",
+            ParagraphStyle("prio_under_name", fontSize=10, leading=14,
+                           textColor=CHARCOAL, fontName="Helvetica",
+                           alignment=TA_LEFT, spaceBefore=2, spaceAfter=4),
+        )
+        story.append(_priorities_para)
+    story.append(thin_rule(BORDER, 0.6))
 
-        # Build the alignment badge — same visual shape as the two risk
-        # badges so the trio reads as a unit. Shows the percentage prominently
-        # with the verdict label and direction text below.
-        _align_pct_para = Paragraph(
-            f"<font color='{_align_color.hexval()}' size='16'><b>"
-            f"{_alignment_pct:.0f}%</b></font>",
-            ParagraphStyle("align_pct", fontSize=16, leading=18,
-                           alignment=TA_CENTER, fontName="Helvetica-Bold"),
-        )
-        _align_label_para = Paragraph(
-            f"<font color='{GRAY.hexval()}' size='7'><b>"
-            f"RISK ALIGNMENT</b></font>",
-            body_small,
-        )
-        _align_verdict_para = Paragraph(
-            f"<font color='{CHARCOAL.hexval()}' size='9'><b>"
-            f"{_align_verdict}</b></font>",
-            body_small,
-        )
-        _align_direction_para = Paragraph(
-            f"<font color='{GRAY.hexval()}' size='7'>"
-            f"{_direction_text}</font>",
-            body_small,
-        )
+    # ── RISK SUMMARY ──────────────────────────────────────────────
+    # Three bare badges (no in-circle labels — labels live below).
+    # Three equal-width columns so the gaps between badges are
+    # visually identical. The center badge is BIGGER than the side
+    # badges but sits in a column of the SAME width, so its bigger
+    # radius doesn't push the centers off-axis.
+    _section_title_para = Paragraph(
+        "Risk Summary",
+        ParagraphStyle("risk_section_title", fontSize=16, leading=20,
+                       textColor=CHARCOAL, fontName="Times-Roman",
+                       alignment=TA_LEFT, spaceBefore=4, spaceAfter=2),
+    )
+    story.append(_section_title_para)
 
-        _alignment_cell = Table(
-            [[_align_pct_para,
-              Table([[_align_label_para],
-                     [_align_verdict_para],
-                     [_align_direction_para]],
-                    colWidths=[1.4*inch])]],
-            colWidths=[0.55*inch, 1.4*inch],
-        )
-
-    # Header row layout: title on left, risk badges + alignment on right.
-    # When alignment is available we have 4 cells (title + 3 badges),
-    # otherwise the original 3-cell layout (title + 2 badges).
-    if _alignment_cell is not None:
-        header_row = Table([[
-            Paragraph("Snapshot Report", snapshot_title),
-            _mini_badge_cell1,
-            _mini_badge_cell2,
-            _alignment_cell,
-        ]], colWidths=[2.0*inch, 1.7*inch, 1.7*inch, 1.95*inch])
+    _tol_score = client_profile.get("tolerance_score")
+    _cap_score = client_profile.get("capacity_score")
+    _ovr_score = client_profile.get("overall_score")
+    # Ordering: LOWER score on the LEFT, HIGHER on the RIGHT
+    try:
+        _tol_int = int(_tol_score) if _tol_score not in (None, "—", "") else 0
+        _cap_int = int(_cap_score) if _cap_score not in (None, "—", "") else 0
+    except (ValueError, TypeError):
+        _tol_int = _cap_int = 0
+    if _tol_int <= _cap_int:
+        _left_score, _left_label   = _tol_score, "TOLERANCE"
+        _right_score, _right_label = _cap_score, "CAPACITY"
     else:
-        header_row = Table([[
-            Paragraph("Snapshot Report", snapshot_title),
-            _mini_badge_cell1,
-            _mini_badge_cell2,
-        ]], colWidths=[3.6*inch, 1.9*inch, 1.9*inch])
-    header_row.setStyle(TableStyle([
-        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+        _left_score, _left_label   = _cap_score, "CAPACITY"
+        _right_score, _right_label = _tol_score, "TOLERANCE"
+
+    # SHARED GRID: both Risk Summary and Alignment Summary use the
+    # same 3-column structure with equal widths. Each column is now
+    # 1.85" wide (totaling 5.55"), narrower than the previous 2.45"
+    # so the side badges (TOLERANCE/CAPACITY in Risk Summary, PROFILE
+    # round and PORTFOLIO square in Alignment Summary) pull inward
+    # toward the center. The row's total 5.55" centers within the
+    # 7.4" content area via the Table's hAlign='CENTER' attribute,
+    # leaving 0.925" of margin on each side of the badge row.
+    _GRID_COL_W = 1.85 * inch
+
+    def _risk_badge_cell(score, is_center=False):
+        """Build just the badge Drawing for a Risk Summary cell.
+
+        Sized so the numerals read at a glance from across a desk.
+        Center OVERALL SCORE badge is 1.25" with "PROFILE" eyebrow
+        (was 1.10"); side TOLERANCE/CAPACITY badges are 0.95" bare
+        numeral with "/ 99" footer (was 0.85"). Chrome gating in
+        risk_badge handles eyebrow visibility based on size.
+        """
+        size_inches = 1.25 if is_center else 0.95
+        _in_circle_label = "PROFILE" if is_center else ""
+        return risk_badge(score, label=_in_circle_label,
+                           size=size_inches*inch)
+
+    def _risk_caption_cell(label, is_center=False):
+        """Build just the caption Paragraph for a Risk Summary cell."""
+        _cap_size = 10 if is_center else 8.5
+        _cap_color = CHARCOAL if is_center else GRAY
+        return Paragraph(
+            f"<font size='{_cap_size}' color='{_cap_color.hexval()}'>"
+            f"<b>{label}</b></font>",
+            ParagraphStyle(f"badge_cap_{label}", fontSize=_cap_size,
+                           leading=_cap_size + 2, textColor=_cap_color,
+                           fontName="Helvetica-Bold",
+                           alignment=TA_CENTER),
+        )
+
+    # Two-row layout: row 0 holds the badges (MIDDLE-aligned so their
+    # visual CENTERS align regardless of size difference), row 1 holds
+    # the captions (TOP-aligned so they share a baseline). This is the
+    # only structure that gives BOTH badge-center alignment AND caption
+    # baseline alignment when the badges are different sizes — the
+    # previous single-row BOTTOM-aligned layout had captions aligned
+    # but the smaller side badges visually "hung low" relative to the
+    # bigger center badge, which the mockup explicitly shows centered.
+    _risk_row = Table(
+        [
+            [_risk_badge_cell(_left_score),
+             _risk_badge_cell(_ovr_score, is_center=True),
+             _risk_badge_cell(_right_score)],
+            [_risk_caption_cell(_left_label),
+             _risk_caption_cell("OVERALL SCORE", is_center=True),
+             _risk_caption_cell(_right_label)],
+        ],
+        colWidths=[_GRID_COL_W, _GRID_COL_W, _GRID_COL_W],
+        hAlign="CENTER",
+    )
+    _risk_row.setStyle(TableStyle([
+        # Row 0 (badges): MIDDLE align so the small/large badges
+        # share a common visual centerline.
+        ("VALIGN",        (0,0), (-1,0), "MIDDLE"),
+        # Row 1 (captions): TOP align so the caption text starts at
+        # the same y, putting all three baselines on one line.
+        ("VALIGN",        (0,1), (-1,1), "TOP"),
+        ("ALIGN",         (0,0), (-1,-1), "CENTER"),
+        ("LEFTPADDING",   (0,0), (-1,-1), 0),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 0),
+        ("TOPPADDING",    (0,0), (-1,0), 2),
+        ("BOTTOMPADDING", (0,0), (-1,0), 4),
+        # Caption row: small top padding gives the badge → caption
+        # gap (since the badge row has BOTTOMPADDING=4, this adds up
+        # to ~10pt of separation, same as the previous sub-Table
+        # design used).
+        ("TOPPADDING",    (0,1), (-1,1), 6),
+        ("BOTTOMPADDING", (0,1), (-1,1), 4),
+    ]))
+    story.append(_risk_row)
+    story.append(Spacer(1, 0.04*inch))
+    story.append(thin_rule(BORDER, 0.6))
+
+    # ── ALIGNMENT SUMMARY ─────────────────────────────────────────
+    # Uses the SAME 3-column grid as Risk Summary above so PROFILE
+    # sits directly under TOLERANCE, the alignment % sits directly
+    # under OVERALL SCORE, and PORTFOLIO sits directly under
+    # CAPACITY. The vertical registration creates the visual story:
+    # tolerance/capacity (your traits) → profile/portfolio (the
+    # measurements that derived from them); overall score → the
+    # alignment % that measures portfolio vs profile.
+    _section_title_para_align = Paragraph(
+        "Alignment Summary",
+        ParagraphStyle("align_section_title", fontSize=16, leading=20,
+                       textColor=CHARCOAL, fontName="Times-Roman",
+                       alignment=TA_LEFT, spaceBefore=6, spaceAfter=4),
+    )
+    story.append(_section_title_para_align)
+
+    # ── Compute alignment percentage ──
+    # Formula: min(portfolio, profile) / max(portfolio, profile) × 100
+    # Symmetric — treats over-risked and under-risked the same way.
+    # Thresholds:
+    #   ≥90% aligned → green  (saturated green-400 #639922)
+    #   80–90%       → gold   (brand accent #C9A961)
+    #   <80%         → red    (saturated red-400 #E24B4A)
+    # These thresholds give the gold color a comfortable band where it
+    # reads as "acceptable, not great" — most clients will land here.
+    _align_pct = None
+    _align_color = GRAY.hexval()
+    _ALIGN_GREEN = "#639922"
+    _ALIGN_GOLD  = ACCENT.hexval()
+    _ALIGN_RED   = "#E24B4A"
+    if _cs is not None and _ps is not None:
+        try:
+            _cs_i = int(_cs)
+            _ps_i = int(_ps)
+            if _cs_i > 0 and _ps_i > 0:
+                _align_pct = (min(_cs_i, _ps_i) / max(_cs_i, _ps_i)) * 100.0
+                if _align_pct >= 90:
+                    _align_color = _ALIGN_GREEN
+                elif _align_pct >= 80:
+                    _align_color = _ALIGN_GOLD
+                else:
+                    _align_color = _ALIGN_RED
+        except (ValueError, TypeError):
+            _align_pct = None
+
+    # Build the three cells of the alignment row.
+    #
+    # Column widths: the alignment row uses a narrow / wide / narrow
+    # structure (not the 3-equal grid the Risk Summary row uses) so the
+    # connector line in the center cell can visually meet the edges of
+    # the PROFILE and PORTFOLIO badges. Total row width stays at
+    # 3 × _GRID_COL_W (5.55") so the row stays centered within the
+    # page's content area like the Risk Summary row above. The L/R
+    # cells are widened in this pass to hold the larger 1.25"/1.15"
+    # badges introduced in the advisor revision (was 1.00"/0.92"
+    # holding 0.94"/0.85" badges).
+    _ROW_W           = 3 * _GRID_COL_W              # 5.55"
+    _ALIGN_LEFT_W    = 1.12 * inch                  # PROFILE badge cell
+    _ALIGN_RIGHT_W   = 0.92 * inch                  # PORTFOLIO badge cell
+    _ALIGN_CENTER_W  = _ROW_W - _ALIGN_LEFT_W - _ALIGN_RIGHT_W
+
+    # LEFT cell (under TOLERANCE column): PROFILE badge.
+    # Bumped 10% from the original 0.94" to 1.04" so the alignment
+    # summary's PROFILE badge has a touch more weight; the PORTFOLIO
+    # square next to it stays at 0.85" by design — only the profile
+    # got the bump per the advisor's revision pass.
+    _profile_badge_drawing = risk_badge(
+        _cs if _cs is not None else "—",
+        label="PROFILE", size=1.04*inch,
+    )
+    _align_left_cell = Table(
+        [[_profile_badge_drawing]],
+        colWidths=[_ALIGN_LEFT_W],
+    )
+    _align_left_cell.setStyle(TableStyle([
+        ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
+        ("ALIGN",        (0,0), (-1,-1), "CENTER"),
         ("LEFTPADDING",  (0,0), (-1,-1), 0),
         ("RIGHTPADDING", (0,0), (-1,-1), 0),
-        ("TOPPADDING",   (0,0), (-1,-1), 4),
-        ("BOTTOMPADDING",(0,0), (-1,-1), 4),
+        ("TOPPADDING",   (0,0), (-1,-1), 0),
+        ("BOTTOMPADDING",(0,0), (-1,-1), 0),
     ]))
-    story.append(Spacer(1, 0.08*inch))
-    story.append(header_row)
-    story.append(Spacer(1, 0.05*inch))
-    # Dotted line below header
-    story.append(HRFlowable(width="100%", thickness=0.8, color=CHARCOAL,
-                             dash=(1, 2), spaceBefore=2, spaceAfter=10))
 
-    # ── "Your Risk Number" hero block ─────────────────────
-    hero_left = Table([
-        [risk_badge(client_score, size=0.8*inch, needle_color=NAVY)],
-    ], colWidths=[0.9*inch])
-    hero_right = [
-        Paragraph("<b>Your Risk Number</b>", h2),
-        Paragraph(
-            f"On a scale of 1–99 where 99 is the highest risk tolerance and 1 is the lowest, "
-            f"<b>{client_name}</b> has been profiled at a Risk Number of "
-            f"<b>{client_score}</b> "
-            f"(<b>{client_label}</b>). "
-            f"This rating reflects the combination of risk <i>tolerance</i> (willingness) "
-            f"and risk <i>capacity</i> (ability) to bear investment volatility. "
-            f"The portfolio recommendations on the following pages are aligned to this "
-            f"profile, with room to adjust based on goals, time horizon, and life-stage changes.",
-            body_justify,
-        ),
-    ]
-    hero_tbl = Table(
-        [[hero_left, hero_right]],
-        colWidths=[0.95*inch, 6.4*inch],
+    # CENTER cell — circular progress ring (Drawing) showing the
+    # alignment percentage as a partial-arc fill. Replaces the earlier
+    # text-only "81% ALIGNMENT" callout. Visual treatment:
+    #   - Track ring: pale navy tint (#F0F2F6), full circumference
+    #   - Progress arc: threshold color, sweeps clockwise from 12 o'clock
+    #   - Centered numeral: "81%" in Times-Roman navy
+    #   - Below numeral: "ALIGNED" small caps in threshold color
+    def _alignment_ring(pct, color_hex, size=0.95*inch):
+        """Circular progress ring for the alignment percentage.
+
+        Args:
+            pct: Alignment percentage (0-100), or None for placeholder.
+            color_hex: Hex string for the progress arc + label color.
+            size: Outer diameter in points.
+        """
+        S = size
+        d = Drawing(S, S)
+        cx, cy = S / 2, S / 2
+        outer_r = S / 2 - 1.5
+        # Ring thickness: 6% of the badge diameter (was 10%) — thinner
+        # band reads as a more delicate progress indicator and gives
+        # the centered percentage numeral more visual room.
+        ring_w = max(3.5, S * 0.06)
+        # Track ring
+        d.add(Circle(cx, cy, outer_r - ring_w / 2,
+                     fillColor=None,
+                     strokeColor=colors.HexColor("#F0F2F6"),
+                     strokeWidth=ring_w))
+        # Progress arc — built as an annular Wedge (outer radius =
+        # outer_r, inner radius = outer_r - ring_w). `annular=True` is
+        # required for the wedge to render as a ring band rather than
+        # a filled pie slice. ReportLab's Wedge sweeps anticlockwise
+        # from start to end angles; to sweep CLOCKWISE from 12 o'clock
+        # we pass start=90 and end = 90 - sweep.
+        if pct is not None:
+            sweep_deg = max(0.1, min(360.0, float(pct) * 3.6))
+            _start = 90.0
+            _end   = 90.0 - sweep_deg
+            d.add(Wedge(cx, cy, outer_r,
+                        _end, _start,
+                        radius1=outer_r - ring_w,
+                        annular=True,
+                        fillColor=colors.HexColor(color_hex),
+                        strokeColor=None))
+        # Centered percentage numeral
+        if pct is not None:
+            _pct_str = f"{pct:.0f}%"
+            _pt = S * 0.28
+            d.add(String(cx, cy + S * 0.01, _pct_str,
+                         fontName="Times-Bold", fontSize=_pt,
+                         fillColor=NAVY, textAnchor="middle"))
+            # "ALIGNED" label in threshold color below the number
+            d.add(String(cx, cy - S * 0.21, "ALIGNED",
+                         fontName="Helvetica-Bold", fontSize=max(5.5, S * 0.085),
+                         fillColor=colors.HexColor(color_hex),
+                         textAnchor="middle"))
+        else:
+            d.add(String(cx, cy, "—",
+                         fontName="Times-Roman", fontSize=S * 0.30,
+                         fillColor=GRAY, textAnchor="middle"))
+        return d
+
+    # ── CENTER cell: alignment-as-connector ─────────────────────────
+    # Replaces the previous standalone progress ring. The new treatment
+    # makes the middle slot a visual bridge BETWEEN the PROFILE and
+    # PORTFOLIO badges rather than a third standalone badge:
+    #     [gold eyebrow:  N-POINT GAP]
+    #     ─── ⃝ ───   (thin navy line with an open circle interrupt)
+    #     [navy caption: NN% aligned with profile]
+    # The badges remain the visual anchors; this connector quantifies the
+    # relationship without competing for attention. _align_pct and
+    # _align_color are still computed above so the spectrum band can
+    # downstream-consume the same alignment values.
+
+    # Gap in raw score points (e.g. PROFILE 37 vs PORTFOLIO 30 → "7-POINT GAP")
+    _align_gap = None
+    try:
+        if _cs is not None and _ps is not None:
+            _align_gap = abs(int(_cs) - int(_ps))
+    except (ValueError, TypeError):
+        _align_gap = None
+
+    if _align_gap is not None:
+        _gap_label = f"{_align_gap}-POINT GAP"
+    else:
+        _gap_label = "ALIGNMENT"
+
+    _gap_eyebrow_para = Paragraph(
+        f"<font face='Helvetica-Bold' size='13.5' color='{ACCENT.hexval()}'>"
+        f"{_gap_label}</font>",
+        ParagraphStyle("align_gap_eyebrow", fontSize=13.5, leading=16,
+                       alignment=TA_CENTER, spaceBefore=0, spaceAfter=3),
     )
-    hero_tbl.setStyle(TableStyle([
-        ("VALIGN",       (0,0), (-1,-1), "TOP"),
+
+    if _align_pct is not None:
+        _caption_html = (
+            f"<font face='Helvetica' size='10' color='{NAVY.hexval()}'>"
+            f"<b>{_align_pct:.0f}%</b> aligned with profile</font>"
+        )
+    else:
+        _caption_html = (
+            f"<font face='Helvetica' size='10' color='{GRAY.hexval()}'>"
+            f"Alignment not available</font>"
+        )
+    _align_caption_para = Paragraph(
+        _caption_html,
+        ParagraphStyle("align_caption", fontSize=10, leading=12,
+                       alignment=TA_CENTER, spaceBefore=2, spaceAfter=0),
+    )
+
+    def _alignment_line(width):
+        """Draws the horizontal connector line interrupted by a small
+        open circle at center — the visual bridge between the PROFILE
+        and PORTFOLIO badges."""
+        line_h = 12.0
+        d = Drawing(width, line_h)
+        cy = line_h / 2.0
+        cx = width / 2.0
+        circle_r = 3.5
+        gap_around = 5.0   # blank space on each side of the open circle
+        d.add(Line(0, cy, cx - circle_r - gap_around, cy,
+                   strokeColor=NAVY, strokeWidth=1.0))
+        d.add(Line(cx + circle_r + gap_around, cy, width, cy,
+                   strokeColor=NAVY, strokeWidth=1.0))
+        d.add(Circle(cx, cy, circle_r,
+                     fillColor=BG_SOFT, strokeColor=NAVY,
+                     strokeWidth=1.0))
+        return d
+
+    _align_center_cell = Table(
+        [[_gap_eyebrow_para],
+         [_alignment_line(_ALIGN_CENTER_W)],
+         [_align_caption_para]],
+        colWidths=[_ALIGN_CENTER_W],
+    )
+    _align_center_cell.setStyle(TableStyle([
+        ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
+        ("ALIGN",        (0,0), (-1,-1), "CENTER"),
         ("LEFTPADDING",  (0,0), (-1,-1), 0),
-        ("RIGHTPADDING", (0,0), (-1,-1), 6),
+        ("RIGHTPADDING", (0,0), (-1,-1), 0),
+        ("TOPPADDING",   (0,0), (-1,-1), 0),
+        ("BOTTOMPADDING",(0,0), (-1,-1), 0),
+    ]))
+
+    # RIGHT cell (under CAPACITY column): PORTFOLIO badge
+    # Bumped from 0.85" to 1.15" in the advisor revision pass to match
+    # the larger Risk Summary side badges above (1.15") — the visual
+    # weight of the PORTFOLIO score should equal that of TOLERANCE /
+    # CAPACITY since it sits in the same column under CAPACITY.
+    _portfolio_badge_drawing = portfolio_badge(
+        _ps if _ps is not None else "—",
+        label="PORTFOLIO", size=0.85*inch,
+    )
+    _align_right_cell = Table(
+        [[_portfolio_badge_drawing]],
+        colWidths=[_ALIGN_RIGHT_W],
+    )
+    _align_right_cell.setStyle(TableStyle([
+        ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
+        ("ALIGN",        (0,0), (-1,-1), "CENTER"),
+        ("LEFTPADDING",  (0,0), (-1,-1), 0),
+        ("RIGHTPADDING", (0,0), (-1,-1), 0),
+        ("TOPPADDING",   (0,0), (-1,-1), 0),
+        ("BOTTOMPADDING",(0,0), (-1,-1), 0),
+    ]))
+
+    _align_row = Table(
+        [[_align_left_cell, _align_center_cell, _align_right_cell]],
+        colWidths=[_ALIGN_LEFT_W, _ALIGN_CENTER_W, _ALIGN_RIGHT_W],
+        hAlign="CENTER",
+    )
+    _align_row.setStyle(TableStyle([
+        # MIDDLE so the ALIGNMENT % text in the center column shares
+        # a horizontal centerline with the PROFILE (circle) and
+        # PORTFOLIO (square) badges on either side. The previous
+        # BOTTOM align baseline-aligned the badges but pushed the
+        # alignment % text low, breaking the visual symmetry the
+        # advisor wanted (badges and % at the same vertical level).
+        ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
+        ("ALIGN",        (0,0), (-1,-1), "CENTER"),
+        ("LEFTPADDING",  (0,0), (-1,-1), 0),
+        ("RIGHTPADDING", (0,0), (-1,-1), 0),
         ("TOPPADDING",   (0,0), (-1,-1), 2),
         ("BOTTOMPADDING",(0,0), (-1,-1), 2),
     ]))
-    story.append(hero_tbl)
-    story.append(Spacer(1, 0.12*inch))
-    story.append(thin_rule(BORDER, 0.6))
+    story.append(_align_row)
+    story.append(Spacer(1, 0.10*inch))
 
-    # ── COMPACT CLIENT PROFILE (page 1) ──────────────────────
-    # Two-column band: contact/demographics on the left, risk-assessment
-    # numbers + priorities on the right. Replaces the old "Section 2"
-    # full-page profile that lived on page 2 — having client identity on
-    # the cover page is what advisors expect when they scan a proposal.
-    if sections.get("profile", True):
-        story.append(Spacer(1, 0.05*inch))
-        story.append(Paragraph("CLIENT PROFILE", eyebrow_cap))
-
-        _PRIORITY_LBL = {
-            "capital_preservation": "Capital Preservation",
-            "insurance_planning":   "Insurance Planning",
-            "income_generation":    "Income Generation",
-            "capital_appreciation": "Capital Appreciation",
-            "diversification":      "Diversification",
-            "tax_efficiency":       "Tax Efficiency",
-            "liquidity":            "Liquidity",
-            "social_impact":        "Social/Impact",
-            "legacy_planning":      "Legacy Planning",
-        }
-        _pcs = client_profile.get("priorities") or []
-
-        _profile_left_rows = [
-            ["Name",     client_profile.get("client_name", "—") or "—"],
-            ["Email",    client_profile.get("client_email", "—") or "—"],
-            ["Phone",    client_profile.get("client_phone", "—") or "—"],
-            ["Age",      str(client_profile.get("client_age", "—"))],
-            ["As of",    client_profile.get("date",
-                            client_profile.get("completed_at", "—")) or "—"],
-        ]
-        _profile_right_rows = [
-            ["Risk Score",       f"{client_profile.get('overall_score','—')} / 99"],
-            ["Risk Tolerance",   f"{client_profile.get('tolerance_score','—')} / 99"],
-            ["Risk Capacity",    f"{client_profile.get('capacity_score','—')} / 99"],
-            ["Classification",   client_profile.get("risk_label","—") or "—"],
-        ]
-
-        def _profile_subtable(rows):
-            t = Table(rows, colWidths=[0.95*inch, 2.55*inch])
-            t.setStyle(TableStyle([
-                ("TEXTCOLOR",    (0,0), (0,-1),  GRAY),
-                ("FONTNAME",     (0,0), (0,-1),  "Helvetica-Bold"),
-                ("FONTSIZE",     (0,0), (0,-1),  7.5),
-                ("TEXTCOLOR",    (1,0), (1,-1),  CHARCOAL),
-                ("FONTNAME",     (1,0), (1,-1),  "Helvetica"),
-                ("FONTSIZE",     (1,0), (1,-1),  9),
-                ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
-                ("LEFTPADDING",  (0,0), (-1,-1), 0),
-                ("RIGHTPADDING", (0,0), (-1,-1), 6),
-                ("TOPPADDING",   (0,0), (-1,-1), 3),
-                ("BOTTOMPADDING",(0,0), (-1,-1), 3),
-                ("LINEBELOW",    (0,0), (-1,-2), 0.3, BORDER_SOFT),
-            ]))
-            return t
-
-        _profile_band = Table(
-            [[_profile_subtable(_profile_left_rows),
-              _profile_subtable(_profile_right_rows)]],
-            colWidths=[3.65*inch, 3.65*inch],
+    # ── COVER SPECTRUM BAND ──────────────────────────────────────
+    # Wrapped in a navy-boxed Table that matches the Risk Spectrum
+    # panel on page 3 — gives the spectrum a contained visual frame
+    # rather than letting it float on the page. The thin separator
+    # rule that previously sat between the alignment row and the
+    # spectrum is no longer needed; the navy box does the separation.
+    if _cs is not None or _ps is not None:
+        _cover_band_drawing = cover_spectrum_band(
+            profile=int(_cs) if _cs is not None else None,
+            current_score=int(_ps) if _ps is not None else None,
+            total_width=7.4*inch,
+            align_pct=_align_pct,
+            align_color=_align_color,
         )
-        _profile_band.setStyle(TableStyle([
-            ("VALIGN",       (0,0), (-1,-1), "TOP"),
-            ("LEFTPADDING",  (0,0), (-1,-1), 6),
-            ("RIGHTPADDING", (0,0), (-1,-1), 6),
-            ("TOPPADDING",   (0,0), (-1,-1), 8),
-            ("BOTTOMPADDING",(0,0), (-1,-1), 8),
-            ("BOX",          (0,0), (-1,-1), 0.5, BORDER),
-            ("LINEAFTER",    (0,0), (0,0),   0.3, BORDER_SOFT),
-            ("BACKGROUND",   (0,0), (-1,-1), BG_LIGHT),
+        _spec_wrapper = Table([[_cover_band_drawing]], colWidths=[7.4*inch])
+        _spec_wrapper.setStyle(TableStyle([
+            # No BACKGROUND override here — the Drawing's own panel fill
+            # (cover_spectrum_band paints a #F0F2F6 rect across its full
+            # canvas) provides the shaded background. A WHITE background
+            # here would show as slivers between the panel and the navy
+            # box if the drawing didn't perfectly match the cell.
+            ("BOX",           (0,0), (-1,-1), 1.0, NAVY),
+            # Zero padding so the Drawing's panel reaches the navy box
+            # edges. Previously 8pt L/R padding left visible white
+            # slivers between the cream panel and the navy frame.
+            ("LEFTPADDING",   (0,0), (-1,-1), 0),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 0),
+            ("TOPPADDING",    (0,0), (-1,-1), 0),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+            ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
         ]))
-        story.append(_profile_band)
+        story.append(_spec_wrapper)
+        story.append(Spacer(1, 0.06*inch))
 
-        if _pcs:
-            story.append(Spacer(1, 0.05*inch))
-            _chips_html = "&nbsp;&nbsp;".join(
-                f"<font color='{ACCENT.hexval()}'>●</font> "
-                f"<font color='{CHARCOAL.hexval()}'>{_PRIORITY_LBL.get(p, p)}</font>"
-                for p in _pcs
-            )
-            _priorities_para = Paragraph(
-                f"<font color='{GRAY.hexval()}' size='7'><b>PRIORITIES</b></font>"
-                f" &nbsp; {_chips_html}",
-                body_small,
-            )
-            story.append(_priorities_para)
+    # ── Section header for the current portfolio block ──────────
+    # Renamed from "How your portfolio sits today" → "Your Current
+    # Portfolio" per advisor request. Sized and styled to match the
+    # "Risk Summary" / "Alignment Summary" section headers above
+    # (Times-Roman 16pt charcoal, left-aligned) so the page reads as
+    # three clearly delineated sections sharing the same typography.
+    #
+    # The entire Current Portfolio section (header + rule + content
+    # row) is collected into `_curr_portfolio_block` and appended as a
+    # single KeepTogether at the bottom of the section assembly. That
+    # keeps the section from splitting across page 1 and page 2 — if
+    # there isn't room for all of it on page 1, ReportLab will move
+    # the whole section to a fresh page rather than orphaning the
+    # header with the content on the following page.
+    # Section header — single inline line: "Your Current Portfolio · N
+    # total holdings". Previously the title and count rendered as a
+    # 2-column row (title left, count right); advisor merged them into
+    # one continuous phrase for a cleaner header. Title at 17.6pt and
+    # count at 15.4pt (both bumped +10% per advisor request) with a
+    # 13pt middle-dot separator so the title remains the visual
+    # emphasis and the count reads as a supporting caption.
+    _intro_title = Paragraph(
+        f"<font face='Times-Roman' size='17.6' color='{CHARCOAL.hexval()}'>"
+        f"Your Current Portfolio</font>"
+        f"<font face='Times-Roman' size='13' color='{NAVY.hexval()}'>"
+        f"&nbsp;&nbsp;&middot;&nbsp;&nbsp;</font>"
+        f"<font face='Times-Roman' size='15.4' color='{NAVY.hexval()}'>"
+        f"{len(_cur_tickers)} total holdings</font>",
+        ParagraphStyle("intro_title", fontSize=17.6, leading=22,
+                       textColor=CHARCOAL, fontName="Times-Roman",
+                       alignment=TA_LEFT, spaceBefore=4, spaceAfter=2),
+    )
+    _curr_portfolio_block = [_intro_title, thin_rule(BORDER, 0.6)]
 
-        story.append(Spacer(1, 0.08*inch))
-        story.append(thin_rule(BORDER, 0.6))
+    # NOTE: the CLIENT PROFILE block used to render HERE — between the
+    # cover title and the current portfolio card. As of the cover
+    # restructure, the same content (demographics + scores + priorities)
+    # is rendered ABOVE the title ribbon, so the report leads with WHO
+    # before WHAT. The `sections.get("profile", True)` toggle still
+    # controls whether to include it; honor that here by emitting a
+    # no-op when profile is disabled. (If profile is False the cover
+    # info block above is rendered unconditionally — that's intentional;
+    # at minimum the reader needs to know who the proposal is for.
+    # The toggle is preserved for backward compat with downstream code
+    # that may check sections["profile"].)
 
     # ── CURRENT PORTFOLIO CARD ────────────────────────────
     # Shows what the client ACTUALLY HOLDS TODAY (Step 2 snapshot), not
@@ -5554,9 +7421,13 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
     # that for the holdings list, pie chart, and equity/bond/cash split.
     # Falls back to the balanced tier (the legacy behavior) only when
     # Step 2 wasn't set when the proposal was saved.
-    story.append(Spacer(1, 0.05*inch))
-    story.append(Paragraph("CURRENT PORTFOLIO", eyebrow_cap))
-    cur_badge = risk_badge(current_score, size=0.55*inch, needle_color=ACCENT)
+    _curr_portfolio_block.append(Spacer(1, 0.05*inch))
+    # Eyebrow "CURRENT PORTFOLIO" REMOVED per advisor request — the
+    # section header above ("Your Current Portfolio") already names the
+    # section, so the eyebrow was redundant chrome.
+    # The portfolio badge for this page is composited into the donut
+    # drawing further down (medium 0.55" inset-double-border variant,
+    # chrome suppressed — just the numeral, no eyebrow, no "/ 99").
 
     # Re-resolve from the Step 2 snapshot (same logic as the score block
     # above so they stay in sync).
@@ -5606,64 +7477,346 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         _cur_bd = current_port.get("bond_pct",   0)
         _cur_cs = current_port.get("cash_pct",   0)
 
-    cur_info = [
-        [Paragraph(
-            f"<font color='{CHARCOAL.hexval()}' size='12'><b>Your Current Holdings</b></font>",
-            body_small,
-        )],
-        [Paragraph(
-            f"<font color='{GRAY.hexval()}' size='8'>{len(_cur_tickers)} HOLDINGS</font>",
-            body_small,
-        )],
-        [Paragraph(
-            f"<font size='9'><b>{_cur_eq:.0f}%</b> Equity &nbsp;·&nbsp; "
-            f"<b>{_cur_bd:.0f}%</b> Bonds &nbsp;·&nbsp; "
-            f"<b>{_cur_cs:.0f}%</b> Cash</font>",
-            body_small,
-        )],
-    ]
-    cur_left = Table([[cur_badge, Table(cur_info, colWidths=[5.5*inch])]],
-                      colWidths=[0.6*inch, 5.5*inch])
-    cur_left.setStyle(TableStyle([
-        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-        ("LEFTPADDING",(0,0),(-1,-1),0),
+    # Layout per advisor revision:
+    #   LEFT half:   "N current holdings" navy serif header
+    #                 equity/bond/cash proportional bar
+    #                 allocation list (tickers + percentages, 2 cols)
+    #   RIGHT half:  donut pie chart with the portfolio badge composited
+    #                over its upper-left (built later in this section)
+    # The visual reads as a header/data block on the left paired with
+    # a graphic on the right, rather than the previous centered-stack
+    # arrangement that left the holdings count floating below the pie.
+
+    # "N current holdings" header — Times-Roman sentence-case at 14pt
+    # navy, matching the page-1 section header treatment ("Your Current
+    # Portfolio", "Risk Summary", "Alignment Summary"). Replaces the
+    # earlier Helvetica-Bold ALL-CAPS treatment that read as a
+    # competing eyebrow.
+    _holdings_count_para = Paragraph(
+        f"{len(_cur_tickers)} total holdings",
+        ParagraphStyle("holdings_count", fontSize=14, leading=18,
+                       textColor=NAVY, fontName="Times-Roman",
+                       alignment=TA_LEFT, spaceBefore=2,
+                       spaceAfter=6),
+    )
+
+    # Equity / Bonds / Cash split — proportional stacked horizontal bar
+    # with inline labels, replacing the earlier dot-separated text run
+    # ("32% Equity · 64% Bonds · 4% Cash"). Bar reads in a glance: navy
+    # for equities, gold for bonds, pale cream for cash. Labels sit
+    # INSIDE each segment where the segment is wide enough; small
+    # segments (typically cash) get their label suppressed and rely on
+    # the segment color to communicate the share.
+    def _cover_ebc_bar(eq_pct, bd_pct, cs_pct, width=3.4*inch):
+        """Proportional eq/bd/cs strip for the cover.
+
+        Inline equivalent of the page-3 _asset_class_bar but expressed
+        as a single Drawing with embedded text — narrower segments
+        drop their inline label when there's no room for it.
+        """
+        total = max(0.001, float(eq_pct) + float(bd_pct) + float(cs_pct))
+        W = width
+        H = 22  # bar height + breathing room
+        bar_h = 16
+        bar_y = (H - bar_h) / 2
+        d = Drawing(W, H)
+        _segments = [
+            (float(eq_pct), NAVY,                       BG_SOFT, "Equity"),
+            (float(bd_pct), ACCENT,                     NAVY,    "Bonds"),
+            (float(cs_pct), colors.HexColor("#E8E0CC"), NAVY,    "Cash"),
+        ]
+        x = 0.0
+        # Light cream backdrop behind the whole bar so any rounding
+        # gap between segments doesn't show as the page background.
+        d.add(Rect(0, bar_y, W, bar_h,
+                   fillColor=colors.HexColor("#F4EFE0"),
+                   strokeColor=None))
+        for pct, fill_col, text_col, lbl in _segments:
+            seg_w = (pct / total) * W
+            if seg_w <= 0:
+                continue
+            d.add(Rect(x, bar_y, seg_w, bar_h,
+                       fillColor=fill_col, strokeColor=None))
+            # Inline label — only when the segment is wide enough to
+            # comfortably hold "NN% Label" at 8.5pt (~6.5pt avg char
+            # width, so a 6-char label needs ~42pt). Below that, the
+            # color alone carries the meaning.
+            _label_str = f"{pct:.0f}% {lbl}"
+            _needed = 6.0 * len(_label_str)
+            if seg_w >= _needed:
+                d.add(String(x + seg_w / 2, bar_y + bar_h / 2 - 3,
+                             _label_str,
+                             fontName="Helvetica-Bold", fontSize=8.5,
+                             fillColor=text_col, textAnchor="middle"))
+            else:
+                # Tight: just "NN%" with no label word
+                _short = f"{pct:.0f}%"
+                _need_short = 6.0 * len(_short)
+                if seg_w >= _need_short:
+                    d.add(String(x + seg_w / 2, bar_y + bar_h / 2 - 3,
+                                 _short,
+                                 fontName="Helvetica-Bold", fontSize=8.5,
+                                 fillColor=text_col, textAnchor="middle"))
+            x += seg_w
+        # Thin navy outline around the whole bar to frame it.
+        d.add(Rect(0, bar_y, W, bar_h,
+                   fillColor=None,
+                   strokeColor=NAVY, strokeWidth=0.5))
+        return d
+
+    _ebc_para = _cover_ebc_bar(_cur_eq, _cur_bd, _cur_cs, width=3.4*inch)
+
+    # Build the allocation legend (tickers + percentages) for the
+    # left column. Run the SAME lump_to_other pass as pie_drawing()
+    # so the legend rows correspond 1:1 to the donut wedges — same
+    # tickers, same sort order, same "Other" rollup if applicable.
+    # Previously the legend sorted-by-weight but did NOT lump, while
+    # the donut DID lump, so when the portfolio had more than 10
+    # holdings the legend rows past row N didn't match any visible
+    # wedge and the swatch colors appeared mismatched.
+    _cv_ts, _cv_ws, _cv_has_other = lump_to_other(
+        _cur_tickers, _cur_weights, _SETTINGS,
+    )
+    _cv_total = sum(_cv_ws) or 1.0
+    _cv_pairs = [(t, (w / _cv_total) * 100.0) for t, w in zip(_cv_ts, _cv_ws)]
+
+    # Build a chart-wide ticker→color map ONCE here so each ticker's
+    # swatch in the legend matches its wedge in the donut, with no two
+    # tickers sharing a color (see resolve_chart_colors). The donut
+    # itself uses the same resolver with the same _cv_ts list a few
+    # lines above, so the orderings line up.
+    _cv_color_map = dict(zip(_cv_ts, resolve_chart_colors(_cv_ts)))
+
+    _legend_t_style = ParagraphStyle("cv_lg_t", fontName="Helvetica-Bold",
+                                      fontSize=9.5, leading=12,
+                                      textColor=NAVY)
+    _legend_p_style = ParagraphStyle("cv_lg_p", fontName="Helvetica",
+                                      fontSize=9.5, leading=12,
+                                      textColor=CHARCOAL,
+                                      alignment=TA_LEFT)
+
+    def _cv_row(tkr, pct):
+        c = _cv_color_map.get(tkr, PDF_TICKER_COLOR(tkr))
+        sw = Drawing(8, 9)
+        sw.add(Rect(0, 0, 8, 8, fillColor=c, strokeColor=None))
+        return [sw,
+                Paragraph(tkr, _legend_t_style),
+                Paragraph(f"{pct:.1f}%", _legend_p_style)]
+
+    def _empty_cells():
+        return [Drawing(8, 9),
+                Paragraph("", _legend_t_style),
+                Paragraph("", _legend_p_style)]
+
+    _n = len(_cv_pairs)
+    _half = (_n + 1) // 2
+    _left_pairs  = _cv_pairs[:_half]
+    _right_pairs = _cv_pairs[_half:]
+    _max_rows = max(len(_left_pairs), len(_right_pairs), 1)
+
+    _legend_grid = []
+    for i in range(_max_rows):
+        _row = []
+        if i < len(_left_pairs):
+            _row.extend(_cv_row(*_left_pairs[i]))
+        else:
+            _row.extend(_empty_cells())
+        if i < len(_right_pairs):
+            _row.extend(_cv_row(*_right_pairs[i]))
+        else:
+            _row.extend(_empty_cells())
+        _legend_grid.append(_row)
+
+    # Allocation list — 6-col table per row:
+    #   [swatch, ticker, pct,  swatch, ticker, pct]
+    # Swatches are 8pt color squares matching the pie wedge colors so
+    # the legend visually maps to the donut. Centered horizontally
+    # within the left zone via hAlign="CENTER" so the table sits
+    # directly under the centered EBC bar above it. A 14pt left
+    # padding on the second swatch column (col 3) creates the visual
+    # gap between the two paired columns.
+    # Ticker columns widened from 0.50" → 0.62" so 5-char mutual-fund
+    # symbols (VWEHX, PDBZX, PHYZX, etc.) sit on a single line at
+    # 9.5pt Helvetica-Bold instead of wrapping mid-name.
+    _alloc_tbl = Table(
+        _legend_grid,
+        colWidths=[
+            0.16*inch, 0.62*inch, 0.50*inch,
+            0.30*inch, 0.62*inch, 0.50*inch,
+        ],
+        hAlign="CENTER",
+    )
+    _alloc_tbl.setStyle(TableStyle([
+        ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+        ("LEFTPADDING",   (0,0), (-1,-1), 2),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 2),
+        ("TOPPADDING",    (0,0), (-1,-1), 1),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 1),
+        # No left padding on swatches so they hug the start of the cell
+        ("LEFTPADDING",   (0,0), (0,-1), 0),
+        ("LEFTPADDING",   (3,0), (3,-1), 14),  # gap between paired groups
+        # Right-align percent columns so decimals align across rows
+        ("ALIGN",         (2,0), (2,-1), "RIGHT"),
+        ("ALIGN",         (5,0), (5,-1), "RIGHT"),
     ]))
-    story.append(cur_left)
 
-    # ── Current portfolio pie + legend ─────────────────────
-    if _cur_tickers and _cur_weights and sum(float(w or 0) for w in _cur_weights) > 0:
-        story.append(Spacer(1, 0.06*inch))
-        _cur_pie = pie_drawing(_cur_tickers, _cur_weights, size=2.0*inch)
-        _cur_legend = pie_legend_table(_cur_tickers, _cur_weights, max_rows_per_col=8)
-        _cur_card = Table(
-            [[_cur_pie, _cur_legend]],
-            colWidths=[2.3*inch, 4.9*inch],
-        )
-        _cur_card.setStyle(TableStyle([
-            ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
-            ("ALIGN",         (0,0), (0,-1),  "CENTER"),
-            ("LEFTPADDING",   (0,0), (-1,-1), 4),
-            ("RIGHTPADDING",  (0,0), (-1,-1), 4),
-            ("TOPPADDING",    (0,0), (-1,-1), 6),
-            ("BOTTOMPADDING", (0,0), (-1,-1), 6),
-            ("BOX",           (0,0), (-1,-1), 0.4, BORDER),
-            ("BACKGROUND",    (0,0), (-1,-1), BG_LIGHT),
-        ]))
-        story.append(_cur_card)
+    # Left cell: vertical stack of EBC bar → allocation list.
+    # Holdings count moved to the section header row above per advisor
+    # request, so this cell now just stacks the meter over the legend.
+    # Narrowed from 4.9" to 3.7" so the content row sits on the LEFT
+    # half of the page (the outer row uses hAlign="LEFT" to keep the
+    # whole pie + table block aligned to the left edge of the content
+    # area, with whitespace on the right balancing the section header
+    # callout on the upper-right).
+    _left_cell = Table(
+        [[_ebc_para],
+         [_alloc_tbl]],
+        colWidths=[3.7*inch],
+    )
+    _left_cell.setStyle(TableStyle([
+        ("VALIGN",        (0,0), (-1,-1), "TOP"),
+        ("LEFTPADDING",   (0,0), (-1,-1), 0),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 0),
+        ("TOPPADDING",    (0,0), (-1,-1), 0),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+        # EBC bar and allocation list both centered so they sit
+        # visually stacked under one another in the middle of the
+        # left cell.
+        ("ALIGN",         (0,0), (0,-1), "CENTER"),
+    ]))
 
-    # ── HOLDINGS DETAIL TABLE (dedicated page 2) ─────────────
+    # Right cell: just the pie chart now — the duplicate portfolio
+    # score badge that previously sat in the upper-right of this cell
+    # has been removed because the same score already renders in the
+    # Alignment Summary block above (the square PORTFOLIO badge with
+    # its own gauge). With the badge gone, the right cell narrows and
+    # the pie shifts right — gives the left zone more horizontal room
+    # for the centered EBC bar + allocations list. Donut hole stays
+    # at 76% of pie radius so the ring reads as a thin annular band.
+    _PIE_PT = 2.0 * inch
+    # Right cell is just wide enough for the pie + a small right
+    # margin. Pie sits flush at x=0 of the cell so its left edge
+    # nearly butts up against the left cell's content but its right
+    # edge sits near the page's right margin.
+    _RC_W = 2.5 * inch
+    _RC_H = _PIE_PT
+    _right_compose = Drawing(_RC_W, _RC_H)
+
+    # Build the pie at its target x/y. This calls into pie_drawing()
+    # to get the styling (lump_to_other rule, per-ticker colors, donut
+    # hole), but we need the wedges placed at non-zero coordinates so
+    # we rebuild here using the same machinery as pie_drawing().
+    if _cur_tickers and _cur_weights:
+        _ts, _ws, _has_other = lump_to_other(_cur_tickers, _cur_weights,
+                                              _SETTINGS)
+        if _ts:
+            _colors_list = resolve_chart_colors(_ts)
+            _p = Pie()
+            # Center the pie horizontally within the right cell so it
+            # has equal margins on each side. Pie is 2.0" and cell is
+            # 2.5" → 0.25" margin on each side.
+            _p.x = (_RC_W - _PIE_PT) / 2.0
+            _p.y = 0
+            _p.width = _PIE_PT
+            _p.height = _PIE_PT
+            _p.data = _ws
+            _p.labels = None
+            _p.slices.strokeColor = WHITE
+            _p.slices.strokeWidth = 1.6
+            _p.startAngle = 90
+            _p.direction = "clockwise"
+            for _i, _c in enumerate(_colors_list):
+                _p.slices[_i].fillColor = _c
+            _right_compose.add(_p)
+            # Donut hole — wider than pie_drawing's default 0.32 so this
+            # cover-page rendering reads as a thin ring. The standalone
+            # pie_drawing() function used elsewhere keeps its own 32%
+            # hole; only this composited cover-page instance is thinner.
+            _pie_cx = _p.x + _PIE_PT / 2.0
+            _pie_cy = _PIE_PT / 2.0
+            _right_compose.add(Circle(_pie_cx, _pie_cy, _PIE_PT * 0.38,
+                                       fillColor=WHITE, strokeColor=None,
+                                       strokeWidth=0))
+
+    # Outer 2-column row placing PIE + TABLE side by side. Both blocks
+    # consolidate as one consolidated content row centered within the
+    # 7.4" content area (advisor wanted equal left/right margins
+    # instead of the previous left-aligned treatment). Pie sits in the
+    # first column, EBC bar + alloc grid in the second. Total row
+    # width 6.2" (pie 2.5" + table 3.7") → 0.6" of whitespace on each
+    # side of the content area. hAlign="CENTER" pins it to the
+    # horizontal midline of the page.
+    _cur_row = Table(
+        [[_right_compose, _left_cell]],
+        colWidths=[2.5*inch, 3.7*inch],
+        hAlign="CENTER",
+    )
+    _cur_row.setStyle(TableStyle([
+        ("VALIGN",       (0,0), (0,0),   "TOP"),
+        ("VALIGN",       (1,0), (1,0),   "MIDDLE"),
+        ("ALIGN",        (1,0), (1,0),   "CENTER"),
+        ("LEFTPADDING",  (0,0), (-1,-1), 0),
+        ("RIGHTPADDING", (0,0), (-1,-1), 0),
+        ("TOPPADDING",   (0,0), (-1,-1), 4),
+        ("BOTTOMPADDING",(0,0), (-1,-1), 4),
+    ]))
+    _curr_portfolio_block.append(_cur_row)
+    story.append(KeepTogether(_curr_portfolio_block))
+
+    # ── HOLDINGS DETAIL TABLE (dedicated page) ─────────────
     # Per-holding breakdown matching the reference design: small RISK badge,
     # ticker + name, amount, % of portfolio, 6-month historical range.
     # On its own page so the page-1 cover stays uncluttered and the holdings
     # always have room to render in full without splitting.
-    if _cur_tickers and _cur_weights:
+    # ── HOLDINGS DETAIL PAGE BUILDER ─────────────────────────────
+    # Renders a portrait page with a section header (with risk badge
+    # in the upper-right) + intro paragraph + a detailed per-holding
+    # table. Used twice: once for the client's CURRENT portfolio
+    # (Section 1 · Current Holdings) and once for the PROPOSED
+    # comparison's allocation (Section 2 · Proposed Holdings) so the
+    # reader can compare them side-by-side in the same format.
+    def _render_holdings_page(tickers, weights, score, eyebrow,
+                              title, intro_text, options_data=None):
+        # Holdings page is PORTRAIT per advisor revision pass (was
+        # landscape). The wider landscape page made the table breathe
+        # but broke the visual rhythm of the rest of the report — every
+        # other content page is portrait, so flipping to landscape just
+        # for one table felt jarring. Column widths below have been
+        # shrunk to fit the 7.4" portrait content area.
+        #
+        # MODES:
+        #   options_data=None (default) — Current Holdings layout:
+        #     7 columns: RISK | HOLDING | AMOUNT | % OF PORTFOLIO |
+        #     SEC YIELD | EXPENSE RATIO | 6-MO RANGE
+        #     Iterates over the (tickers, weights) pair passed in.
+        #
+        #   options_data=[(label, tickers, weights), ...] — Proposed
+        #     Holdings comparison layout for page 3:
+        #     8 columns: RISK | HOLDING | OPT 1 % | OPT 2 % | OPT 3 % |
+        #     SEC YIELD | EXPENSE RATIO | 6-MO RANGE
+        #     AMOUNT column is dropped (a per-option dollar amount is
+        #     ambiguous when the same ticker is held at different
+        #     weights across the three options). Rows are the UNION of
+        #     tickers across all three options: Option #1 holdings
+        #     first (sorted by risk score desc, today's behavior),
+        #     then tickers held only by Option #2 or #3 below (also
+        #     by risk score desc). Per row, the highest weight across
+        #     the three options is rendered bold; the other two are
+        #     muted. "—" where an option does not hold that ticker.
+        #     The (tickers, weights, score) parameters still represent
+        #     Option #1 — they drive the page's corner portfolio_badge
+        #     and the page-level $ total context.
+        story.append(NextPageTemplate('portrait'))
         story.append(PageBreak())
-        story.append(section_header("Section 1", "Current Holdings"))
-        story.append(Paragraph(
-            "The full breakdown of the client's current portfolio: position "
-            "size, weight, recent risk profile, and 6-month price range.",
-            body,
-        ))
+        # _section_header_with_badge now returns a LIST of flowables:
+        #   [0] _CornerBadge (zero-size, draws badge via canvas in
+        #       upper-right corner — doesn't affect text flow)
+        #   [1] title + width-constrained rule (KeepTogether)
+        #   [2] description (Table with spaceBefore=-4)
+        # This matches page 4's section_header + intro spacing exactly,
+        # with the badge floating independently of the text flow.
+        story.extend(_section_header_with_badge(
+            eyebrow, title, score, intro_text=intro_text))
         story.append(Spacer(1, 0.08*inch))
         try:
             import yfinance as _yf
@@ -5674,10 +7827,51 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
             _holding_total_usd = float(proposal.get("portfolio_value",
                                          client_profile.get("portfolio_value", 10000.0)))
 
+            # ── Comparison-mode setup ──
+            # When options_data is provided (Proposed Holdings page),
+            # the table rows are the UNION of tickers across all three
+            # options. We preserve Option #1's ticker order for the
+            # primary group, then append tickers held only by Option
+            # #2 or #3 in the order they're first seen. Each option's
+            # weights are stored as upper-case-keyed dicts for O(1)
+            # lookup during row construction.
+            #
+            # `_opt_weight_maps` is a list of 3 dicts (one per option):
+            #   [{TICKER: weight_pct}, {TICKER: weight_pct}, {...}]
+            # An absent ticker → option does not hold it → "—" in cell.
+            _opt_weight_maps = []
+            _opt1_tickers_upper = []
+            if options_data is not None:
+                for _i, (_lbl, _o_tks, _o_wts) in enumerate(options_data):
+                    _m = {}
+                    for _t, _w in zip(_o_tks or [], _o_wts or []):
+                        if _t:
+                            _m[str(_t).upper()] = float(_w or 0)
+                    _opt_weight_maps.append(_m)
+                    if _i == 0:
+                        _opt1_tickers_upper = [str(t).upper()
+                                                for t in (_o_tks or [])]
+                # Build the union ticker list: Option #1 holdings first
+                # (preserving order), then unique tickers from Option #2,
+                # then unique tickers from Option #3.
+                _seen = set()
+                _union = []
+                for _src in (options_data[0][1] if options_data else [],
+                             options_data[1][1] if len(options_data) > 1 else [],
+                             options_data[2][1] if len(options_data) > 2 else []):
+                    for _t in (_src or []):
+                        _tu = str(_t).upper()
+                        if _tu not in _seen:
+                            _seen.add(_tu)
+                            _union.append(_t)
+                _iter_tickers = _union
+            else:
+                _iter_tickers = tickers
+
             # Fetch 6-month price history for each ticker (and get info)
             _end2  = _dt.now()
             _start_6m = _end2 - _td2(days=200)
-            _upper_tks = [t.upper() for t in _cur_tickers]
+            _upper_tks = [t.upper() for t in _iter_tickers]
             _info_cache = {}
             _range_cache = {}  # {ticker: (low_6m_pct, high_6m_pct)}
             _ticker_vol   = {}  # {ticker: annualized_vol}
@@ -5743,103 +7937,425 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                 # Use the unified compute_risk_score (sharpe ignored in new spec)
                 return compute_risk_score(v, dd, 0, ticker=tk_u)
 
-            # Small risk badge drawing (compact version of the hero badge)
+            # Holdings badge: standard document format (cream fill, navy
+            # outer, gold inner ring) with the numeral always in navy.
+            # Per advisor feedback, the previous tier-tinted numeral
+            # (forest / tan / oxblood) was dropped — the risk score
+            # column already encodes the magnitude, and uniform navy
+            # numerals read as a cleaner, more editorial set of matched
+            # badges across the table.
             def _small_risk_badge(score, size=0.35*inch):
                 s = size
                 d = Drawing(s, s)
-                # Color-code by zone
-                if score <= 33:   c = colors.HexColor("#00B36B")   # green
-                elif score <= 66: c = colors.HexColor("#E8A317")   # amber
-                else:             c = colors.HexColor("#CC3B3B")   # red
-                d.add(Rect(0, 0, s, s, strokeColor=c, strokeWidth=0.9,
-                           fillColor=WHITE))
-                bar_h = s * 0.32
-                d.add(Rect(0, s - bar_h, s, bar_h, strokeColor=c,
-                           strokeWidth=0, fillColor=c))
-                d.add(String(s/2, s - bar_h*0.72, "RISK",
-                             fontName="Helvetica-Bold", fontSize=4.5,
-                             fillColor=WHITE, textAnchor="middle"))
-                d.add(String(s/2, (s - bar_h)/2 - 4, str(score),
-                             fontName="Helvetica-Bold", fontSize=11,
-                             fillColor=CHARCOAL, textAnchor="middle"))
+                try:
+                    sv = int(score)
+                except (ValueError, TypeError):
+                    sv = 50
+                numeral_color = NAVY
+                # Outer square: cream fill, navy edge — matches the cover
+                # PORTFOLIO badge and the recommendation-card mini badges
+                d.add(Rect(0, 0, s, s,
+                           strokeColor=NAVY, strokeWidth=0.9,
+                           fillColor=BG_SOFT))
+                # Inner gold ring — sits inset from the edge
+                inset = s * 0.10
+                d.add(Rect(inset, inset, s - 2*inset, s - 2*inset,
+                           strokeColor=ACCENT, strokeWidth=0.55,
+                           fillColor=None))
+                # Numeral — navy serif, slightly smaller so the inner
+                # ring has clearance
+                num_pt = s * 0.42
+                d.add(String(s/2, s/2 - num_pt * 0.32, str(sv),
+                             fontName="Times-Roman", fontSize=num_pt,
+                             fillColor=numeral_color, textAnchor="middle"))
                 return d
 
             # Build table rows
-            holdings_hdr = [
-                Paragraph("<b>RISK</b>", eyebrow_cap),
-                Paragraph("<b>HOLDING</b>", eyebrow_cap),
-                Paragraph("<b>AMOUNT</b>", eyebrow_cap),
-                Paragraph("<b>% OF<br/>PORTFOLIO</b>", eyebrow_cap),
-                Paragraph("<b>SEC<br/>YIELD</b>", eyebrow_cap),
-                Paragraph("<b>95% HISTORICAL<br/>RANGE (6 MOS)</b>", eyebrow_cap),
-            ]
-            holdings_rows = [holdings_hdr]
+            #
+            # Comparison mode (options_data is set) uses a TWO-ROW
+            # header so the three OPT % sub-columns sit visually under
+            # a single "% OF PORTFOLIO" span. ReportLab SPAN styles
+            # (applied below in the TableStyle) handle the vertical
+            # merge on the outer columns and the horizontal merge on
+            # the spanned % header.
+            if options_data is None:
+                holdings_hdr = [
+                    Paragraph("<b>RISK</b>", eyebrow_cap),
+                    Paragraph("<b>HOLDING</b>", eyebrow_cap),
+                    Paragraph("<b>AMOUNT</b>", eyebrow_cap),
+                    Paragraph("<b>% OF<br/>PORTFOLIO</b>", eyebrow_cap),
+                    Paragraph("<b>SEC<br/>YIELD</b>", eyebrow_cap),
+                    Paragraph("<b>EXPENSE<br/>RATIO</b>", eyebrow_cap),
+                    Paragraph("<b>6-MO RANGE</b>", eyebrow_cap),
+                ]
+                holdings_rows = [holdings_hdr]
+            else:
+                # Centered sub-headers (OPT N) — TableStyle below applies
+                # ALIGN=CENTER to columns 2-4 so the labels sit under
+                # the spanned "% OF PORTFOLIO" label cleanly.
+                _ctr_eyebrow = ParagraphStyle(
+                    "ctr_eyebrow", parent=eyebrow_cap,
+                    alignment=TA_CENTER,
+                )
+                holdings_hdr_row1 = [
+                    Paragraph("<b>RISK</b>", eyebrow_cap),
+                    Paragraph("<b>HOLDING</b>", eyebrow_cap),
+                    Paragraph("<b>% OF PORTFOLIO</b>", _ctr_eyebrow),
+                    "",  # spanned
+                    "",  # spanned
+                    Paragraph("<b>SEC<br/>YIELD</b>", eyebrow_cap),
+                    Paragraph("<b>EXPENSE<br/>RATIO</b>", eyebrow_cap),
+                    Paragraph("<b>6-MO RANGE</b>", eyebrow_cap),
+                ]
+                holdings_hdr_row2 = [
+                    "",  # spanned from row 0
+                    "",  # spanned from row 0
+                    Paragraph("<b>OPT 1</b>", _ctr_eyebrow),
+                    Paragraph("<b>OPT 2</b>", _ctr_eyebrow),
+                    Paragraph("<b>OPT 3</b>", _ctr_eyebrow),
+                    "",  # spanned from row 0
+                    "",  # spanned from row 0
+                    "",  # spanned from row 0
+                ]
+                holdings_rows = [holdings_hdr_row1, holdings_hdr_row2]
 
-            # Sort by weight descending to match the pie
-            _sorted_holdings = sorted(
-                zip(_cur_tickers, _cur_weights),
-                key=lambda x: -float(x[1] or 0),
-            )
+            # ── PRE-COMPUTE per-holding scores + global range bounds ──
+            # Two-pass so we can: (1) sort by risk score descending, and
+            # (2) build comparable range bars where each holding's bar
+            # is drawn on the same x-scale across the whole table. The
+            # bar's visual length encodes the magnitude of the range,
+            # which is exactly the kind of "drawdown at a glance" signal
+            # the advisor wants instead of color-coded numbers.
+            #
+            # In comparison mode the meta tuple carries the per-option
+            # weight list and a group flag (0 = Option #1 holding,
+            # 1 = held only by Opt #2 / #3). Sort below uses (group,
+            # -score) so Group A always sits above Group B.
+            _holding_meta = []  # default: (tkr, wt, score, lo, hi)
+            _global_lo = 0.0
+            _global_hi = 0.0
+            if options_data is None:
+                _meta_iter = zip(tickers, weights)
+            else:
+                _meta_iter = [(_t, None) for _t in _iter_tickers]
+            for _tkr, _wt in _meta_iter:
+                _tk_u = _tkr.upper()
+                _lo_pct, _hi_pct = _range_cache.get(_tk_u, (None, None))
+                _dd = abs(_lo_pct / 100.0) if _lo_pct is not None else 0
+                _score = _score_from_vol_and_ticker(
+                    _tk_u, _ticker_vol.get(_tk_u), _dd,
+                )
+                if options_data is None:
+                    _holding_meta.append(
+                        (_tkr, _wt, _score, _lo_pct, _hi_pct))
+                else:
+                    _opt_wts = [
+                        _opt_weight_maps[_i].get(_tk_u)
+                        if _i < len(_opt_weight_maps) else None
+                        for _i in range(3)
+                    ]
+                    _group = 0 if _tk_u in _opt1_tickers_upper else 1
+                    _holding_meta.append(
+                        (_tkr, _opt_wts, _score, _lo_pct, _hi_pct, _group))
+                if _lo_pct is not None:
+                    _global_lo = min(_global_lo, _lo_pct)
+                if _hi_pct is not None:
+                    _global_hi = max(_global_hi, _hi_pct)
+            # Pad the axis so bars don't touch the cell edges
+            _axis_span = max(abs(_global_lo), abs(_global_hi), 5.0)
+            _axis_min = -_axis_span * 1.05
+            _axis_max =  _axis_span * 1.05
 
-            for _tkr, _wt in _sorted_holdings:
+            # Sort by RISK SCORE descending — riskiest at the top, calmest
+            # at the bottom. Per advisor feedback, this orders the table
+            # by the same dimension the badges encode visually, so the
+            # reader's eye tracks consistently top→bottom.
+            #
+            # In comparison mode, the sort key is (group, -score) so
+            # Group A (Option #1 holdings) always sits above Group B
+            # (tickers held only by Opt #2 / #3). Inside each group the
+            # by-risk-score-descending order is preserved.
+            if options_data is None:
+                _holding_meta.sort(key=lambda m: -int(m[2]))
+            else:
+                _holding_meta.sort(key=lambda m: (m[5], -int(m[2])))
+
+            # ── Range bar drawer ──
+            # Renders a single 6-month range as a horizontal bar inside
+            # a fixed-width cell. Axis spans _axis_min .. _axis_max,
+            # consistent across all rows so visual length is comparable.
+            # Elements:
+            #   • Faint gray track behind the bar (the full axis range)
+            #   • Thin navy "0%" tick line
+            #   • Solid band from low → high in muted navy
+            #   • Small caption with the actual numbers, charcoal (no color)
+            def _range_bar(lo, hi, width=1.55*inch):
+                W = width
+                H = 26
+                d = Drawing(W, H)
+                # Reserve top half for the bar, bottom half for the
+                # numeric caption. Bar y is centered in the top region.
+                bar_y = H - 12
+                bar_h = 6
+                axis_w = W - 4   # leave 2pt margin each side
+                axis_x0 = 2
+
+                if lo is None or hi is None:
+                    d.add(String(W/2, bar_y - 1, "—",
+                                 fontName="Helvetica", fontSize=8,
+                                 fillColor=GRAY, textAnchor="middle"))
+                    return d
+
+                # Faint full-width gray track (shows the axis extent)
+                d.add(Rect(axis_x0, bar_y, axis_w, bar_h,
+                           fillColor=colors.HexColor("#efece3"),
+                           strokeColor=None))
+
+                # Position helpers
+                def _x_at(pct):
+                    # Map pct in [_axis_min .. _axis_max] → [axis_x0 .. axis_x0+axis_w]
+                    span = _axis_max - _axis_min
+                    if span <= 0:
+                        return axis_x0 + axis_w / 2
+                    return axis_x0 + (pct - _axis_min) / span * axis_w
+
+                lo_x = _x_at(lo)
+                hi_x = _x_at(hi)
+                zero_x = _x_at(0)
+
+                # Split the band into two colored segments at zero.
+                # Negative portion (lo_x → zero_x) renders in GOLD,
+                # positive portion (zero_x → hi_x) renders in NAVY.
+                # This matches the caption colors below so the reader
+                # connects bar color to value sign without effort.
+                #
+                # Edge cases:
+                #   - If both lo and hi are negative (all-loss range),
+                #     only the gold segment renders.
+                #   - If both are positive (all-gain range), only the
+                #     navy segment renders.
+                #   - If lo < 0 < hi (mixed), both segments render.
+                if lo < 0:
+                    # Gold segment: from lo_x to min(zero_x, hi_x)
+                    _gold_end = min(zero_x, hi_x)
+                    _gold_w = max(0, _gold_end - lo_x)
+                    if _gold_w > 0:
+                        d.add(Rect(lo_x, bar_y, _gold_w, bar_h,
+                                   fillColor=ACCENT, strokeColor=None))
+                if hi > 0:
+                    # Navy segment: from max(zero_x, lo_x) to hi_x
+                    _navy_start = max(zero_x, lo_x)
+                    _navy_w = max(0, hi_x - _navy_start)
+                    if _navy_w > 0:
+                        d.add(Rect(_navy_start, bar_y, _navy_w, bar_h,
+                                   fillColor=NAVY, strokeColor=None))
+
+                # Zero tick — small navy notch above and below the bar.
+                # Per advisor feedback, the previous gold tick clashed
+                # with the gold negative segment; navy provides a clean
+                # vertical accent that helps the eye find zero without
+                # competing with the bar colors on either side.
+                d.add(Line(zero_x, bar_y - 2, zero_x, bar_y + bar_h + 2,
+                           strokeColor=NAVY, strokeWidth=1.2))
+
+                # Numeric caption underneath — split into three colored
+                # parts: negative number in GOLD (matches bar), " / "
+                # separator in gray, positive number in NAVY (matches
+                # bar). Reportlab's String only accepts one fillColor
+                # per element, so we render three separate Strings
+                # positioned manually relative to the centerline.
+                # Approximate character widths: at 7.5pt Helvetica,
+                # ~4.0pt per digit/sign char, ~3.0pt for "%".
+                _lo_str  = f"{lo:+.2f}%"
+                _sep_str = " / "
+                _hi_str  = f"{hi:+.2f}%"
+                # Measure widths so we can right-align the lo string
+                # immediately before the separator, and left-align
+                # the hi string immediately after it.
+                from reportlab.pdfbase.pdfmetrics import stringWidth
+                _lo_w  = stringWidth(_lo_str,  "Helvetica", 7.5)
+                _sep_w = stringWidth(_sep_str, "Helvetica", 7.5)
+                _hi_w  = stringWidth(_hi_str,  "Helvetica", 7.5)
+                _total_w = _lo_w + _sep_w + _hi_w
+                _start_x = W / 2 - _total_w / 2
+                d.add(String(_start_x, 1, _lo_str,
+                             fontName="Helvetica", fontSize=7.5,
+                             fillColor=ACCENT, textAnchor="start"))
+                d.add(String(_start_x + _lo_w, 1, _sep_str,
+                             fontName="Helvetica", fontSize=7.5,
+                             fillColor=GRAY, textAnchor="start"))
+                d.add(String(_start_x + _lo_w + _sep_w, 1, _hi_str,
+                             fontName="Helvetica", fontSize=7.5,
+                             fillColor=NAVY, textAnchor="start"))
+                return d
+
+            for _meta_tuple in _holding_meta:
+                # Mode-aware unpack: comparison meta carries an extra
+                # per-option weight list and a group flag.
+                if options_data is None:
+                    _tkr, _wt, _score, _lo, _hi = _meta_tuple
+                    _opt_wts = None
+                else:
+                    _tkr, _opt_wts, _score, _lo, _hi, _group = _meta_tuple
+                    # `_wt` is unused in comparison mode (no AMOUNT
+                    # column and per-option weights handled below).
+                    _wt = None
+
                 _tk_u = _tkr.upper()
                 _info = _info_cache.get(_tk_u, {})
                 _name = _info.get("name") or _tkr
                 _name_short = _name if len(_name) <= 42 else _name[:40] + "…"
                 _type = _info.get("type") or ""
-                # Pull the worst-case 6mo drawdown from the range we computed
-                _lo_pct, _hi_pct = _range_cache.get(_tk_u, (None, None))
-                _dd_for_score = abs(_lo_pct / 100.0) if _lo_pct is not None else 0
-                _score = _score_from_vol_and_ticker(
-                    _tk_u, _ticker_vol.get(_tk_u), _dd_for_score,
-                )
-                _amount_usd = float(_wt or 0) / 100.0 * _holding_total_usd
                 _sec_y = _info.get("sec_yield")
                 _sec_str = (f"{_sec_y*100:.2f}%" if isinstance(_sec_y, (int, float))
                             and _sec_y and _sec_y < 1 else
                             (f"{_sec_y:.2f}%" if isinstance(_sec_y, (int, float))
                              and _sec_y else "—"))
-                _lo, _hi = _range_cache.get(_tk_u, (None, None))
-                if _lo is not None and _hi is not None:
-                    _range_cell = Paragraph(
-                        f"<font color='#CC3B3B'>{_lo:+.2f}%</font>  |  "
-                        f"<font color='#00B36B'>{_hi:+.2f}%</font>",
-                        body_small,
-                    )
+
+                # Look up expense ratio via the existing helper. Returns
+                # a decimal (0.0005 = 0.05%) or None when no source has
+                # data. Format as e.g. "0.05%"; show "—" when unknown.
+                try:
+                    _er = _expense_ratio_for_ticker(_tkr)
+                except Exception:
+                    _er = None
+                if isinstance(_er, (int, float)) and _er >= 0:
+                    _er_str = f"{_er * 100:.2f}%"
                 else:
-                    _range_cell = Paragraph("—", body_small)
+                    _er_str = "—"
 
-                holdings_rows.append([
-                    _small_risk_badge(_score, size=0.35*inch),
-                    Paragraph(
-                        f"<b>{_tkr}</b> · {_name_short}<br/>"
-                        f"<font color='{GRAY.hexval()}' size='7'>{_type}</font>",
-                        body_small,
-                    ),
-                    Paragraph(f"${_amount_usd:,.2f}", body_small),
-                    Paragraph(f"{float(_wt or 0):.2f}%", body_small),
-                    Paragraph(_sec_str, body_small),
-                    _range_cell,
-                ])
+                if options_data is None:
+                    _amount_usd = float(_wt or 0) / 100.0 * _holding_total_usd
+                    holdings_rows.append([
+                        _small_risk_badge(_score, size=0.35*inch),
+                        Paragraph(
+                            f"<b>{_tkr}</b> · {_name_short}<br/>"
+                            f"<font color='{GRAY.hexval()}' size='7'>{_type}</font>",
+                            body_small,
+                        ),
+                        Paragraph(f"${_amount_usd:,.0f}", body_small),
+                        Paragraph(f"{float(_wt or 0):.1f}%", body_small),
+                        Paragraph(_sec_str, body_small),
+                        Paragraph(_er_str, body_small),
+                        _range_bar(_lo, _hi, width=1.45*inch),
+                    ])
+                else:
+                    # Bold the highest-weight option for this row; the
+                    # other two render in regular weight. If no option
+                    # holds this ticker (shouldn't happen — it's in the
+                    # union — but defensive), bold nothing.
+                    _present = [(_i, _w) for _i, _w in enumerate(_opt_wts)
+                                if _w is not None]
+                    _bold_idx = (max(_present, key=lambda x: x[1])[0]
+                                 if _present else -1)
+                    _opt_cells = []
+                    for _i, _w in enumerate(_opt_wts):
+                        if _w is None:
+                            _opt_cells.append(
+                                Paragraph(
+                                    f"<font color='{GRAY.hexval()}'>—</font>",
+                                    body_small,
+                                )
+                            )
+                        else:
+                            _w_str = f"{float(_w):.1f}%"
+                            if _i == _bold_idx:
+                                _opt_cells.append(
+                                    Paragraph(f"<b>{_w_str}</b>", body_small)
+                                )
+                            else:
+                                _opt_cells.append(
+                                    Paragraph(_w_str, body_small)
+                                )
+                    holdings_rows.append([
+                        _small_risk_badge(_score, size=0.35*inch),
+                        Paragraph(
+                            f"<b>{_tkr}</b> · {_name_short}<br/>"
+                            f"<font color='{GRAY.hexval()}' size='7'>{_type}</font>",
+                            body_small,
+                        ),
+                        _opt_cells[0],
+                        _opt_cells[1],
+                        _opt_cells[2],
+                        Paragraph(_sec_str, body_small),
+                        Paragraph(_er_str, body_small),
+                        _range_bar(_lo, _hi, width=1.45*inch),
+                    ])
 
-            holdings_tbl = Table(
-                holdings_rows,
-                colWidths=[0.5*inch, 2.4*inch, 0.85*inch, 0.85*inch,
-                           0.65*inch, 1.55*inch],
-            )
-            holdings_tbl.setStyle(TableStyle([
-                ("FONTSIZE",      (0,0), (-1,-1), 8.5),
-                ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
-                ("ALIGN",         (0,0), (0,-1),  "CENTER"),
-                ("ALIGN",         (2,0), (-2,-1), "RIGHT"),
-                ("ALIGN",         (2,0), (-2,0),  "LEFT"),   # header cell left-align
-                ("LEFTPADDING",   (0,0), (-1,-1), 4),
-                ("RIGHTPADDING",  (0,0), (-1,-1), 6),
-                ("TOPPADDING",    (0,0), (-1,-1), 5),
-                ("BOTTOMPADDING", (0,0), (-1,-1), 5),
-                ("LINEBELOW",     (0,0), (-1,0),  1.0, NAVY),
-                ("LINEBELOW",     (0,1), (-1,-2), 0.25, BORDER_SOFT),
-            ]))
+            # Portrait page: 8.5" wide minus 0.55" margins on each side
+            # = 7.4" usable.
+            #
+            # Current Holdings (options_data=None) — 7 columns:
+            #   RISK 0.42 + HOLDING 2.45 + AMOUNT 0.80 + % 0.75
+            #   + SEC 0.68 + EXPENSE 0.85 + RANGE 1.45 = 7.40
+            #
+            # Proposed Holdings (options_data set) — 8 columns:
+            #   RISK 0.42 + HOLDING 2.50 + OPT1 0.50 + OPT2 0.50
+            #   + OPT3 0.50 + SEC 0.68 + EXPENSE 0.85 + RANGE 1.45
+            #   = 7.40. AMOUNT dropped; HOLDING gains 0.05 back over
+            #   today's width (no truncation regression).
+            if options_data is None:
+                holdings_tbl = Table(
+                    holdings_rows,
+                    colWidths=[0.42*inch, 2.45*inch, 0.80*inch, 0.75*inch,
+                               0.68*inch, 0.85*inch, 1.45*inch],
+                )
+                holdings_tbl.setStyle(TableStyle([
+                    ("FONTSIZE",      (0,0), (-1,-1), 8.5),
+                    ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+                    ("ALIGN",         (0,0), (0,-1),  "CENTER"),
+                    ("ALIGN",         (2,0), (-2,-1), "RIGHT"),
+                    ("ALIGN",         (2,0), (-2,0),  "LEFT"),   # header cell left-align
+                    ("LEFTPADDING",   (0,0), (-1,-1), 4),
+                    ("RIGHTPADDING",  (0,0), (-1,-1), 6),
+                    ("TOPPADDING",    (0,0), (-1,-1), 5),
+                    ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+                    ("LINEBELOW",     (0,0), (-1,0),  1.0, NAVY),
+                    ("LINEBELOW",     (0,1), (-1,-2), 0.25, BORDER_SOFT),
+                ]))
+            else:
+                holdings_tbl = Table(
+                    holdings_rows,
+                    colWidths=[0.42*inch, 2.50*inch,
+                               0.50*inch, 0.50*inch, 0.50*inch,
+                               0.68*inch, 0.85*inch, 1.45*inch],
+                )
+                holdings_tbl.setStyle(TableStyle([
+                    ("FONTSIZE",      (0,0), (-1,-1), 8.5),
+                    ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+                    # ── Header structure ──
+                    # Row 0: RISK | HOLDING | %_OF_PORTFOLIO_______ |
+                    #        SEC | EXPENSE | RANGE
+                    # Row 1: ____ | _______ | OPT1 | OPT2 | OPT3 |
+                    #        ___ | _______ | _____
+                    # Outer columns vertically span both header rows;
+                    # the % header horizontally spans the three OPT
+                    # sub-columns.
+                    ("SPAN",          (0,0), (0,1)),   # RISK vertical
+                    ("SPAN",          (1,0), (1,1)),   # HOLDING vertical
+                    ("SPAN",          (2,0), (4,0)),   # % OF PORTFOLIO horizontal
+                    ("SPAN",          (5,0), (5,1)),   # SEC YIELD vertical
+                    ("SPAN",          (6,0), (6,1)),   # EXPENSE vertical
+                    ("SPAN",          (7,0), (7,1)),   # 6-MO RANGE vertical
+                    # ── Alignment ──
+                    ("ALIGN",         (0,0), (0,-1),  "CENTER"),  # risk badges
+                    ("ALIGN",         (2,0), (4,1),   "CENTER"),  # OPT headers
+                    ("ALIGN",         (2,2), (4,-1),  "RIGHT"),   # OPT body cells
+                    ("ALIGN",         (5,0), (6,1),   "LEFT"),    # SEC/EXP headers
+                    ("ALIGN",         (5,2), (6,-1),  "RIGHT"),   # SEC/EXP body
+                    # ── Padding ──
+                    ("LEFTPADDING",   (0,0), (-1,-1), 4),
+                    ("RIGHTPADDING",  (0,0), (-1,-1), 6),
+                    ("TOPPADDING",    (0,0), (-1,-1), 5),
+                    ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+                    # ── Rules ──
+                    # Navy under the full header (now 2 rows tall).
+                    # Faint dividers between data rows, skipping the
+                    # last row so the table doesn't draw its own
+                    # bottom edge.
+                    ("LINEBELOW",     (0,1), (-1,1),  1.0, NAVY),
+                    ("LINEBELOW",     (0,2), (-1,-2), 0.25, BORDER_SOFT),
+                ]))
             story.append(holdings_tbl)
         except Exception as _he:
             # Graceful fallback: just skip the detailed table
@@ -5848,90 +8364,1883 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                 caption,
             ))
 
+    # End of _render_holdings_page function definition. Now actually
+    # render the two holdings pages — first the client's CURRENT
+    # portfolio, then the PROPOSED allocation. Proposed is sourced
+    # from the Step 2 · Select Final Proposal for Report dropdowns:
+    # Option #1 drives the primary holdings list (and the corner
+    # badge / page metadata); Options #2 and #3 contribute their
+    # allocations to the side-by-side % OF PORTFOLIO sub-columns so
+    # the advisor can see how each candidate option weights every
+    # ticker at a glance.
+    #
+    # Previously the proposed page was filtered out of `picks` by
+    # tk_key == "balanced" — which silently dropped the page whenever
+    # the advisor's Option #1 was a 🧩 preset, a 📁 saved portfolio,
+    # or a ⭐ recommended tier other than balanced. Resolving Option
+    # #1 directly via the same helper the rest of the proposal uses
+    # makes the page always render whenever Option #1 has resolvable
+    # holdings.
+    if _cur_tickers and _cur_weights:
+        _render_holdings_page(
+            tickers=_cur_tickers,
+            weights=_cur_weights,
+            score=current_score,
+            eyebrow="Section 1",
+            title="Current Holdings",
+            intro_text=(
+                "The full breakdown of the client's current portfolio: "
+                "position size, weight, recent risk profile, and 6-month "
+                "price range."
+            ),
+        )
+
+    # ── Proposed Holdings rendering moved BELOW the Proposed
+    #    Portfolios cards block (page swap per advisor revision —
+    #    cards page now comes first as page 3, then the detailed
+    #    OPT 1/2/3 holdings table as page 4). The actual render
+    #    call lives further down, immediately after the cards
+    #    section's `if picks:` block closes.
+
     story.append(HRFlowable(width="100%", thickness=2, color=NAVY,
                              spaceBefore=6, spaceAfter=10))
 
     # ═══════════════════════════════════════════════════════════
     # PROPOSED PORTFOLIOS (max 3, from Step 4 final_picks)
-    # All 3 fit on one page with compact layout. Each portfolio block is
-    # wrapped in KeepTogether so a tier never breaks across pages.
+    # New side-by-side layout matching the design mockup: a gradient
+    # spectrum band across the top shows how the three options sit
+    # relative to the client's profile target, then three cards in a
+    # 3-column row underneath. Each card has a colored ribbon header,
+    # a compact donut, and a top-5 legend with an "Other" rollup.
     # ═══════════════════════════════════════════════════════════
     if picks:
+        # Recommendations + Notable Periods (page 3 + page 4) render
+        # LANDSCAPE — the 3-card comparison row needs the wider page
+        # to hold each card's donut + legend without compressing.
+        story.append(NextPageTemplate('landscape'))
         story.append(PageBreak())   # all 3 on a dedicated page
         story.append(section_header("Recommendations",
                                     f"Proposed Portfolios ({len(picks)})"))
-        story.append(Paragraph(
-            "The recommendations below have been selected by your advisor from "
-            "the optimizer. Each allocation is aligned to your risk profile and "
-            "goals.",
-            body,
-        ))
+        # Intro paragraph styled to match pages 2/3 — small italic
+        # Helvetica-Oblique sitting tight beneath the header rule.
+        _rec_desc_tbl = Table(
+            [[Paragraph(
+                "The recommendations below have been selected by your "
+                "advisor. Each allocation is aligned to your risk profile "
+                "and goals.",
+                _intro_desc_style)]],
+            colWidths=[9.85*inch],
+            hAlign="LEFT",
+        )
+        _rec_desc_tbl.setStyle(TableStyle([
+            ("LEFTPADDING",   (0,0), (-1,-1), 0),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 0),
+            ("TOPPADDING",    (0,0), (-1,-1), 0),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+        ]))
+        _rec_desc_tbl.spaceBefore = -4
+        story.append(_rec_desc_tbl)
         story.append(Spacer(1, 0.04*inch))
 
-        for idx, (lbl, sub, tk, ptks, pws, pscore) in enumerate(picks):
-            tier_block = []  # everything for this tier — wrapped in KeepTogether
+        # ── HELPERS for the new side-by-side layout ──────────────
 
-            # Tier ribbon — slimmer padding
-            tcolor = TIER_COLORS.get(tk, NAVY)
-            ribbon = Table(
-                [[
-                    Paragraph(f"<font color='white' size='9'><b>OPTION {idx+1} · {lbl.upper()}</b></font>",
-                              body_small),
-                    Paragraph(f"<font color='#A3CEF1' size='8'>{sub}</font>",
-                              body_small),
-                    Paragraph(
-                        f"<font color='white' size='9'><b>"
-                        f"RISK {pscore if pscore else '—'}</b></font>",
-                        body_small,
-                    ),
-                ]],
-                colWidths=[2.4*inch, 3.3*inch, 1.5*inch],
+        # Resolve client profile score for the spectrum tick. Read once,
+        # used by spectrum_band below. Falls back to None for graceful
+        # rendering when client_score is missing or non-numeric.
+        try:
+            _spec_profile = (int(client_score)
+                             if client_score not in ("—", None, "") else None)
+        except (ValueError, TypeError):
+            _spec_profile = None
+
+        # ── Spectrum band ────────────────────────────────────────
+        # Full-width gradient strip showing all three options + profile
+        # on a 1-99 scale. The gradient runs green (conservative bg) →
+        # amber (warning bg) → red (danger bg) to encode tilt direction.
+        # Profile target shows as a gold vertical tick; each option is
+        # a navy/gold/navy-dark dot using the same TIER_COLORS as ribbons.
+        def spectrum_band(picks, profile, total_width=7.4*inch,
+                           current_score=None):
+            """Three-stop gradient strip with profile tick, option dots,
+            and (optionally) the current portfolio's score.
+
+            Args:
+                picks: list of tuples (lbl, sub, tk, ptks, pws, pscore)
+                profile: client's profile score (int) or None
+                current_score: current portfolio score (int) or None.
+                    When provided, an empty navy outline circle is drawn
+                    on the bar at that score (matching the cover treatment)
+                    and "Your Portfolio" is added to the legend.
+                total_width: usable horizontal space in points
+            """
+            W = total_width
+            # 64pt — compact band height (was 90pt). Matches the
+            # cover_spectrum_band height treatment for cross-page
+            # consistency; bumped 4pt over the cover band to make room
+            # for proposed-option captions that can flip above/below to
+            # avoid collision with the portfolio caption.
+            H = 64
+            d = Drawing(W, H)
+
+            # Background panel — pale cream (BG_SOFT) with a thin
+            # navy frame around the spectrum drawing. The frame
+            # restores a visual container around the risk meter
+            # (the prior outer wrapper navy box that contained both
+            # cards and spectrum was dropped per advisor; this
+            # smaller frame is around the spectrum alone). Inset
+            # the stroke by 0.5pt so the 1pt navy line stays
+            # fully inside the drawing's bounding box rather than
+            # bleeding outside.
+            _panel_fill = BG_SOFT
+            d.add(Rect(0.5, 0.5, W - 1, H - 1,
+                       fillColor=_panel_fill,
+                       strokeColor=NAVY, strokeWidth=1))
+
+            # Saturated gradient stops — green-200 → amber-100 → red-200.
+            stop_green = colors.HexColor("#97C459")
+            stop_amber = colors.HexColor("#FAC775")
+            stop_red   = colors.HexColor("#F09595")
+
+            # Caption row: eyebrow on left, legend keys on right.
+            _top_y = H - 10
+            d.add(String(W * 0.03, _top_y, "RISK SPECTRUM",
+                         fontName="Helvetica-Bold", fontSize=8,
+                         fillColor=ACCENT, textAnchor="start"))
+
+            # Right-side legend: walking right→left.
+            # Per advisor redesign:
+            #   • "Your portfolio" entry dropped — the current portfolio
+            #     dot on the bar was removed, so the legend item goes
+            #     with it.
+            #   • "Comparison options" (3-dot treatment) replaced with
+            #     a single "Proposed range" entry showing a mini
+            #     "(--O--)" symbol that mirrors the new on-band visual:
+            #     a paren-bracketed dotted line spanning from the
+            #     lowest option's score to the highest, with an empty
+            #     navy O at the proposed (Option #1) score.
+            #   • "Your profile" tick stays gold and stays in place.
+            legend_y = _top_y
+            legend_x = W * 0.97
+
+            # 1) Profile tick + caption (rightmost). Gold, 3pt symbol→text gap.
+            d.add(String(legend_x, legend_y, "Your profile",
+                         fontName="Helvetica", fontSize=8,
+                         fillColor=CHARCOAL, textAnchor="end"))
+            _profile_text_w = 50
+            _tick_x = legend_x - _profile_text_w - 3
+            d.add(Line(_tick_x, legend_y - 2, _tick_x, legend_y + 7,
+                       strokeColor=ACCENT, strokeWidth=2.2))
+
+            # 2) "Proposed range" + mini symbol (leftmost).
+            # The mini symbol compresses the on-band visual to its
+            # essential silhouette: short navy dashes flanking a small
+            # empty circle. Curved parens and dotted detail compress
+            # to flat solid line at this scale and aren't worth the
+            # rendering complexity for a tiny legend swatch.
+            _range_caption_right = _tick_x - 12
+            d.add(String(_range_caption_right, legend_y,
+                         "Proposed range",
+                         fontName="Helvetica", fontSize=8,
+                         fillColor=CHARCOAL, textAnchor="end"))
+            _range_text_w = 70
+            _mini_right = _range_caption_right - _range_text_w - 3
+            _mini_w     = 18
+            _mini_left  = _mini_right - _mini_w
+            _mini_y     = legend_y + 3
+            # Left dash (flat segment in lieu of a curved paren at scale)
+            d.add(Line(_mini_left, _mini_y, _mini_left + 5, _mini_y,
+                       strokeColor=NAVY, strokeWidth=1.2))
+            # Empty O at midpoint — gold to mirror the on-band
+            # treatment (only the central circle takes the accent
+            # color; the flanking dashes stay navy).
+            d.add(Circle(_mini_left + _mini_w/2, _mini_y, 2.2,
+                         fillColor=None, strokeColor=ACCENT,
+                         strokeWidth=1.0))
+            # Right dash
+            d.add(Line(_mini_left + _mini_w - 5, _mini_y,
+                       _mini_left + _mini_w, _mini_y,
+                       strokeColor=NAVY, strokeWidth=1.2))
+
+            # Gradient band — 10pt thick (was 14pt) so the spectrum
+            # reads as a more delicate ribbon. Centered vertically.
+            band_left  = W * 0.04
+            band_right = W * 0.96
+            band_h     = 10
+            band_y     = (H - band_h) / 2
+            band_len   = band_right - band_left
+            n_slices   = 80
+            for i in range(n_slices):
+                t = i / (n_slices - 1)
+                if t < 0.5:
+                    u = t * 2
+                    a, b = stop_green, stop_amber
+                else:
+                    u = (t - 0.5) * 2
+                    a, b = stop_amber, stop_red
+                r = a.red   * (1 - u) + b.red   * u
+                g = a.green * (1 - u) + b.green * u
+                bl = a.blue * (1 - u) + b.blue * u
+                slice_x = band_left + band_len * t
+                slice_w = band_len / n_slices + 0.5
+                d.add(Rect(slice_x, band_y, slice_w, band_h,
+                           fillColor=colors.Color(r, g, bl),
+                           strokeColor=None))
+
+            # Track caption positions to avoid score-label collisions.
+            placed_xs = []
+
+            def _x_at(score):
+                frac = min(99, max(1, int(score))) / 99.0
+                return band_left + band_len * frac
+
+            # Profile target tick (gold vertical line + 11pt Times-Bold
+            # numeral above the band) — matches the cover spectrum.
+            if profile is not None:
+                pf_x = _x_at(profile)
+                d.add(Line(pf_x, band_y - 4, pf_x, band_y + band_h + 4,
+                           strokeColor=ACCENT, strokeWidth=2.5))
+                d.add(String(pf_x, band_y + band_h + 6, str(int(profile)),
+                             fontName="Times-Bold", fontSize=11,
+                             fillColor=ACCENT, textAnchor="middle"))
+                placed_xs.append((pf_x, "above"))
+
+            # ── Proposed range visualization ─────────────────────
+            # Per advisor redesign — replaces the prior treatment of
+            # three separate per-option dots (cons / proposed / agg)
+            # plus a "Your portfolio" current-score outline circle.
+            #
+            # The new symbol is a single navy paren-bracketed dotted
+            # line spanning from the lowest option's score to the
+            # highest, with an empty navy circle floating at the
+            # proposed (Option #1) score in the middle of the range:
+            #
+            #     (..........O..........)
+            #
+            # All navy. The gold profile tick above stays as the only
+            # gold element on the band — it visually contrasts as the
+            # client's TARGET against the navy treatment of the
+            # ADVISOR'S RECOMMENDATION span.
+            _pick_scores = []
+            _proposed_score = None
+            for idx, (_, _, _, _, _, _pscore) in enumerate(picks):
+                if _pscore is None:
+                    continue
+                try:
+                    _sv = int(_pscore)
+                except (ValueError, TypeError):
+                    continue
+                _pick_scores.append(_sv)
+                if idx == 0:
+                    # Option #1 = proposed (per advisor confirmation:
+                    # whatever Option #1 dropdown resolves to drives
+                    # the proposed score and the central O position).
+                    _proposed_score = _sv
+
+            if _proposed_score is not None:
+                _center_y = band_y + band_h / 2
+                _circle_r = 6.5
+                _proposed_x = _x_at(_proposed_score)
+
+                # Only render the paren-bracketed range when there's
+                # a meaningful span across the picks (2+ distinct
+                # scores spaced more than the circle diameter). A
+                # single pick — or a degenerate case where all scores
+                # collapse to ~one point — falls back to just the
+                # empty O at the proposed score.
+                _range_min = min(_pick_scores)
+                _range_max = max(_pick_scores)
+                _left_x  = _x_at(_range_min)
+                _right_x = _x_at(_range_max)
+                if (len(_pick_scores) >= 2
+                        and (_right_x - _left_x) > 2 * _circle_r + 4):
+                    # Curved paren brackets at each end — drawn as
+                    # cubic Beziers (Path doesn't support quadratic
+                    # curves natively; the cubic control-point
+                    # placement at 2/3 of the way to the quadratic
+                    # control point reproduces the same curve).
+                    _paren_half_h = 7.5
+                    _paren_bulge  = 4.5
+                    _ctrl_y_top    = _center_y + _paren_half_h / 3.0
+                    _ctrl_y_bottom = _center_y - _paren_half_h / 3.0
+                    _ctrl_x_left   = _left_x  - _paren_bulge * 2.0 / 3.0
+                    _ctrl_x_right  = _right_x + _paren_bulge * 2.0 / 3.0
+
+                    _left_paren = Path(
+                        strokeColor=NAVY, strokeWidth=1.8,
+                        fillColor=None)
+                    _left_paren.moveTo(
+                        _left_x, _center_y + _paren_half_h)
+                    _left_paren.curveTo(
+                        _ctrl_x_left, _ctrl_y_top,
+                        _ctrl_x_left, _ctrl_y_bottom,
+                        _left_x, _center_y - _paren_half_h,
+                    )
+                    d.add(_left_paren)
+
+                    _right_paren = Path(
+                        strokeColor=NAVY, strokeWidth=1.8,
+                        fillColor=None)
+                    _right_paren.moveTo(
+                        _right_x, _center_y + _paren_half_h)
+                    _right_paren.curveTo(
+                        _ctrl_x_right, _ctrl_y_top,
+                        _ctrl_x_right, _ctrl_y_bottom,
+                        _right_x, _center_y - _paren_half_h,
+                    )
+                    d.add(_right_paren)
+
+                    # Dotted connector — two segments, with a gap
+                    # around the central O so the circle reads as
+                    # floating on the range rather than sitting on a
+                    # solid line through it.
+                    _line_gap = _circle_r + 2
+                    _l1_x1 = _left_x + 3
+                    _l1_x2 = _proposed_x - _line_gap
+                    if _l1_x2 > _l1_x1:
+                        d.add(Line(_l1_x1, _center_y,
+                                   _l1_x2, _center_y,
+                                   strokeColor=NAVY, strokeWidth=1.2,
+                                   strokeDashArray=[1, 2.5]))
+                    _l2_x1 = _proposed_x + _line_gap
+                    _l2_x2 = _right_x - 3
+                    if _l2_x2 > _l2_x1:
+                        d.add(Line(_l2_x1, _center_y,
+                                   _l2_x2, _center_y,
+                                   strokeColor=NAVY, strokeWidth=1.2,
+                                   strokeDashArray=[1, 2.5]))
+
+                # Empty gold O at the proposed score — always drawn
+                # (this is the single-element fallback for the
+                # degenerate cases above, and the centerpiece of the
+                # range otherwise). Per advisor revision pass: the
+                # central hollow circle is now GOLD while the
+                # surrounding paren-bracketed dotted line stays navy,
+                # so the circle reads as the headline "this is where
+                # the proposed portfolio sits" marker — the warm gold
+                # ties it visually to the gold "Your profile" tick
+                # above the band, presenting both client-facing
+                # anchor points (target + proposal) in the same
+                # accent color while the navy parens/dashes recede
+                # as supporting span structure.
+                d.add(Circle(_proposed_x, _center_y, _circle_r,
+                             fillColor=None,
+                             strokeColor=ACCENT, strokeWidth=1.8))
+
+                # Proposed-score caption — ALWAYS below the band.
+                # The gold profile-tick caption sits above the band,
+                # so the proposed numeral takes the bottom slot
+                # regardless of how close the two scores are. Per
+                # advisor: portfolio risk score should be below the
+                # line.
+                _proposed_caption_y = band_y - 14
+                d.add(String(_proposed_x, _proposed_caption_y,
+                             str(_proposed_score),
+                             fontName="Times-Bold", fontSize=11,
+                             fillColor=NAVY, textAnchor="middle"))
+
+            # Endpoint labels at the very bottom — NAVY at 8.5pt to
+            # match the cover spectrum (was charcoal 8pt).
+            d.add(String(band_left, 3, "Conservative",
+                         fontName="Helvetica-Bold", fontSize=8.5,
+                         fillColor=NAVY, textAnchor="start"))
+            d.add(String(band_right, 3, "Aggressive",
+                         fontName="Helvetica-Bold", fontSize=8.5,
+                         fillColor=NAVY, textAnchor="end"))
+
+            return d
+
+        # ── Compact pie for narrow side-by-side cards ────────────
+        def compact_pie(tickers, weights, size=1.4*inch):
+            """Donut pie sized for the narrow 2.3" card columns. Uses the
+            same lump_to_other rule as the main pie_drawing, but with
+            wider donut hole and slightly thinner stroke so the chart
+            stays readable at the smaller scale."""
+            ts, ws, _ = lump_to_other(tickers, weights, _SETTINGS)
+            if not ts:
+                d = Drawing(size, size)
+                d.add(String(size/2, size/2, "No data",
+                             fontName="Helvetica", fontSize=8,
+                             fillColor=GRAY, textAnchor="middle"))
+                return d
+            colors_list = resolve_chart_colors(ts)
+            d = Drawing(size, size)
+            p = Pie()
+            p.x = 0; p.y = 0
+            p.width = size; p.height = size
+            p.data = ws; p.labels = None
+            p.slices.strokeColor = WHITE
+            p.slices.strokeWidth = 1.4
+            p.startAngle = 90
+            p.direction = "clockwise"
+            for i, c in enumerate(colors_list):
+                p.slices[i].fillColor = c
+            d.add(p)
+            # Wider donut hole (38% of diameter, vs 32% on the main pie)
+            # so the narrow chart doesn't read as a heavy disc
+            d.add(Circle(size/2, size/2, size * 0.38,
+                         fillColor=BG_LIGHT, strokeColor=None))
+            return d
+
+        # ── Compact legend: top-5 + Other rollup ─────────────────
+        def compact_legend(tickers, weights, top_n=5):
+            """Single-column legend showing the top N holdings, with
+            everything else rolled into a single italic 'Other (count)'
+            row at the end. Designed for the narrow card width.
+
+            Why we don't just call pie_legend_table: that function
+            renders top-10 (or 10 + Other) which is too wide for a 2.3"
+            card. This compact version shows the 5 largest positions
+            (the ones an advisor would actually discuss) and rolls the
+            rest into a transparent "+ N more" indicator."""
+            ts, ws, _ = lump_to_other(tickers, weights, _SETTINGS)
+            if not ts:
+                return Paragraph("—", body_small)
+
+            # Sort by weight (lump_to_other already does this, but be safe)
+            pairs = list(zip(ts, ws))
+
+            # The lump_to_other already produced an "Other" slot if there
+            # were >10 holdings. For the narrow legend we want top-5 then
+            # collapse everything else (including any pre-existing Other)
+            # into a single bottom row.
+            visible = pairs[:top_n]
+            rest = pairs[top_n:]
+            rest_weight = sum(w for _, w in rest)
+            rest_count = sum(1 for t, _ in rest if t != "Other") + (
+                # if rest contains an "Other" entry, count it as the rolled
+                # tickers it represents (we don't have that count handy,
+                # so just label it as one bucket)
+                0
             )
-            ribbon.setStyle(TableStyle([
-                ("BACKGROUND",    (0,0), (-1,-1), tcolor),
+
+            sm_style = ParagraphStyle("sm", fontName="Helvetica",
+                                       fontSize=7.5, leading=10,
+                                       textColor=CHARCOAL)
+            sm_pct = ParagraphStyle("smpct", fontName="Helvetica",
+                                     fontSize=7.5, leading=10,
+                                     textColor=CHARCOAL, alignment=TA_RIGHT)
+            sm_other = ParagraphStyle("smo", fontName="Helvetica-Oblique",
+                                       fontSize=7.5, leading=10,
+                                       textColor=GRAY)
+            sm_other_pct = ParagraphStyle("smopct", fontName="Helvetica",
+                                           fontSize=7.5, leading=10,
+                                           textColor=GRAY, alignment=TA_RIGHT)
+
+            # Build the ticker→color map ONCE for this chart so each
+            # row picks up the chart-wide distinct color (see
+            # resolve_chart_colors above). Map covers the full ts list
+            # — only the top-N visible rows render with named swatches
+            # here, but resolving across all ts keeps colors stable
+            # with the matching pie/donut that uses the same ts.
+            _cmap = dict(zip(ts, resolve_chart_colors(ts)))
+
+            rows = []
+            for t, w in visible:
+                c = _cmap.get(t, PDF_TICKER_COLOR(t))
+                sw = Drawing(7, 7)
+                sw.add(Rect(0, 0, 7, 7, fillColor=c, strokeColor=None))
+                if t == "Other":
+                    # Renders as "OTHER" in all caps (advisor request)
+                    # so the rollup row reads visually as a category
+                    # tag rather than as a descriptive phrase like
+                    # "Other holdings". Style stays italic + muted-
+                    # gray to keep the row clearly subordinate to the
+                    # named-ticker rows above it.
+                    rows.append([
+                        sw,
+                        Paragraph("OTHER", sm_other),
+                        Paragraph(f"{w:.0f}%", sm_other_pct),
+                    ])
+                else:
+                    rows.append([
+                        sw,
+                        Paragraph(f"<b>{t}</b>", sm_style),
+                        Paragraph(f"{w:.0f}%", sm_pct),
+                    ])
+
+            # Rollup row for everything past top_n
+            if rest:
+                rest_n = len(rest)
+                sw = Drawing(7, 7)
+                sw.add(Rect(0, 0, 7, 7, fillColor=colors.HexColor("#a8a8a8"),
+                            strokeColor=None))
+                rows.append([
+                    sw,
+                    Paragraph(f"<i>+ {rest_n} more</i>", sm_other),
+                    Paragraph(f"{rest_weight:.0f}%", sm_other_pct),
+                ])
+
+            tbl = Table(rows, colWidths=[0.13*inch, 0.85*inch, 0.42*inch])
+            tbl.setStyle(TableStyle([
                 ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
-                ("ALIGN",         (2,0), (2,0),   "RIGHT"),
-                ("LEFTPADDING",   (0,0), (-1,-1), 10),
-                ("RIGHTPADDING",  (0,0), (-1,-1), 10),
-                ("TOPPADDING",    (0,0), (-1,-1), 4),
+                ("LEFTPADDING",   (0,0), (-1,-1), 0),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 2),
+                ("TOPPADDING",    (0,0), (-1,-1), 1.5),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 1.5),
+            ]))
+            return tbl
+
+        # ── Spectrum band: render and append ─────────────────────
+        # Pass the current portfolio score for backward-compat; the
+        # spectrum_band function no longer draws a per-portfolio dot
+        # on the band (the "Your portfolio" marker was dropped per
+        # advisor redesign), but the parameter is preserved so older
+        # callers don't break.
+        try:
+            _spec_current = (int(current_score)
+                              if current_score not in ("—", None, "") else None)
+        except (ValueError, TypeError):
+            _spec_current = None
+        spec_d = spectrum_band(picks, _spec_profile, total_width=9.85*inch,
+                                current_score=_spec_current)
+        # spec_d joins the SOLID OUTER TABLE assembled below — that
+        # outer table frames the 3-card row and the spectrum band as
+        # a single unified navy-bordered block (spectrum now sits
+        # BELOW the cards rather than above; the previous comparison
+        # metrics table was removed).
+
+        # ── Helpers for the redesigned card layout ───────────────
+
+        def _asset_class_bar(tickers, weights, width=2.0*inch):
+            """Stacked horizontal bar showing the eq/bd/cs split.
+
+            Built from the same _classify_ticker / _balanced_split
+            machinery used on the cover. Renders ONLY the colored bar.
+            Captions go in a separate Paragraph below the bar — earlier
+            attempts to position captions over each segment caused
+            overlaps when small segments (cash, bonds) sat adjacent.
+
+            Args:
+                tickers / weights: parallel lists. Weights in percent or
+                                   decimal — we normalize to fractions.
+                width: drawing width in points.
+
+            Returns:
+                (drawing, caption_html) tuple. The caller stacks them.
+            """
+            # Compute the three buckets
+            total_w = sum(float(w or 0) for w in weights) or 1.0
+            eq = bd = cs = 0.0
+            for t, w in zip(tickers, weights):
+                frac = float(w or 0) / total_w * 100.0
+                try:
+                    cls, _ = _classify_ticker(t.upper())
+                except Exception:
+                    cls = "equity"
+                if cls == "cash":
+                    cs += frac
+                elif cls == "bond":
+                    bd += frac
+                elif cls == "balanced":
+                    es, bs = _balanced_split(t)
+                    eq += frac * es
+                    bd += frac * bs
+                else:
+                    eq += frac
+
+            W = width
+            H = 8  # just the bar, no caption space
+            bar_h = 7
+            d = Drawing(W, H)
+            # Colors: navy for equities, gold for bonds, light cream-ish
+            # gray for cash. Matches the palette used elsewhere in the
+            # document so the bar doesn't introduce new color semantics.
+            x_cursor = 0
+            segments = [
+                (eq, NAVY,                       "eq"),
+                (bd, ACCENT,                     "bd"),
+                (cs, colors.HexColor("#d8d6cb"), "cs"),
+            ]
+            for pct, col, _name in segments:
+                seg_w = (pct / 100.0) * W
+                if seg_w > 0:
+                    d.add(Rect(x_cursor, 0, seg_w, bar_h,
+                               fillColor=col, strokeColor=None))
+                x_cursor += seg_w
+
+            # Caption HTML — three swatches + percentages in a single
+            # inline row. Each swatch is a small inline square using
+            # ReportLab's color hex. The bar's three colors map 1:1 to
+            # the captions so the reader maps bar→text without effort.
+            #
+            # Two layout decisions to prevent the caption from wrapping
+            # in narrow side cards:
+            #   1. Use &nbsp; (non-breaking space) between the percentage
+            #      and the unit label ("58%&nbsp;eq") so they can't split.
+            #   2. Use single-space separators instead of " &middot; ",
+            #      which compresses the line by ~12pt and keeps the row
+            #      on one line at 2.05" card width with 7.5pt text.
+            _NAVY_HEX = NAVY.hexval()
+            _ACCENT_HEX = ACCENT.hexval()
+            _CASH_HEX = "#d8d6cb"
+            caption_html = (
+                f"<font color='{_NAVY_HEX}'>&#9632;</font>"
+                f"<font color='{CHARCOAL.hexval()}' size='7.5'>"
+                f" <b>{eq:.0f}%</b>&nbsp;eq</font> &nbsp; "
+                f"<font color='{_ACCENT_HEX}'>&#9632;</font>"
+                f"<font color='{CHARCOAL.hexval()}' size='7.5'>"
+                f" <b>{bd:.0f}%</b>&nbsp;bd</font> &nbsp; "
+                f"<font color='{_CASH_HEX}'>&#9632;</font>"
+                f"<font color='{CHARCOAL.hexval()}' size='7.5'>"
+                f" <b>{cs:.0f}%</b>&nbsp;cs</font>"
+            )
+            return d, caption_html
+
+        def _full_legend(tickers, weights, ncols=2, font_size=7.5,
+                          total_width=None, canonical_order=None,
+                          max_holdings=12):
+            """Full holdings legend rendered in N columns.
+
+            Replaces compact_legend (top-5 + 'more' rollup) — page 3 now
+            shows EVERY holding so the reader can see the complete book.
+            Use ncols=2 for the wider PROPOSED middle card; ncols=2 also
+            works for the side cards but at smaller width.
+
+            total_width: if set, scales column widths to fit. Default
+            assumes narrow side-card sizing.
+
+            canonical_order: optional list of ticker symbols defining
+            the desired row order across all three comparison cards.
+            When provided, this pick's tickers are sorted by their
+            position in canonical_order so the same ticker appears in
+            the same legend slot across cards. Tickers in
+            canonical_order but missing from this pick are skipped.
+            Tickers in this pick but missing from canonical_order
+            (rare — non-overlapping picks) are appended at the end in
+            weight-desc order.
+
+            max_holdings: if the legend would have more than this many
+            rows, the top max_holdings-1 are shown and the remainder
+            roll up into a single "+M more (X.X%)" row at the bottom
+            with a gray swatch. Default 12 — fits the solid-table
+            recommendations block on one landscape page even when the
+            proposed allocation has 17+ positions. Pass None to show
+            every holding (legacy behavior, may push the solid block
+            across pages for very long allocations).
+            """
+            if not tickers:
+                return Paragraph("—", body_small)
+            # Normalize to %, build a {ticker_upper: pct} map
+            _tot_raw = sum(float(w or 0) for w in weights) or 1.0
+            _wmap = {}
+            for _t, _w in zip(tickers, weights):
+                _wmap[_t.upper()] = (float(_w or 0) / _tot_raw) * 100.0
+
+            if canonical_order:
+                # Use canonical order for any ticker present in this pick;
+                # append unknown tickers (not in canonical_order) at end
+                # by weight desc.
+                pairs = []
+                _seen = set()
+                for _tk in canonical_order:
+                    _tk_u = _tk.upper()
+                    if _tk_u in _wmap:
+                        pairs.append((_tk_u, _wmap[_tk_u]))
+                        _seen.add(_tk_u)
+                # Any tickers in this pick not in canonical_order:
+                _extras = [(t, p) for t, p in _wmap.items() if t not in _seen]
+                _extras.sort(key=lambda x: -x[1])
+                pairs.extend(_extras)
+            else:
+                # Default: sort by weight desc
+                pairs = sorted(_wmap.items(), key=lambda x: -x[1])
+
+            # Length gating — truncate to top (max_holdings - 1) and add
+            # a rollup row for the remainder. The rollup row is marked
+            # with a sentinel "_rollup" ticker so _row_for knows to
+            # render it as a gray swatch + italic "+N more" caption +
+            # the summed weight of the hidden holdings.
+            _rollup_count = 0
+            if max_holdings is not None and len(pairs) > max_holdings:
+                _kept = max_holdings - 1   # reserve last slot for rollup row
+                _hidden = pairs[_kept:]
+                _hidden_sum = sum(p for _, p in _hidden)
+                _rollup_count = len(_hidden)
+                pairs = pairs[:_kept] + [
+                    (f"_rollup:{_rollup_count}", _hidden_sum),
+                ]
+
+            sm_style = ParagraphStyle("legend_t", fontName="Helvetica",
+                                       fontSize=font_size,
+                                       leading=font_size + 2.5,
+                                       textColor=CHARCOAL)
+            # Percent: LEFT-aligned (was TA_RIGHT) so the value sits
+            # tight against the ticker text rather than floating at
+            # the far right of its column. Combined with a tightened
+            # ticker column width this produces the compact
+            # "SCHX 45.7%" pairing seen in the reference mockup.
+            sm_pct = ParagraphStyle("legend_p", fontName="Helvetica",
+                                     fontSize=font_size,
+                                     leading=font_size + 2.5,
+                                     textColor=CHARCOAL,
+                                     alignment=TA_LEFT)
+
+            # Build a chart-wide distinct ticker→color map for this
+            # legend's display order. The rollup sentinel "_rollup:N"
+            # is included here for index alignment but never read
+            # (the rollup branch in _row_for renders its own gray
+            # swatch). resolve_chart_colors enforces no duplicates
+            # across the named ticker rows.
+            _legend_color_map = dict(zip(
+                [t for t, _ in pairs],
+                resolve_chart_colors([t for t, _ in pairs]),
+            ))
+
+            def _row_for(tkr, pct):
+                # Rollup sentinel — render as gray swatch + italic
+                # "+N more" caption + the aggregate weight. The sentinel
+                # encodes the hidden count as "_rollup:N" so we can
+                # extract N without a separate parameter.
+                if isinstance(tkr, str) and tkr.startswith("_rollup:"):
+                    try:
+                        _n_hidden = int(tkr.split(":", 1)[1])
+                    except (ValueError, IndexError):
+                        _n_hidden = 0
+                    sw = Drawing(7, 7)
+                    sw.add(Rect(0, 0, 7, 7,
+                                fillColor=GRAY_SOFT, strokeColor=None))
+                    return [sw,
+                            Paragraph(
+                                f"<i>+{_n_hidden} more</i>",
+                                ParagraphStyle(
+                                    "legend_more",
+                                    parent=sm_style,
+                                    textColor=GRAY,
+                                ),
+                            ),
+                            Paragraph(
+                                f"{pct:.1f}%",
+                                ParagraphStyle(
+                                    "legend_more_p",
+                                    parent=sm_pct,
+                                    textColor=GRAY,
+                                ),
+                            )]
+                # Normal row — colored swatch + bold ticker + percent
+                c = _legend_color_map.get(tkr, PDF_TICKER_COLOR(tkr))
+                sw = Drawing(7, 7)
+                sw.add(Rect(0, 0, 7, 7, fillColor=c, strokeColor=None))
+                return [sw,
+                        Paragraph(f"<b>{tkr}</b>", sm_style),
+                        Paragraph(f"{pct:.1f}%", sm_pct)]
+
+            if ncols == 1:
+                rows = [_row_for(t, p) for t, p in pairs]
+                tbl = Table(rows, colWidths=[0.14*inch, 0.7*inch, 0.55*inch])
+                tbl.setStyle(TableStyle([
+                    ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+                    ("LEFTPADDING",   (0,0), (-1,-1), 0),
+                    ("RIGHTPADDING",  (0,0), (-1,-1), 2),
+                    ("TOPPADDING",    (0,0), (-1,-1), 1.2),
+                    ("BOTTOMPADDING", (0,0), (-1,-1), 1.2),
+                ]))
+                return tbl
+
+            # 2-column layout — split pairs into left/right halves so the
+            # left column fills first (ceiling-half count on the left)
+            n = len(pairs)
+            half = (n + 1) // 2
+            left_pairs = pairs[:half]
+            right_pairs = pairs[half:]
+
+            # Build a single Table with 6 cols: swatch L | ticker L | pct L |
+            # swatch R | ticker R | pct R. Empty cells fill the right side
+            # if the column ran short.
+            max_rows = max(len(left_pairs), len(right_pairs))
+            grid = []
+            for i in range(max_rows):
+                row = []
+                if i < len(left_pairs):
+                    row.extend(_row_for(*left_pairs[i]))
+                else:
+                    row.extend(["", "", ""])
+                if i < len(right_pairs):
+                    row.extend(_row_for(*right_pairs[i]))
+                else:
+                    row.extend(["", "", ""])
+                grid.append(row)
+
+            # Column width strategy:
+            # - Side cards (narrow): use compact layout that fits 1.77"
+            #   (side card 2.05" minus 10pt padding each side)
+            # - Middle PROPOSED card (wider): scale columns proportionally
+            # Both keep the right-half swatch at 0.22" minimum for the
+            # padding clearance the 8pt swatch needs. Ticker columns
+            # widened to 0.42" / 0.40" to safely hold 5-char mutual-fund
+            # symbols (PDBZX, PFORX, PHYZX, etc.) without wrapping —
+            # the previous 0.35" / 0.34" was just barely too narrow for
+            # 5 chars at 7.5pt Helvetica-Bold.
+            if total_width is not None and total_width > 2.0 * inch:
+                _swatch_w = 0.15 * inch
+                _swatch_w_r = 0.25 * inch  # padding clearance
+                _ticker_w = 0.42 * inch
+                _pct_w    = 0.32 * inch
+            else:
+                _swatch_w = 0.12 * inch
+                _swatch_w_r = 0.22 * inch  # padding clearance (8pt swatch)
+                _ticker_w = 0.40 * inch
+                _pct_w    = 0.30 * inch
+
+            tbl = Table(
+                grid,
+                colWidths=[_swatch_w, _ticker_w, _pct_w,
+                           _swatch_w_r, _ticker_w, _pct_w],
+            )
+            tbl.setStyle(TableStyle([
+                ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+                ("LEFTPADDING",   (0,0), (-1,-1), 0),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 1),
+                ("TOPPADDING",    (0,0), (-1,-1), 1.2),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 1.2),
+                # Small gap between the two columns
+                ("LEFTPADDING",   (3,0), (3,-1), 6),
+            ]))
+            return tbl
+
+        def _compute_pick_3yr_stats(picks_in):
+            """Compute (total_return, vol, max_dd) per pick over the last
+            3 years. Used by the bottom comparison table on page 3.
+
+            Returns a dict {pick_idx: (tot, vol, dd)} keyed by ordered_picks
+            index (0/1/2). Missing or short data → (None, None, None).
+            """
+            import yfinance as _yf
+            import pandas as _pd
+            import numpy as _np
+            from datetime import timedelta as _td_stats
+
+            out = {}
+            _all = set()
+            for _, _, _, tks, _, _ in picks_in:
+                for t in tks or []:
+                    if t:
+                        _all.add(t.upper())
+            if not _all:
+                return {i: (None, None, None) for i in range(len(picks_in))}
+
+            _end_s = _dt.now()
+            _start_s = _end_s - _td_stats(days=365*3 + 30)
+            try:
+                _px = _yf.download(
+                    list(_all), start=_start_s, end=_end_s,
+                    auto_adjust=True, progress=False, threads=True,
+                )["Close"]
+                if isinstance(_px, _pd.Series):
+                    _px = _px.to_frame()
+                _px = _px.dropna(how="all")
+                _r = _px.pct_change().dropna(how="all").fillna(0)
+            except Exception:
+                return {i: (None, None, None) for i in range(len(picks_in))}
+
+            for i, (_, _, _, tks, wts, _) in enumerate(picks_in):
+                try:
+                    cols = [t.upper() for t in tks
+                            if t.upper() in _r.columns]
+                    if not cols or not wts:
+                        out[i] = (None, None, None)
+                        continue
+                    aligned = _np.array([
+                        float(wts[j] or 0) for j, t in enumerate(tks)
+                        if t.upper() in _r.columns
+                    ])
+                    if aligned.sum() <= 0:
+                        out[i] = (None, None, None)
+                        continue
+                    aligned = aligned / aligned.sum()
+                    port_r = (_r[cols] * aligned).sum(axis=1)
+                    if len(port_r) < 30:
+                        out[i] = (None, None, None)
+                        continue
+                    tot = float((1 + port_r).prod() - 1)
+                    vol = float(port_r.std() * _np.sqrt(252))
+                    eq  = (1 + port_r).cumprod()
+                    dd  = float(((eq / eq.cummax()) - 1).min())
+                    out[i] = (tot, vol, dd)
+                except Exception:
+                    out[i] = (None, None, None)
+            return out
+
+        # ── Build each card ──────────────────────────────────────
+        # Three cards in a 3-column row. The PROPOSED card (middle) is
+        # WIDER than the side cards (matches mockup) and uses a gold
+        # outline ONLY (no gold ribbon fill) — the previous design's
+        # gold ribbon header competed with the cream PORTFOLIO badge for
+        # attention. With the outline-only treatment, the badge sits on
+        # the card's normal cream interior and reads cleanly.
+        #
+        # ORDERING RULE: conservative left, proposed middle, aggressive
+        # right. Same as before.
+
+        # Column widths — sized so the three cards + inter-card gaps
+        # together span the landscape page's ~9.85" usable width.
+        # cards_row has LEFTPADDING=3 + RIGHTPADDING=3 per cell × 2 gaps
+        # ≈ 12pt = 0.17" of inter-cell padding, so cards sum to ~9.68".
+        # Layout: 3.00 + 3.68 + 3.00 = 9.68". The middle card stays the
+        # widest so PROPOSED visually anchors the row.
+        _SIDE_W   = 3.00 * inch
+        _MIDDLE_W = 3.68 * inch
+
+        def _pick_sort_key(pick):
+            """Sort picks: conservative (or lowest-score) first, balanced
+            (PROPOSED) in the middle, aggressive (or highest-score) last."""
+            lbl, sub, tk, ptks, pws, pscore = pick
+            tier_order = {"conservative": 0, "balanced": 1, "aggressive": 2}
+            primary = tier_order.get(tk, 3)
+            try:
+                secondary = int(pscore) if pscore else 50
+            except (ValueError, TypeError):
+                secondary = 50
+            return (primary, secondary)
+
+        ordered_picks = sorted(picks, key=_pick_sort_key)
+        card_cells = []
+
+        # Canonical ticker order across all 3 comparison cards. Sort
+        # tickers by their weight in the PROPOSED option first (so the
+        # most material proposed holdings sit at the top of every
+        # card's legend); tickers that appear only in non-proposed
+        # picks get appended by their max weight across those picks.
+        # Result: the same ticker occupies the same row across cards
+        # so the reader can scan a single ticker's weight horizontally
+        # across all three options.
+        _proposed_for_order = next(
+            (p for p in ordered_picks if p[2] == "balanced"), None
+        )
+        _proposed_weights = {}
+        if _proposed_for_order:
+            _, _, _, _ptks_canon, _pws_canon, _ = _proposed_for_order
+            _tot_canon = sum(float(w or 0) for w in _pws_canon) or 1.0
+            for _t, _w in zip(_ptks_canon, _pws_canon):
+                _proposed_weights[_t.upper()] = (
+                    float(_w or 0) / _tot_canon * 100.0
+                )
+        _other_weights = {}
+        for _pp in ordered_picks:
+            if _pp is _proposed_for_order:
+                continue
+            _, _, _, _ptks_o, _pws_o, _ = _pp
+            _tot_o = sum(float(w or 0) for w in _pws_o) or 1.0
+            for _t, _w in zip(_ptks_o, _pws_o):
+                _t_u = _t.upper()
+                _other_weights[_t_u] = max(
+                    _other_weights.get(_t_u, 0.0),
+                    float(_w or 0) / _tot_o * 100.0,
+                )
+        _canonical_order = sorted(
+            _proposed_weights.keys(),
+            key=lambda t: -_proposed_weights[t],
+        )
+        for _t in sorted(_other_weights.keys(),
+                         key=lambda t: -_other_weights[t]):
+            if _t not in _proposed_weights:
+                _canonical_order.append(_t)
+
+        # Card header typography styles — same pattern as the mockup
+        _opt_eyebrow = ParagraphStyle(
+            "opt_eyebrow", fontSize=7.5, leading=10, textColor=GRAY,
+            fontName="Helvetica-Bold", alignment=TA_LEFT,
+        )
+        _opt_eyebrow_proposed = ParagraphStyle(
+            "opt_eyebrow_p", fontSize=10, leading=12, textColor=ACCENT,
+            fontName="Helvetica-Bold", alignment=TA_LEFT,
+        )
+        _opt_title = ParagraphStyle(
+            "opt_title", fontSize=12, leading=14, textColor=NAVY,
+            fontName="Times-Roman", alignment=TA_LEFT, spaceAfter=1,
+        )
+        _opt_subtitle = ParagraphStyle(
+            "opt_subtitle", fontSize=8, leading=11, textColor=GRAY,
+            fontName="Helvetica-Oblique", alignment=TA_LEFT,
+        )
+
+        # Gutter between cards. cards_row applies 8pt LEFTPADDING +
+        # 8pt RIGHTPADDING to every cell, which is meant to create
+        # 16pt of cream space between adjacent cards. For that to
+        # actually work, each card's width must equal its cell's
+        # CONTENT area (cell width − 16pt), not the full cell width —
+        # otherwise the card overflows its cell's padding on both
+        # sides and the borders of adjacent cards collide at the
+        # same X coordinate. The earlier code sized cards to the
+        # full cell width, which caused the proposed card's 4pt
+        # gold border to be painted directly on top of the side
+        # cards' 1pt navy borders (gold "interrupted" by navy,
+        # no visible cream gap between cards).
+        _CARD_GUTTER_TOTAL = 16  # 8pt L + 8pt R per cards_row cell
+
+        for idx, (lbl, sub, tk, ptks, pws, pscore) in enumerate(ordered_picks):
+            is_proposed = (tk == "balanced") or (idx == 1)
+            this_w = (_MIDDLE_W if is_proposed else _SIDE_W) - _CARD_GUTTER_TOTAL
+
+            # Eyebrow construction — per advisor redesign:
+            # Two-line layout with the descriptor (PROPOSED / MORE
+            # CONSERVATIVE / MORE AGGRESSIVE) on the TOP line, and
+            # COMPARISON #N on the BOTTOM line. The descriptor is the
+            # headline; the comparison number is the subordinate
+            # identifier. Sizes bumped across the board ("enlarge
+            # all slightly") with the proposed card's descriptor
+            # given the biggest uplift so it visually dominates.
+            if tk == "balanced":
+                descriptor = "PROPOSED"
+            elif tk == "conservative":
+                descriptor = "MORE CONSERVATIVE"
+            elif tk == "aggressive":
+                descriptor = "MORE AGGRESSIVE"
+            else:
+                _u = lbl.upper()
+                if "CONSERVATIVE" in _u:
+                    descriptor = "MORE CONSERVATIVE"
+                elif "AGGRESSIVE" in _u:
+                    descriptor = "MORE AGGRESSIVE"
+                elif "PROPOSED" in _u or "RECOMMENDED" in _u:
+                    descriptor = "PROPOSED"
+                else:
+                    descriptor = _u
+            # Label number is determined by DESCRIPTOR, not visual
+            # position. Per advisor preference:
+            #   PROPOSED        → #1  (the recommended option)
+            #   MORE CONSERVATIVE → #2
+            #   MORE AGGRESSIVE   → #3
+            # The visual order on the page stays conservative → proposed
+            # → aggressive (left to right), so the labels run #2, #1, #3
+            # across the row. Counter-intuitive but matches the advisor's
+            # mental hierarchy (proposed is the headline option).
+            if descriptor == "PROPOSED":
+                _card_label_num = 1
+            elif descriptor == "MORE CONSERVATIVE":
+                _card_label_num = 2
+            elif descriptor == "MORE AGGRESSIVE":
+                _card_label_num = 3
+            else:
+                # Unknown descriptor — fall back to visual order
+                _card_label_num = idx + 1
+            # Build the two-line eyebrow content as a list of
+            # Paragraphs (Table cells accept lists; they stack
+            # vertically). Sizing diverges sharply between the
+            # PROPOSED card (12pt gold descriptor) and the side
+            # cards (9pt gray descriptor) so the proposed reads
+            # as the headline option without ambiguity.
+            if is_proposed:
+                _eye_desc_style = ParagraphStyle(
+                    "eye_desc_p", fontSize=12, leading=14,
+                    textColor=ACCENT, fontName="Helvetica-Bold",
+                    alignment=TA_LEFT, spaceAfter=0,
+                )
+                _eye_cmp_style = ParagraphStyle(
+                    "eye_cmp_p", fontSize=8, leading=10,
+                    textColor=GRAY, fontName="Helvetica",
+                    alignment=TA_LEFT, spaceAfter=0,
+                )
+            else:
+                _eye_desc_style = ParagraphStyle(
+                    "eye_desc_s", fontSize=9, leading=11,
+                    textColor=GRAY, fontName="Helvetica-Bold",
+                    alignment=TA_LEFT, spaceAfter=0,
+                )
+                _eye_cmp_style = ParagraphStyle(
+                    "eye_cmp_s", fontSize=7, leading=9,
+                    textColor=GRAY, fontName="Helvetica",
+                    alignment=TA_LEFT, spaceAfter=0,
+                )
+            _eyebrow_content = [
+                Paragraph(descriptor, _eye_desc_style),
+                Paragraph(f"COMPARISON #{_card_label_num}",
+                          _eye_cmp_style),
+            ]
+
+            # Build the card header: eyebrow + cream-badge with score on
+            # the right side of the same row. The badge replaces the old
+            # gold ribbon — sits inline with the eyebrow, score visible.
+            # Header row width must respect the card's 10pt L/R padding,
+            # so total colWidths = this_w - 20pt (≈ 0.28"). Previously
+            # the row spanned this_w - 0.10", which pushed the badge
+            # past the card's right padding boundary and made it appear
+            # clipped against the card outline.
+            # Badge — visual variant differs by tier:
+            #   PROPOSED (middle): HORIZONTAL pill variant — wider than
+            #     tall (1.00" × 0.45"), preserves the PORTFOLIO eyebrow
+            #     + serif numeral + gauge tick chrome, but at a height
+            #     close to the side cards' 0.40" score boxes. The old
+            #     0.85" square chromed badge inflated the header row
+            #     height and pushed the proposed card's allocation bar,
+            #     donut, and legend ~32pt below the side cards' content
+            #     (breaking horizontal alignment across the three cards).
+            #     With the pill, all three cards' header rows share the
+            #     same height so their body content sits on the same
+            #     baseline.
+            #   SIDES: outlined cream variant at 0.40" with no chrome —
+            #     just the numeral. Unchanged.
+            if is_proposed:
+                _hdr_badge = portfolio_badge_horizontal(
+                    pscore if pscore else "—",
+                    width=1.00 * inch, height=0.45 * inch,
+                )
+                _badge_col_w = 1.06 * inch
+            else:
+                _badge_size = 0.40 * inch
+                _hdr_badge = portfolio_badge(
+                    pscore if pscore else "—", label="",
+                    size=_badge_size, filled=False,
+                )
+                _badge_col_w = 0.45 * inch
+            _hdr_inner_w = this_w - 0.28*inch  # accounts for L/R padding
+            header_row = Table(
+                [[_eyebrow_content, _hdr_badge]],
+                colWidths=[_hdr_inner_w - _badge_col_w, _badge_col_w],
+            )
+            header_row.setStyle(TableStyle([
+                ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+                ("ALIGN",         (1,0), (1,0),   "RIGHT"),
+                ("LEFTPADDING",   (0,0), (-1,-1), 0),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 0),
+                # Badge column gets explicit right padding so the
+                # right-aligned badge doesn't sit flush against the
+                # card's gold border (which would read as overlap
+                # once the gold border is thickened).
+                ("RIGHTPADDING",  (1,0), (1,0),   4),
+                ("TOPPADDING",    (0,0), (-1,-1), 0),
                 ("BOTTOMPADDING", (0,0), (-1,-1), 4),
             ]))
-            tier_block.append(ribbon)
 
-            # Pie + legend — smaller pie (1.6") so 3 cards fit on one page
+            # Sub-headline + tiny caption REMOVED per advisor request.
+            # The card eyebrow row already shows "COMPARISON #N · MORE
+            # CONSERVATIVE / PROPOSED / MORE AGGRESSIVE" which carries
+            # the tier semantics; the additional "Min-vol tilt /
+            # ±50% corridor" descriptors were redundant and added
+            # vertical noise without giving the reader new info.
+
+            # Body content
+            body_rows = []
+
+            # Asset class bar
             if ptks and pws and sum(float(w or 0) for w in pws) > 0:
-                pie_d = pie_drawing(ptks, pws, size=1.6*inch)
-                legend_tbl = pie_legend_table(ptks, pws, max_rows_per_col=6)
-                card_row = Table(
-                    [[pie_d, legend_tbl]],
-                    colWidths=[1.85*inch, 5.35*inch],
+                _bar_w = this_w - 0.4*inch
+                _bar_draw, _bar_caption_html = _asset_class_bar(
+                    ptks, pws, width=_bar_w,
                 )
-                card_row.setStyle(TableStyle([
-                    ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
-                    ("ALIGN",         (0,0), (0,-1),  "CENTER"),
-                    ("LEFTPADDING",   (0,0), (-1,-1), 3),
-                    ("RIGHTPADDING",  (0,0), (-1,-1), 3),
-                    ("TOPPADDING",    (0,0), (-1,-1), 4),
-                    ("BOTTOMPADDING", (0,0), (-1,-1), 4),
-                    ("BOX",           (0,0), (-1,-1), 0.4, BORDER),
-                    ("BACKGROUND",    (0,0), (-1,-1), BG_LIGHT),
-                ]))
-                tier_block.append(card_row)
+                body_rows.append([Spacer(1, 0.06*inch)])
+                body_rows.append([_bar_draw])
+                # Caption row immediately below the bar — swatches +
+                # percentages on a single line, CENTER-aligned so the
+                # "70% eq · 24% bd · 6% cs" caption sits visually
+                # centered under the bar (was left-aligned which made
+                # the caption pull to the left while the bar itself
+                # fills the full width of the cell).
+                body_rows.append([Paragraph(
+                    _bar_caption_html,
+                    ParagraphStyle("acbar_cap", fontName="Helvetica",
+                                   fontSize=8, leading=11,
+                                   textColor=CHARCOAL,
+                                   alignment=TA_CENTER, spaceBefore=2),
+                )])
+
+                # Pie chart — sized uniformly across all three comparison
+                # cards (1.55") so the donut, legend, and overall card
+                # height align between the proposed and side cards. The
+                # earlier "bumped" 1.75" treatment on the PROPOSED-only
+                # card made it ~14pt taller than the sides, causing the
+                # proposed card to hang ~17pt below the side cards'
+                # bottoms (combined with the legend font difference).
+                # Proposed card emphasis now comes from: the 4pt gold
+                # border, the wider column (3.68" vs 3.00"), the
+                # PORTFOLIO pill badge, and the gold "PROPOSED"
+                # descriptor — donut size no longer carries that load.
+                pie_size = 1.55*inch
+                body_rows.append([Spacer(1, 0.04*inch)])
+                body_rows.append([compact_pie(ptks, pws, size=pie_size)])
+
+                # Full holdings legend in 2 columns. Pass the card width
+                # so the legend's columns scale: middle (PROPOSED) card
+                # is wider so columns can be wider; font size is uniform
+                # (7.0pt) so legend heights match across all three cards.
+                body_rows.append([Spacer(1, 0.06*inch)])
+                body_rows.append([_full_legend(
+                    ptks, pws, ncols=2,
+                    font_size=7.0,
+                    total_width=this_w,
+                    canonical_order=_canonical_order,
+                )])
             else:
-                tier_block.append(Paragraph(
-                    f"<i>External portfolio — holdings not embedded in this proposal.</i>",
-                    body_small,
-                ))
+                body_rows.append([Spacer(1, 0.06*inch)])
+                body_rows.append([Paragraph(
+                    "<i>External portfolio — holdings not embedded in "
+                    "this proposal.</i>",
+                    ParagraphStyle("ext", fontName="Helvetica-Oblique",
+                                   fontSize=7.5, leading=10,
+                                   textColor=GRAY),
+                )])
 
-            # Rationale below
-            if tk and tk in tiers:
-                rat = tiers[tk].get("rationale", "")
-                if rat:
-                    tier_block.append(Paragraph(f"<i>{rat}</i>", caption))
-            tier_block.append(Spacer(1, 0.06*inch))
+            body_tbl = Table(body_rows, colWidths=[this_w - 0.28*inch])
+            body_tbl.setStyle(TableStyle([
+                ("ALIGN",         (0,0), (-1,-1), "CENTER"),
+                ("VALIGN",        (0,0), (-1,-1), "TOP"),
+                ("LEFTPADDING",   (0,0), (-1,-1), 0),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 0),
+                ("TOPPADDING",    (0,0), (-1,-1), 0),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+            ]))
 
-            # Wrap entire tier so it never breaks across pages
-            story.append(KeepTogether(tier_block))
+            # Combined card: header on top (with eyebrow + badge), body
+            # underneath. Cards have a thin border by default; PROPOSED
+            # gets a thicker gold outline (the only color treatment on
+            # an otherwise uniform set of cards).
+            card = Table(
+                [[header_row], [body_tbl]],
+                colWidths=[this_w],
+            )
+            card_style = [
+                ("LEFTPADDING",   (0,0), (-1,-1), 10),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 10),
+                ("TOPPADDING",    (0,0), (0,0),   10),
+                ("BOTTOMPADDING", (0,0), (0,0),   2),
+                ("TOPPADDING",    (0,1), (-1,1),  2),
+                ("BOTTOMPADDING", (0,1), (-1,1),  12),
+                ("VALIGN",        (0,0), (-1,-1), "TOP"),
+                ("BACKGROUND",    (0,0), (-1,-1), BG_SOFT),
+            ]
+            if is_proposed:
+                # Thicker gold outline (4pt — bumped from 2.5pt) to
+                # firmly anchor the proposed card as the headline.
+                # The cards-row's surrounding navy box was removed in
+                # an earlier pass, so the 4pt gold reads clean on all
+                # four edges without competing with an outer frame.
+                card_style.append(("BOX", (0,0), (-1,-1), 4, ACCENT))
+            else:
+                # Side cards get a navy outline (was a faint gray BORDER
+                # which read as nearly absent on the cream background).
+                # Navy at 1.0pt matches the visual weight of the gold
+                # outline on the PROPOSED card while staying clearly
+                # secondary — the gold is thicker (2.5 vs 1.0) and warmer,
+                # so the proposed card still reads as the headline.
+                card_style.append(("BOX", (0,0), (-1,-1), 1.0, NAVY))
+            card.setStyle(TableStyle(card_style))
+            card_cells.append(card)
+
+        # Pad to 3 columns if fewer picks (rare edge case)
+        while len(card_cells) < 3:
+            card_cells.append(Spacer(1, 1))
+
+        # Assemble side-by-side row. Widths follow the side / middle /
+        # side pattern; if ordering somehow produces a non-middle
+        # PROPOSED we still want the middle column wider, so always
+        # use [_SIDE_W, _MIDDLE_W, _SIDE_W].
+        cards_row = Table(
+            [card_cells],
+            colWidths=[_SIDE_W, _MIDDLE_W, _SIDE_W],
+        )
+        cards_row.setStyle(TableStyle([
+            ("VALIGN",        (0,0), (-1,-1), "TOP"),
+            # Gap between cards bumped from 3pt to 8pt per side
+            # (16pt total cream space between adjacent cards). With
+            # the middle card's 4pt gold border and the side cards'
+            # 1pt navy borders, the tighter 3pt padding was visually
+            # compressing the borders against each other — the right
+            # gold edge of the proposed card read as fainter than the
+            # left because it was nearly touching the right card's
+            # navy edge. 8pt opens enough clean cream space on each
+            # side for all four edges of the gold border to read at
+            # the same visual weight.
+            ("LEFTPADDING",   (0,0), (-1,-1), 8),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 8),
+            ("TOPPADDING",    (0,0), (-1,-1), 0),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+        ]))
+        # cards_row is no longer appended directly to story — it gets
+        # combined with spec_d (the Risk Spectrum band) into a single
+        # solid outer table below, so the cards row and the spectrum
+        # read as one unified framed block.
+
+        # ── Layout: cards row + spectrum (separated) ─────────────
+        # Per advisor redesign — second iteration:
+        #   • The outer navy box that previously wrapped the cards
+        #     row and the spectrum together has been REMOVED. The
+        #     middle (PROPOSED) card's 2.5pt gold border was clipped
+        #     by the outer frame on the top and bottom edges; the
+        #     wrap also made the spectrum read as part of the same
+        #     block rather than as a separate summary.
+        #   • Risk spectrum now sits BELOW the cards row with a
+        #     vertical gap, rendering standalone (no surrounding
+        #     box), so it reads as a related-but-separate panel.
+        #   • Each card retains its own border (gold on the middle
+        #     PROPOSED card, navy on the sides), now visible on all
+        #     four edges without competing with an outer frame.
+        story.append(Spacer(1, 0.10*inch))
+        story.append(KeepTogether([
+            cards_row,
+            Spacer(1, 0.18*inch),
+            spec_d,
+        ]))
+
+    # ── Proposed Holdings (page 4 — moved here from above the
+    #    Proposed Portfolios block per advisor revision). Renders
+    #    in PORTRAIT (handled internally by _render_holdings_page,
+    #    which calls NextPageTemplate('portrait')+PageBreak at its
+    #    start, so it correctly flips back to portrait from the
+    #    landscape Proposed Portfolios page that precedes it).
+    _opt1_resolved = _resolve_option("option_1")
+    _opt2_resolved = _resolve_option("option_2")
+    _opt3_resolved = _resolve_option("option_3")
+    if _opt1_resolved and _opt1_resolved[3] and _opt1_resolved[4]:
+        (_o1_lbl, _o1_sub, _o1_tk,
+         _prop_tickers, _prop_weights, _prop_score) = _opt1_resolved
+        # Pack the three options' (label, tickers, weights) for the
+        # comparison view. Missing options (advisor left a slot as
+        # "— none —" or chose 📁/🧩 that didn't resolve to tickers)
+        # contribute empty lists, which produce "—" cells throughout
+        # their sub-column.
+        def _opt_data_tuple(_resolved, _i):
+            if not _resolved:
+                return (f"OPT {_i}", [], [])
+            _, _, _, _tks, _wts, _ = _resolved
+            return (f"OPT {_i}", _tks or [], _wts or [])
+        _options_compare = [
+            _opt_data_tuple(_opt1_resolved, 1),
+            _opt_data_tuple(_opt2_resolved, 2),
+            _opt_data_tuple(_opt3_resolved, 3),
+        ]
+        _render_holdings_page(
+            tickers=_prop_tickers,
+            weights=_prop_weights,
+            score=_prop_score,
+            eyebrow="Section 2",
+            title="Proposed Holdings",
+            intro_text=(
+                "The proposed allocation's full breakdown alongside the "
+                "two alternate options. Each row shows the per-option "
+                "weight in the % OF PORTFOLIO columns — the highest "
+                "weight in each row is bolded. Use this alongside the "
+                "Current Holdings section above to compare positions "
+                "across the three options."
+            ),
+            options_data=_options_compare,
+        )
+
+    # Section 4 (Notable Market Periods) is LANDSCAPE — same as
+    # Section 3 (Recommendations). The wider page gives each event
+    # row room for the chart plus the per-portfolio mini-table on the
+    # left without compressing either. After this section we flip
+    # back to portrait for everything that follows.
+    story.append(NextPageTemplate('landscape'))
+
+    # ═══════════════════════════════════════════════════════════
+    # SECTION 4 — NOTABLE MARKET PERIODS
+    # ═══════════════════════════════════════════════════════════
+    # Replaced the prior Risk Analysis page (drawdown chart / rolling
+    # Sharpe / 10yr forward Monte Carlo) with a single-page comparison
+    # of how each portfolio (recommended, current, SPY benchmark, BND
+    # benchmark) performed across five notable historical event windows.
+    # The advisor's reasoning: a static drawdown chart of one portfolio
+    # is less informative than a side-by-side cross-portfolio comparison
+    # during the moments clients actually remember (2008, COVID, 2022).
+    # The 10yr Monte Carlo is being replaced by a proper retirement-goal
+    # projection in a later iteration.
+    if sections.get("notable_periods", True):
+        story.append(PageBreak())
+        story.append(section_header("Section 4", "Notable Market Periods"))
+        # Verbose 3-sentence intro removed per advisor request — the
+        # section title plus per-event headers + descriptions carry the
+        # context now. Bottom-of-section italic disclaimer covers the
+        # legal language about hypothetical / past performance.
+        story.append(Spacer(1, 0.06*inch))
+
+        # Build the portfolio set: recommended (balanced tier), current
+        # (from the saved snapshot if present), plus SPY and BND benchmarks.
+        # The recommended portfolio comes from the proposal's "balanced"
+        # tier — that's the same tier the rest of the PDF shows.
+        _bal_tier = (proposal.get("tiers") or {}).get("balanced") or {}
+        _bal_tickers = list(_bal_tier.get("tickers") or [])
+        _bal_weights = list(_bal_tier.get("weights") or [])
+
+        _curr_snap = (proposal or {}).get("client_current_portfolio") or {}
+        _curr_snap_tks = list(_curr_snap.get("tickers") or [])
+        _curr_snap_w   = _curr_snap.get("weights") or {}
+        _curr_w_list = []
+        if _curr_snap_tks and _curr_snap_w and isinstance(_curr_snap_w, dict):
+            _curr_w_list = [
+                float(_curr_snap_w.get(t, 0) or 0) for t in _curr_snap_tks
+            ]
+
+        _np_portfolios = []
+        if _bal_tickers and _bal_weights:
+            _np_portfolios.append(("Recommended", _bal_tickers, _bal_weights))
+        if _curr_snap_tks and _curr_w_list and sum(_curr_w_list) > 0:
+            _np_portfolios.append(("Current", _curr_snap_tks, _curr_w_list))
+        # Always include the two benchmarks.
+        _np_portfolios.append(("S&P 500 (SPY)", ["SPY"], [100.0]))
+        _np_portfolios.append(("Agg Bond (BND)", ["BND"], [100.0]))
+
+        # Name list for the chart-rendering loops below. MUST be derived
+        # from _np_portfolios — NOT from the page-4 backtest section's
+        # _portfolio_names (which uses different names like "Current
+        # Portfolio" / "Comparison #1/2/3"). Mixing the two caused every
+        # period chart to fall through to "data unavailable" because the
+        # _series_data dict was keyed by these names and the loops were
+        # looking up backtest names that don't exist in it.
+        _np_portfolio_names = [name for name, _, _ in _np_portfolios]
+
+        try:
+            _period_data = _compute_period_returns(_np_portfolios)
+        except Exception as _np_err:
+            _period_data = None
+            story.append(Paragraph(
+                f"<i>Notable Market Periods unavailable: {_np_err}</i>",
+                body_small,
+            ))
+
+        if _period_data:
+            # Per advisor preference, the summary numeric table at the
+            # top of this section has been REMOVED. The per-event line
+            # charts below show the full return path (drawdown + recovery)
+            # which is more informative than the final number. The
+            # _period_data computation above is no longer used for the
+            # table, but is left in place because future iterations may
+            # want to surface specific period numbers (peak drawdown,
+            # recovery time, etc.) and the data is already cached.
+
+            # ── Line charts: cumulative return curves per period ─────
+            # Per-period mini line charts showing how each portfolio's
+            # cumulative return evolved through the event window. Renders
+            # below the summary table — the table shows the final
+            # number, the charts show the path (drawdown depth + recovery
+            # speed). Five charts arranged in a 2-up grid (or 1-up final
+            # row for an odd count).
+            #
+            # Colors:
+            #   Recommended → gold (ACCENT)
+            #   Current     → navy (NAVY)
+            #   SPY         → light gray
+            #   BND         → lighter gray
+            # Gold + navy lines are drawn thicker (1.6pt) than the gray
+            # benchmarks (0.9pt) so the client's two portfolios pop.
+            try:
+                _series_data = _compute_period_price_series(_np_portfolios)
+            except Exception:
+                _series_data = None
+
+            if _series_data:
+                # Period chart styling constants. Layout restructured
+                # per advisor: each event now stacks (title + date) →
+                # (2x2 mini-table) → (full-width chart) → (italic desc)
+                # vertically, instead of the previous "mini-table left /
+                # chart right" two-column layout. Result: the chart
+                # spans the full landscape content width (9.85") and
+                # gets a taller height (1.30" vs 0.85") for maximum
+                # visibility. Content runs across 2 pages — 3 events
+                # on page 1, 2 on page 2 — which advisor accepted.
+                _CHART_W = 9.85 * inch
+                _CHART_H = 1.30 * inch
+                # Palette C — palette match with the existing chart palette.
+                # The benchmarks pick up the same teal and berry-pink that
+                # the reader has already seen in the pie charts on pages 1
+                # and 3, so the colors feel native to the document. Gold
+                # and navy remain reserved for the client's two portfolios
+                # so they're never confused with benchmarks.
+                _BENCH_TEAL = colors.HexColor("#2c8a8f")  # SPY  (matches pie teal)
+                _BENCH_BERRY = colors.HexColor("#a64664") # BND  (matches pie berry)
+
+                # Per-portfolio styling map: (color, stroke_width, z_order).
+                # Higher z_order renders on top — gold (recommended) is
+                # drawn last so it sits above navy and the benchmarks.
+                # All four lines are the SAME stroke width — color carries
+                # the distinction. Per advisor feedback, mixing 1.6pt
+                # client lines with 0.9pt benchmarks made the benchmark
+                # lines look "spidery" and inconsistent. Uniform 1.1pt
+                # reads as a clean four-line chart where each portfolio
+                # is treated as a peer.
+                _UNIFORM_WIDTH = 1.1
+                _series_style = {
+                    "Recommended":     (ACCENT,        _UNIFORM_WIDTH, 4),
+                    "Current":         (NAVY,          _UNIFORM_WIDTH, 3),
+                    "S&P 500 (SPY)":   (_BENCH_TEAL,   _UNIFORM_WIDTH, 2),
+                    "Agg Bond (BND)":  (_BENCH_BERRY,  _UNIFORM_WIDTH, 1),
+                }
+
+                def _build_period_chart(label, start, end):
+                    """Build a Drawing showing cumulative-return curves
+                    for all portfolios across the given period window."""
+                    d = Drawing(_CHART_W, _CHART_H)
+
+                    # Collect all valid series for this period and compute
+                    # the global y-range across them (so the axis is
+                    # consistent across portfolios on the same chart).
+                    chart_series = []  # list of (pname, points)
+                    all_vals = []
+                    for pname in _np_portfolio_names:
+                        pts = _series_data.get(pname, {}).get(label)
+                        if not pts:
+                            continue
+                        # pts is list[(date_str, decimal_return)]
+                        rets = [v for _, v in pts]
+                        if not rets:
+                            continue
+                        chart_series.append((pname, rets))
+                        all_vals.extend(rets)
+
+                    if not chart_series or not all_vals:
+                        # No data for this period — render a placeholder
+                        d.add(String(_CHART_W/2, _CHART_H/2,
+                                     "data unavailable",
+                                     fontName="Helvetica-Oblique",
+                                     fontSize=8, fillColor=GRAY,
+                                     textAnchor="middle"))
+                        return d
+
+                    # Axis bounds — anchor zero in the range so 0% always
+                    # shows as a reference line, with ~6% padding above/
+                    # below so curves don't kiss the chart edge.
+                    y_min = min(all_vals + [0.0])
+                    y_max = max(all_vals + [0.0])
+                    if y_max == y_min:
+                        y_max = y_min + 0.01
+                    y_pad = (y_max - y_min) * 0.08
+                    y_min -= y_pad
+                    y_max += y_pad
+
+                    # Chart plot region. The event name + date range
+                    # now live in the table row's left cell, so we drop
+                    # the top padding that previously reserved space for
+                    # an embedded title.
+                    pad_l, pad_r = 30, 8
+                    pad_t, pad_b = 8, 14
+                    plot_w = _CHART_W - pad_l - pad_r
+                    plot_h = _CHART_H - pad_t - pad_b
+                    plot_x0 = pad_l
+                    plot_y0 = pad_b
+
+                    # Plot frame (thin border)
+                    d.add(Rect(plot_x0, plot_y0, plot_w, plot_h,
+                               strokeColor=BORDER_SOFT, strokeWidth=0.4,
+                               fillColor=None))
+
+                    # Zero line (dashed) if zero falls inside the range
+                    if y_min < 0 < y_max:
+                        zero_y = plot_y0 + (0 - y_min) / (y_max - y_min) * plot_h
+                        d.add(Line(plot_x0, zero_y, plot_x0 + plot_w, zero_y,
+                                   strokeColor=GRAY_SOFT, strokeWidth=0.5,
+                                   strokeDashArray=[2, 2]))
+
+                    # Y-axis tick labels: y_min, 0 (if visible), y_max
+                    def _y_to_px(v):
+                        return plot_y0 + (v - y_min) / (y_max - y_min) * plot_h
+
+                    def _fmt_axis_pct(v):
+                        return f"{v*100:+.0f}%"
+
+                    # Top and bottom labels
+                    d.add(String(plot_x0 - 4, _y_to_px(y_max) - 3,
+                                 _fmt_axis_pct(y_max),
+                                 fontName="Helvetica", fontSize=6.5,
+                                 fillColor=GRAY, textAnchor="end"))
+                    d.add(String(plot_x0 - 4, _y_to_px(y_min) - 3,
+                                 _fmt_axis_pct(y_min),
+                                 fontName="Helvetica", fontSize=6.5,
+                                 fillColor=GRAY, textAnchor="end"))
+                    # 0% reference label — but only if it has clearance.
+                    # In some windows (e.g. 2022 Bear Market where almost
+                    # everything was negative), y_max is close to 0% and
+                    # the "+2%" label would stack on top of the "0%" label.
+                    # We require at least ~10pt vertical clearance from
+                    # both endpoints before drawing the 0% label.
+                    if y_min < 0 < y_max:
+                        _zero_y_px = _y_to_px(0)
+                        _max_y_px  = _y_to_px(y_max)
+                        _min_y_px  = _y_to_px(y_min)
+                        _clear_top    = abs(_max_y_px - _zero_y_px)
+                        _clear_bottom = abs(_zero_y_px - _min_y_px)
+                        if _clear_top >= 10 and _clear_bottom >= 10:
+                            d.add(String(plot_x0 - 4, _zero_y_px - 3, "0%",
+                                         fontName="Helvetica", fontSize=6.5,
+                                         fillColor=GRAY_SOFT, textAnchor="end"))
+
+                    # Draw each series as a polyline. Z-order: lower-z
+                    # first (drawn under), gold/navy last (on top).
+                    chart_series_with_style = [
+                        (pname, rets, _series_style.get(
+                            pname, (GRAY, 0.8, 0))
+                        )
+                        for pname, rets in chart_series
+                    ]
+                    chart_series_with_style.sort(key=lambda x: x[2][2])
+
+                    for pname, rets, (col, sw, _z) in chart_series_with_style:
+                        n_pts = len(rets)
+                        if n_pts < 2:
+                            continue
+                        # Build flat point list [x0,y0,x1,y1,...]
+                        pts_flat = []
+                        for i, v in enumerate(rets):
+                            x = plot_x0 + (i / (n_pts - 1)) * plot_w
+                            y = _y_to_px(v)
+                            pts_flat.extend([x, y])
+                        d.add(PolyLine(pts_flat,
+                                        strokeColor=col,
+                                        strokeWidth=sw,
+                                        strokeLineJoin=1,  # round joins
+                                        strokeLineCap=1))  # round caps
+
+                    return d
+
+                # Build the event-name + chart rows. Each row pairs a
+                # left cell (event name + date range + per-portfolio
+                # final-return mini-table) with the line chart on the
+                # right. Per advisor revision pass (Page 4 landscape
+                # restructure): the prior summary-numeric-table-at-top
+                # treatment was reintroduced as inline per-event mini-
+                # tables so each event's chart sits next to its own
+                # numbers, rather than asking the reader to cross-
+                # reference a table at the top with the charts below.
+                #
+                # Mini-table rows are color-coded swatches matching the
+                # chart lines, so the reader can map line → portfolio
+                # without consulting the legend strip separately. The
+                # legend at the top of the page is preserved as a
+                # secondary anchor for readers who scan the page
+                # before reading any single event row.
+                # ── Per-event styles ──
+                # Old _chart_table_rows accumulator and _label_para_style /
+                # _date_para_style for the 2-col event grid removed —
+                # event blocks are now appended to story directly inside
+                # the loop below, and header rendering uses an inline
+                # _event_hdr_style defined just below.
+                # Mini-table cell styles — name in charcoal, return in
+                # navy bold so the number reads first. Returns are
+                # rounded to whole percent for table-grade scannability;
+                # the chart shows the actual path for anyone who wants
+                # finer precision.
+                _mini_name_style = ParagraphStyle(
+                    "mini_name", fontSize=7.5, leading=10,
+                    textColor=CHARCOAL, fontName="Helvetica",
+                    alignment=TA_LEFT,
+                )
+                _mini_ret_style = ParagraphStyle(
+                    "mini_ret", fontSize=8, leading=10,
+                    textColor=NAVY, fontName="Helvetica-Bold",
+                    alignment=TA_RIGHT,
+                )
+                _mini_ret_neg_style = ParagraphStyle(
+                    "mini_ret_neg", fontSize=8, leading=10,
+                    textColor=colors.HexColor("#993526"),
+                    fontName="Helvetica-Bold", alignment=TA_RIGHT,
+                )
+
+                def _swatch(color):
+                    """Small filled circle matching the chart-line
+                    color, used as the leading column in each mini-
+                    table row so the reader can map color → line."""
+                    _sw = Drawing(10, 10)
+                    _sw.add(Circle(5, 5, 3.2,
+                                   fillColor=color, strokeColor=None))
+                    return _sw
+
+                def _fmt_pct_row(v):
+                    """Format a decimal return as a signed whole-percent
+                    string (+18%, -57%, 0%). Mirrors the y-axis tick
+                    formatter used inside the chart so the table and
+                    chart speak the same language."""
+                    if v is None:
+                        return "—"
+                    try:
+                        return f"{float(v)*100:+.0f}%"
+                    except (TypeError, ValueError):
+                        return "—"
+
+                # Event header style — bigger Times title with the date
+                # range in smaller gray on the same line.
+                _event_hdr_style = ParagraphStyle(
+                    "event_hdr", fontSize=12, leading=15,
+                    textColor=NAVY, fontName="Times-Roman",
+                    alignment=TA_LEFT, spaceBefore=0, spaceAfter=0,
+                )
+                # Description style — same italic Helvetica-Oblique as
+                # the page-2 intro paragraph so the per-event "what
+                # happened" caption visually matches.
+                _event_desc_style = ParagraphStyle(
+                    "event_desc", fontSize=8.5, leading=11,
+                    textColor=CHARCOAL, fontName="Helvetica-Oblique",
+                    alignment=TA_LEFT, spaceBefore=0, spaceAfter=0,
+                )
+
+                # Loop builds vertical event blocks (one per crisis).
+                # Each block stacks: header (title + date range), 2x2
+                # mini-table of portfolio returns, full-width chart,
+                # italic description. KeepTogether prevents a single
+                # event from splitting across pages — when ReportLab
+                # can't fit the whole block on the current page it
+                # moves the entire block to the next page.
+                for _evt_idx, (label, start, end, _desc) in enumerate(
+                        NOTABLE_PERIODS):
+                    _chart_d = _build_period_chart(label, start, end)
+
+                    # Header row: title in serif, date range in gray
+                    # caption-size to its right on the same line.
+                    _hdr_para = Paragraph(
+                        f"<b>{label}</b>  "
+                        f"<font color='{GRAY.hexval()}' size='9' "
+                        f"face='Helvetica'>"
+                        f"({start[:7]} – {end[:7]})</font>",
+                        _event_hdr_style,
+                    )
+
+                    # 2x2 mini-table: 2 rows × 2 portfolios per row, 3
+                    # cells per portfolio (swatch + name + return). Top
+                    # row holds the two CLIENT portfolios (Recommended +
+                    # Current); bottom row holds the two BENCHMARKS
+                    # (SPY + BND). This groups same-class items
+                    # together so the eye doesn't bounce around when
+                    # scanning. Total table width 4.85" — sits at the
+                    # left edge of the chart so the visual baseline
+                    # below the title runs cleanly across.
+                    def _mini_cell(pname):
+                        col, _, _ = _series_style.get(
+                            pname, (GRAY, 0.8, 0))
+                        _ret = None
+                        if _period_data and pname in _period_data:
+                            _ret = _period_data[pname].get(label)
+                        _ret_style = (_mini_ret_neg_style
+                                       if (_ret is not None and _ret < 0)
+                                       else _mini_ret_style)
+                        _pname_safe = (pname
+                                        .replace("&", "&amp;")
+                                        .replace("<", "&lt;"))
+                        return [_swatch(col),
+                                Paragraph(_pname_safe, _mini_name_style),
+                                Paragraph(_fmt_pct_row(_ret), _ret_style)]
+
+                    # Bind portfolio order safely whether 2 or 4
+                    # portfolios are present (current snapshot might be
+                    # absent → only 3 names).
+                    _pnames = list(_np_portfolio_names)
+                    while len(_pnames) < 4:
+                        _pnames.append(None)
+
+                    def _row_cells(p1, p2):
+                        _cells = []
+                        if p1:
+                            _cells.extend(_mini_cell(p1))
+                        else:
+                            _cells.extend([Spacer(1,1), Paragraph("", _mini_name_style), Paragraph("", _mini_ret_style)])
+                        if p2:
+                            _cells.extend(_mini_cell(p2))
+                        else:
+                            _cells.extend([Spacer(1,1), Paragraph("", _mini_name_style), Paragraph("", _mini_ret_style)])
+                        return _cells
+
+                    _mini_2x2 = Table(
+                        [
+                            _row_cells(_pnames[0], _pnames[1]),
+                            _row_cells(_pnames[2], _pnames[3]),
+                        ],
+                        colWidths=[0.20*inch, 1.65*inch, 0.55*inch,
+                                    0.30*inch, 1.65*inch, 0.50*inch],
+                        hAlign="LEFT",
+                    )
+                    _mini_2x2.setStyle(TableStyle([
+                        ("LEFTPADDING",  (0,0), (-1,-1), 0),
+                        ("RIGHTPADDING", (0,0), (-1,-1), 2),
+                        ("TOPPADDING",   (0,0), (-1,-1), 1),
+                        ("BOTTOMPADDING",(0,0), (-1,-1), 1),
+                        ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
+                        ("ALIGN",        (2,0), (2,-1), "RIGHT"),
+                        ("ALIGN",        (5,0), (5,-1), "RIGHT"),
+                    ]))
+
+                    # Italic description of what happened during the
+                    # crisis — same style as the page-2 intro paragraph
+                    # (italic Helvetica-Oblique 8.5pt). Was previously
+                    # inline at the bottom of the section; now sits
+                    # under each event's chart for direct association.
+                    _desc_para = Paragraph(_desc, _event_desc_style)
+
+                    # Compose: header → description (italic, beneath
+                    # title) → mini-table → chart. Description moved
+                    # from below-chart to beneath-title per advisor —
+                    # event context now reads at the top of the block
+                    # before the data viz. Tight spacers throughout.
+                    _event_block = [
+                        _hdr_para,
+                        Spacer(1, 0.02*inch),
+                        _desc_para,
+                        Spacer(1, 0.04*inch),
+                        _mini_2x2,
+                        Spacer(1, 0.06*inch),
+                        _chart_d,
+                        Spacer(1, 0.08*inch),
+                    ]
+                    story.append(KeepTogether(_event_block))
+
+                    # Force a page break after the 3rd event so the
+                    # first 3 land on the section's first page and the
+                    # remaining 2 flow to the next page. Without this
+                    # ReportLab's flow logic puts 2 events per page
+                    # because of cumulative height.
+                    if _evt_idx == 2:
+                        story.append(NextPageTemplate('landscape'))
+                        story.append(PageBreak())
+
+                # No "Return paths" sub-header — with the summary table
+                # removed, the charts ARE the section content and don't
+                # need a title differentiating them from a sibling block.
+                # The section header "Notable Market Periods" at the top
+                # of the page covers what these charts represent.
+
+                # Top legend strip REMOVED per advisor — the 2x2
+                # mini-table in each event block already names the
+                # portfolios with their color swatches; a separate
+                # top-of-section legend duplicated that info.
+
+            # Bottom inline _periods_inline list REMOVED — each event's
+            # description now sits in italic Helvetica-Oblique 8.5pt
+            # directly below its own chart (inside the event block).
+            # The final italic disclaimer below stays so the legal
+            # language about past performance remains visible.
+            story.append(Spacer(1, 0.04*inch))
+            story.append(Paragraph(
+                "<i>Returns are total returns over the full event window "
+                "(crash + recovery). Hypothetical comparisons assume the "
+                "proposed allocation was held throughout without "
+                "rebalancing. Past performance does not guarantee future "
+                "results.</i>",
+                caption,
+            ))
+        else:
+            # Notable Market Periods table couldn't be built — fall back to
+            # the original risk-mitigation strategy table so the section
+            # never appears empty.
+            risk_rows = [
+                ["Risk Factor",        "Mitigation Strategy"],
+                ["Market Drawdown",
+                 "Diversification across equities, bonds, and cash reduces exposure to any single asset class."],
+                ["Interest-Rate Risk",
+                 "Bond allocations blend short- and intermediate-duration instruments."],
+                ["Inflation Risk",
+                 "Equity exposure provides long-run inflation hedge; TIPS may be included based on priorities."],
+                ["Liquidity Needs",
+                 "Cash reserve sized to priority; all holdings are liquid ETFs/equities."],
+                ["Behavioral Risk",
+                 "Quarterly rebalancing schedule removes emotional timing decisions from the process."],
+            ]
+            tbl = Table(risk_rows, colWidths=[1.7*inch, 5.2*inch])
+            tbl.setStyle(TableStyle([
+                ("BACKGROUND",   (0,0), (-1,0), NAVY),
+                ("TEXTCOLOR",    (0,0), (-1,0), WHITE),
+                ("FONTNAME",     (0,0), (-1,0), "Helvetica-Bold"),
+                ("FONTSIZE",     (0,0), (-1,-1), 9),
+                ("FONTNAME",     (0,1), (0,-1), "Helvetica-Bold"),
+                ("TEXTCOLOR",    (0,1), (-1,-1), CHARCOAL),
+                ("VALIGN",       (0,0), (-1,-1), "TOP"),
+                ("LEFTPADDING",  (0,0), (-1,-1), 8),
+                ("RIGHTPADDING", (0,0), (-1,-1), 8),
+                ("TOPPADDING",   (0,0), (-1,-1), 6),
+                ("BOTTOMPADDING",(0,0), (-1,-1), 6),
+                ("ROWBACKGROUNDS",(0,1), (-1,-1), [WHITE, BG_SOFT]),
+                ("BOX",          (0,0), (-1,-1), 0.5, BORDER),
+                ("LINEBELOW",    (0,0), (-1,0), 1.2, ACCENT),
+            ]))
+            story.append(tbl)
+
+    # Restore portrait orientation for the remaining pages (Backtest,
+    # Fees, Advisor, Methodology, Disclosures). Page 4 above was a
+    # one-off landscape page; everything after it is portrait again.
+    story.append(NextPageTemplate('portrait'))
 
     # ═══════════════════════════════════════════════════════════
     # BACKTEST ANALYSIS — 1/3/5/10 year summary table + 3yr line chart
@@ -5943,14 +10252,30 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         try:
             story.append(PageBreak())
             story.append(section_header("Performance", "Historical Backtest"))
-            story.append(Paragraph(
-                "The table below compares total return, annualized volatility, "
-                "Sharpe ratio, and maximum drawdown across each proposed "
-                "portfolio and your current portfolio over 1, 3, 5, and 10 year "
-                "horizons. The chart shows the growth of $10,000 invested three "
-                "years ago.",
-                body,
-            ))
+            # Intro paragraph styled to match pages 2/3 — small italic
+            # Helvetica-Oblique sitting tight beneath the header rule.
+            # Removed the trailing "The chart shows..." sentence — the
+            # 3-year growth chart was removed when this section was
+            # converted to a transposed metrics-only table, so the
+            # reference is no longer accurate.
+            _bt_desc_tbl = Table(
+                [[Paragraph(
+                    "The table below compares total return, annualized "
+                    "volatility, Sharpe ratio, and maximum drawdown "
+                    "across each proposed portfolio and your current "
+                    "portfolio over 1, 3, 5, and 10 year horizons.",
+                    _intro_desc_style)]],
+                colWidths=[7.4*inch],
+                hAlign="LEFT",
+            )
+            _bt_desc_tbl.setStyle(TableStyle([
+                ("LEFTPADDING",   (0,0), (-1,-1), 0),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 0),
+                ("TOPPADDING",    (0,0), (-1,-1), 0),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+            ]))
+            _bt_desc_tbl.spaceBefore = -4
+            story.append(_bt_desc_tbl)
             story.append(Spacer(1, 0.08*inch))
 
             # Build the set of portfolios to backtest.
@@ -5975,9 +10300,19 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                     bt_portfolios.append(
                         ("Current Portfolio", _curr_snap_tks, _curr_w_list)
                     )
-            for idx, (lbl, sub, tk, ptks, pws, pscore) in enumerate(picks):
+            for idx, (lbl, sub, tk, ptks, pws, pscore) in enumerate(ordered_picks):
                 if ptks and pws:
-                    bt_portfolios.append((f"Option {idx+1}: {lbl}", ptks, pws))
+                    # Match the recommendation cards' COMPARISON #N convention
+                    # — keeps the historical backtest legend in sync with the
+                    # cards so a reader can map "Comparison #2" on the chart
+                    # to the matching middle card above without translation.
+                    # The table column headers must stay COMPACT (the table
+                    # has 5 columns and each column gets ~1.3" — long names
+                    # like "Comparison #2: Proposed" don't fit). Just the
+                    # number; page 3 already names each.
+                    bt_portfolios.append(
+                        (f"Comparison #{idx+1}", ptks, pws)
+                    )
 
             # Fetch price data for all unique tickers across ALL portfolios
             all_tickers = set()
@@ -6046,15 +10381,14 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                         dd = float(((equity / equity.cummax()) - 1).min())
                         return (total, vol, sharpe, dd)
 
-                    # ── Build the table: rows = metric × period, cols = portfolios ──
-                    # New layout (per advisor feedback): one number per cell
-                    # makes the table much easier to scan than the old
-                    # 4-portfolios × 5-windows grid with three metrics
-                    # crammed into each cell. Row groups are:
-                    #   • Total Return (1y / 3y / 5y / 10y)
-                    #   • Annualized Volatility (1y / 3y / 5y / 10y)
-                    #   • Sharpe Ratio (1y / 3y / 5y / 10y)
-                    #   • Max Drawdown (1y / 3y / 5y / 10y)
+                    # ── Build the table: cols = periods, rows = portfolios within metric ──
+                    # Per advisor feedback: periods (1Y / 3Y / 5Y / 10Y)
+                    # run across the top, portfolios (Current,
+                    # Comparison #1/2/3) run down the left grouped under
+                    # each metric heading. Same one-number-per-cell
+                    # density as before, just transposed so a reader
+                    # scanning a single portfolio's track record reads
+                    # across one row instead of jumping down a column.
 
                     # Compute all stats up front for every portfolio × period
                     # so the table builder is a simple lookup.
@@ -6072,9 +10406,10 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                             _row_stats.append(_stats_over_window(r, _days))
                         _stats.append(_row_stats)
 
-                    # Build header row: blank top-left, then portfolio names
+                    # Build header row: blank top-left, then period labels
+                    _period_labels = [p[0] for p in _periods]
                     _portfolio_names = [name for name, _, _ in bt_portfolios]
-                    hdr = ["Metric / Period"] + _portfolio_names
+                    hdr = ["Metric / Portfolio"] + _period_labels
                     bt_rows = [hdr]
 
                     def _fmt(value, kind):
@@ -6090,7 +10425,7 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                         return str(value)
 
                     # Group label rows (full-width navy header strips)
-                    # and per-period rows under each.
+                    # and per-portfolio rows under each.
                     _metric_groups = [
                         ("Total Return",          0, "pct"),
                         ("Annualized Volatility", 1, "pct_abs"),
@@ -6103,12 +10438,11 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                     for _grp_label, _stat_idx, _kind in _metric_groups:
                         # Group header row: spans all columns, just the label
                         _group_header_rows.append(len(bt_rows))
-                        bt_rows.append([_grp_label] + [""] * len(_portfolio_names))
-                        # Then one row per period
-                        for _plbl, _ in _periods:
-                            _period_idx = [p[0] for p in _periods].index(_plbl)
-                            _row = [f"   {_plbl}"]
-                            for _pi, _ in enumerate(bt_portfolios):
+                        bt_rows.append([_grp_label] + [""] * len(_period_labels))
+                        # Then one row per portfolio
+                        for _pi, _pname in enumerate(_portfolio_names):
+                            _row = [f"   {_pname}"]
+                            for _period_idx, _ in enumerate(_periods):
                                 _stat_tuple = _stats[_pi][_period_idx]
                                 if _stat_tuple is None:
                                     _row.append("—")
@@ -6116,13 +10450,14 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                                     _row.append(_fmt(_stat_tuple[_stat_idx], _kind))
                             bt_rows.append(_row)
 
-                    # Column widths: first col wider for the metric label,
-                    # remaining cols split evenly across the portfolio columns.
-                    _n_port_cols = len(_portfolio_names)
-                    _label_w = 1.5*inch
-                    _port_w  = (5.2*inch) / max(1, _n_port_cols)
+                    # Column widths: first col wider for the portfolio
+                    # label, remaining cols split evenly across the 4
+                    # period columns.
+                    _n_period_cols = len(_period_labels)
+                    _label_w = 1.7*inch
+                    _period_w  = (5.0*inch) / max(1, _n_period_cols)
                     bt_tbl = Table(bt_rows,
-                                   colWidths=[_label_w] + [_port_w] * _n_port_cols)
+                                   colWidths=[_label_w] + [_period_w] * _n_period_cols)
                     _tbl_style = [
                         # Top header row (portfolio names)
                         ("BACKGROUND",   (0,0), (-1,0), NAVY),
@@ -6139,7 +10474,7 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                         ("RIGHTPADDING", (0,0), (-1,-1), 8),
                         ("TOPPADDING",   (0,0), (-1,-1), 5),
                         ("BOTTOMPADDING",(0,0), (-1,-1), 5),
-                        ("BOX",          (0,0), (-1,-1), 0.5, BORDER),
+                        ("BOX",          (0,0), (-1,-1), 1.0, NAVY),
                         ("LINEBELOW",    (0,0), (-1,0), 1.2, ACCENT),
                     ]
                     # Style the metric-group header rows: light navy band,
@@ -6155,13 +10490,17 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                         _tbl_style.append(("BOTTOMPADDING",(0,_gi),(-1,_gi), 4))
                     bt_tbl.setStyle(TableStyle(_tbl_style))
                     # Wrap table + caption together so they never split
+                    _bt_caption_centered = ParagraphStyle(
+                        "bt_caption_centered", parent=caption,
+                        alignment=TA_CENTER,
+                    )
                     story.append(KeepTogether([
                         bt_tbl,
                         Paragraph(
                             "<i>Each row reports a single metric over 1, 3, 5, "
                             "and 10-year windows. Sharpe ratio uses excess return "
                             "over the risk-free rate.</i>",
-                            caption,
+                            _bt_caption_centered,
                         ),
                     ]))
                     story.append(Spacer(1, 0.18*inch))
@@ -6192,229 +10531,133 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
     # APPENDIX block below.
 
     # ═══════════════════════════════════════════════════════════
-    # SECTION 4 — NOTABLE MARKET PERIODS
+    # OPTIONAL — SECTION 5: FEE COMPARISON TABLE (own page)
     # ═══════════════════════════════════════════════════════════
-    # Replaced the prior Risk Analysis page (drawdown chart / rolling
-    # Sharpe / 10yr forward Monte Carlo) with a single-page comparison
-    # of how each portfolio (recommended, current, SPY benchmark, BND
-    # benchmark) performed across five notable historical event windows.
-    # The advisor's reasoning: a static drawdown chart of one portfolio
-    # is less informative than a side-by-side cross-portfolio comparison
-    # during the moments clients actually remember (2008, COVID, 2022).
-    # The 10yr Monte Carlo is being replaced by a proper retirement-goal
-    # projection in a later iteration.
-    if sections.get("notable_periods", True):
+    # When the advisor ticks "Fee comparison table" in the section picker,
+    # render the table on its own page so the client can study it without
+    # the visual weight of disclosure paragraphs around it. The table
+    # itself stays in the disclosures section as well (smaller, tighter)
+    # for compliance — this version is the larger comparison-focused one.
+    if sections.get("fee_comparison", False):
         story.append(PageBreak())
-        story.append(section_header("Section 4", "Notable Market Periods"))
-        story.append(Paragraph(
-            "How each portfolio performed during five notable market events. "
-            "Periods cover the full event window (crash + recovery) so the "
-            "table reflects real-world investor experience, not just the "
-            "peak-to-trough decline. Returns are total returns, gross of "
-            "advisory fees. The S&amp;P 500 (SPY) and Aggregate Bond (BND) "
-            "are shown as reference benchmarks.",
-            body,
-        ))
+        story.append(section_header("Section 5", "Fee Comparison"))
+
+        _adv_fee_pct_for_compare = _resolve_advisory_fee_pct(
+            proposal, client_profile, _firm_settings,
+        )
+
+        # Intro paragraph styled to match pages 2/3 — small italic
+        # Helvetica-Oblique sitting tight beneath the header rule.
+        _fee_desc_tbl = Table(
+            [[Paragraph(
+                f"This table illustrates how different annual advisory "
+                f"fee levels affect the growth of a hypothetical $100 "
+                f"starting balance over common time horizons. Your firm's "
+                f"fee of <b>{_adv_fee_pct_for_compare:.2f}%</b> is shown "
+                f"alongside industry benchmark levels (0%, 0.75%, 1%, "
+                f"1.5%, 2%, 2.5%) so you can compare. All figures assume "
+                f"a 7% gross annual return compounded monthly. Actual "
+                f"returns will differ.",
+                _intro_desc_style)]],
+            colWidths=[7.4*inch],
+            hAlign="LEFT",
+        )
+        _fee_desc_tbl.setStyle(TableStyle([
+            ("LEFTPADDING",   (0,0), (-1,-1), 0),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 0),
+            ("TOPPADDING",    (0,0), (-1,-1), 0),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+        ]))
+        _fee_desc_tbl.spaceBefore = -4
+        story.append(_fee_desc_tbl)
+        story.append(Spacer(1, 0.15*inch))
+
+        # Build a fee table that includes the firm's actual rate alongside
+        # the standard benchmarks. Inserts the firm rate in sorted order so
+        # the table reads as a smooth gradient. If the firm rate matches a
+        # benchmark exactly (e.g. 1.00%), no duplicate is inserted.
+        _benchmark_fees = [0.0, 0.75, 1.0, 1.5, 2.0, 2.5]
+        _all_fees = sorted(set(_benchmark_fees + [round(_adv_fee_pct_for_compare, 2)]))
+        _fee_rows_full = _fee_impact_table_data(fee_levels=_all_fees)
+
+        # Highlight the firm's row by inserting an asterisk marker into the
+        # fee column. ReportLab will pick it up via Paragraph rendering;
+        # for plain string cells we just append " ←" so the row stands out.
+        _firm_fee_str = f"{_adv_fee_pct_for_compare:.2f}%"
+        for i, row in enumerate(_fee_rows_full):
+            if i > 0 and row[0] == _firm_fee_str:
+                row[0] = f"{_firm_fee_str}  ★"
+
+        _fee_tbl_full = Table(
+            _fee_rows_full,
+            colWidths=[0.95*inch] + [1.05*inch] * (len(_fee_rows_full[0]) - 1),
+        )
+        _fee_tbl_full.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, 0), NAVY),
+            ("TEXTCOLOR",     (0, 0), (-1, 0), WHITE),
+            ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ALIGN",         (0, 0), (-1, -1), "RIGHT"),
+            ("ALIGN",         (0, 0), (0, -1),  "LEFT"),
+            ("FONTSIZE",      (0, 0), (-1, -1), 9),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+            ("TOPPADDING",    (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("ROWBACKGROUNDS",(0, 1), (-1, -1), [WHITE, BG_SOFT]),
+            ("BOX",           (0, 0), (-1, -1), 1.0, NAVY),
+            ("LINEBELOW",     (0, 0), (-1, 0),  1.2, ACCENT),
+        ]))
+        story.append(_fee_tbl_full)
         story.append(Spacer(1, 0.10*inch))
-
-        # Build the portfolio set: recommended (balanced tier), current
-        # (from the saved snapshot if present), plus SPY and BND benchmarks.
-        # The recommended portfolio comes from the proposal's "balanced"
-        # tier — that's the same tier the rest of the PDF shows.
-        _bal_tier = (proposal.get("tiers") or {}).get("balanced") or {}
-        _bal_tickers = list(_bal_tier.get("tickers") or [])
-        _bal_weights = list(_bal_tier.get("weights") or [])
-
-        _curr_snap = (proposal or {}).get("client_current_portfolio") or {}
-        _curr_snap_tks = list(_curr_snap.get("tickers") or [])
-        _curr_snap_w   = _curr_snap.get("weights") or {}
-        _curr_w_list = []
-        if _curr_snap_tks and _curr_snap_w and isinstance(_curr_snap_w, dict):
-            _curr_w_list = [
-                float(_curr_snap_w.get(t, 0) or 0) for t in _curr_snap_tks
-            ]
-
-        _np_portfolios = []
-        if _bal_tickers and _bal_weights:
-            _np_portfolios.append(("Recommended", _bal_tickers, _bal_weights))
-        if _curr_snap_tks and _curr_w_list and sum(_curr_w_list) > 0:
-            _np_portfolios.append(("Current", _curr_snap_tks, _curr_w_list))
-        # Always include the two benchmarks.
-        _np_portfolios.append(("S&P 500 (SPY)", ["SPY"], [100.0]))
-        _np_portfolios.append(("Agg Bond (BND)", ["BND"], [100.0]))
-
-        try:
-            _period_data = _compute_period_returns(_np_portfolios)
-        except Exception as _np_err:
-            _period_data = None
-            story.append(Paragraph(
-                f"<i>Notable Market Periods unavailable: {_np_err}</i>",
-                body_small,
-            ))
-
-        if _period_data:
-            # Build the table: rows = periods, cols = portfolios (1 row per
-            # period plus a description row beneath each label).
-            _period_labels = _period_data["_periods"]
-            _portfolio_names = [n for n, *_ in _np_portfolios]
-
-            # Header row: "Period" + portfolio names
-            np_rows = [["Period"] + _portfolio_names]
-
-            def _fmt_pct(value):
-                if value is None:
-                    return "—"
-                # Color-code is applied via cell-level styling below
-                return f"{value*100:+.1f}%"
-
-            # One row per period — period label on left, returns on right
-            for period in NOTABLE_PERIODS:
-                _label, _start, _end, _desc = period
-                # Show date range under the label
-                _label_html = (
-                    f"<b>{_label}</b><br/>"
-                    f"<font size='7' color='#8b8c89'>{_start[:7]} – {_end[:7]}</font>"
-                )
-                row = [Paragraph(_label_html, body_small)]
-                for pname in _portfolio_names:
-                    val = _period_data.get(pname, {}).get(_label)
-                    row.append(_fmt_pct(val))
-                np_rows.append(row)
-
-            np_tbl = Table(
-                np_rows,
-                colWidths=[2.0*inch] + [(5.3 / max(1, len(_portfolio_names))) * inch] * len(_portfolio_names),
-            )
-            # Style: header dark, alternating row backgrounds, color-code
-            # the numeric cells based on +/- (green/red). We compute color
-            # cell-by-cell so positive returns are clearly differentiated
-            # from drawdowns at a glance.
-            _np_styles = [
-                ("BACKGROUND",   (0, 0), (-1, 0), NAVY),
-                ("TEXTCOLOR",    (0, 0), (-1, 0), WHITE),
-                ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE",     (0, 0), (-1, 0), 9),
-                ("FONTSIZE",     (0, 1), (-1, -1), 9),
-                ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
-                ("ALIGN",        (1, 0), (-1, -1), "RIGHT"),
-                ("ALIGN",        (0, 0), (0, -1),  "LEFT"),
-                ("LEFTPADDING",  (0, 0), (-1, -1), 8),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-                ("TOPPADDING",   (0, 0), (-1, -1), 8),
-                ("BOTTOMPADDING",(0, 0), (-1, -1), 8),
-                ("ROWBACKGROUNDS",(0, 1), (-1, -1), [WHITE, BG_SOFT]),
-                ("BOX",          (0, 0), (-1, -1), 0.5, BORDER),
-                ("LINEBELOW",    (0, 0), (-1, 0),  1.2, ACCENT),
-            ]
-            # Color-code positive/negative cells. Skip header row.
-            _green = colors.HexColor("#15803d")  # darker green for visibility
-            _red   = colors.HexColor("#b91c1c")  # darker red for visibility
-            for ri, period in enumerate(NOTABLE_PERIODS, start=1):
-                _label, *_ = period
-                for ci, pname in enumerate(_portfolio_names, start=1):
-                    val = _period_data.get(pname, {}).get(_label)
-                    if val is None:
-                        continue
-                    color = _green if val >= 0 else _red
-                    _np_styles.append(("TEXTCOLOR", (ci, ri), (ci, ri), color))
-                    _np_styles.append(("FONTNAME",  (ci, ri), (ci, ri), "Helvetica-Bold"))
-            np_tbl.setStyle(TableStyle(_np_styles))
-            story.append(np_tbl)
-            story.append(Spacer(1, 0.15*inch))
-
-            # Brief description block — list each period with what happened
-            # so the client (and their advisor's compliance officer) has
-            # context for the numbers above. Important: the periods are
-            # FULL event windows, not just drawdowns, so investors see the
-            # recovery side too.
-            story.append(Paragraph("<b>About these periods</b>", h3))
-            for label, start, end, desc in NOTABLE_PERIODS:
-                story.append(Paragraph(
-                    f"&bull; <b>{label}</b> ({start[:7]} – {end[:7]}): {desc}",
-                    body_small,
-                ))
-            story.append(Spacer(1, 0.10*inch))
-            story.append(Paragraph(
-                "<i>Returns are total returns over the full event window (crash and "
-                "subsequent recovery). Past performance does not guarantee future results. "
-                "Hypothetical comparisons assume the proposed allocation was held throughout "
-                "each window without rebalancing or trading.</i>",
-                caption,
-            ))
-        else:
-            # Notable Market Periods table couldn't be built — fall back to
-            # the original risk-mitigation strategy table so the section
-            # never appears empty.
-            risk_rows = [
-                ["Risk Factor",        "Mitigation Strategy"],
-                ["Market Drawdown",
-                 "Diversification across equities, bonds, and cash reduces exposure to any single asset class."],
-                ["Interest-Rate Risk",
-                 "Bond allocations blend short- and intermediate-duration instruments."],
-                ["Inflation Risk",
-                 "Equity exposure provides long-run inflation hedge; TIPS may be included based on priorities."],
-                ["Liquidity Needs",
-                 "Cash reserve sized to priority; all holdings are liquid ETFs/equities."],
-                ["Behavioral Risk",
-                 "Quarterly rebalancing schedule removes emotional timing decisions from the process."],
-            ]
-            tbl = Table(risk_rows, colWidths=[1.7*inch, 5.2*inch])
-            tbl.setStyle(TableStyle([
-                ("BACKGROUND",   (0,0), (-1,0), NAVY),
-                ("TEXTCOLOR",    (0,0), (-1,0), WHITE),
-                ("FONTNAME",     (0,0), (-1,0), "Helvetica-Bold"),
-                ("FONTSIZE",     (0,0), (-1,-1), 9),
-                ("FONTNAME",     (0,1), (0,-1), "Helvetica-Bold"),
-                ("TEXTCOLOR",    (0,1), (-1,-1), CHARCOAL),
-                ("VALIGN",       (0,0), (-1,-1), "TOP"),
-                ("LEFTPADDING",  (0,0), (-1,-1), 8),
-                ("RIGHTPADDING", (0,0), (-1,-1), 8),
-                ("TOPPADDING",   (0,0), (-1,-1), 6),
-                ("BOTTOMPADDING",(0,0), (-1,-1), 6),
-                ("ROWBACKGROUNDS",(0,1), (-1,-1), [WHITE, BG_SOFT]),
-                ("BOX",          (0,0), (-1,-1), 0.5, BORDER),
-                ("LINEBELOW",    (0,0), (-1,0), 1.2, ACCENT),
-            ]))
-            story.append(tbl)
+        story.append(Paragraph(
+            "<i>★ marks your firm's actual fee. Performance figures are "
+            "hypothetical and for illustration only. Past performance does "
+            "not guarantee future results.</i>",
+            caption,
+        ))
 
     # Implementation Plan (formerly Section 5 here) has been moved to the
     # second-to-last page, beneath the Advisor signature card. See the
     # ADVISOR INFO + IMPLEMENTATION block further down.
+    #
+    # Advisor Notes (formerly Section 6 here, on its own page) has also
+    # been moved to the second-to-last page where it now sits between the
+    # Your Advisor signature card and the Implementation Plan, per
+    # advisor request — keeps the human-context narrative directly
+    # adjacent to "who said it" and "what's next."
 
     # ═══════════════════════════════════════════════════════════
-    # ADVISOR NOTES
+    # SECOND-TO-LAST PAGE — Advisor Info → Notes → Implementation
     # ═══════════════════════════════════════════════════════════
-    if sections.get("notes", True):
-        _notes_block = []
-        _notes_block.append(Spacer(1, 0.15*inch))
-        _notes_block.append(section_header("Section 6", "Advisor Notes"))
-        _notes = (proposal.get("advisor_notes") or "").strip()
-        if _notes:
-            _notes_block.append(Paragraph(_notes, body))
-        else:
-            _notes_block.append(Paragraph(
-                "<i>No additional notes were attached to this proposal version.</i>",
-                body_small,
-            ))
-        story.append(KeepTogether(_notes_block))
-
-    # ═══════════════════════════════════════════════════════════
-    # SECOND-TO-LAST PAGE — Advisor Info (top) + Implementation (below)
-    # ═══════════════════════════════════════════════════════════
-    # The signature card that previously trailed the Advisor Notes block
-    # has been promoted to the top of its own page, with the Implementation
-    # Plan moved underneath it. Layout per advisor request: clear "who's
-    # accountable" identification visible alongside the action plan, on the
-    # page right before the methodology + disclosures.
     _has_photo = os.path.exists(ADVISOR_PHOTO_PATH)
     _show_advisor_card = (_has_photo or _has_any_firm_text)
+    _show_notes = sections.get("notes", True)
     _show_implementation = sections.get("proposals", True)
 
-    if _show_advisor_card or _show_implementation:
+    if _show_advisor_card or _show_notes or _show_implementation:
         story.append(PageBreak())
 
+        # ── Build all three sections into a single KeepTogether block ──
+        # Per advisor request: advisor info, advisor notes, and implementation
+        # plan must all appear on ONE page (not split across two). Wrapping
+        # the trio in a single KeepTogether instructs ReportLab to evaluate
+        # them as one unit — if the whole thing doesn't fit on the current
+        # page, it'll start fresh on the next, but the three sections won't
+        # split apart from each other.
+        #
+        # Spacers are kept tight (0.12-0.15") so the trio comfortably fits
+        # in a single page's vertical budget (~9" of usable space after
+        # margins). With aggressive trimming the page reads:
+        #   Section 6 header + sig card  (~1.7")
+        #   Section 7 header + notes     (~1.0" empty / ~2-4" with content)
+        #   Section 8 header + 5-row tbl (~2.2")
+        #   ── plus ~0.4" of inter-section spacers
+        # Total: ~5.3"-7.3" depending on notes length. Fits comfortably.
+        _combined_block = []
+
         if _show_advisor_card:
-            story.append(section_header("Section 7", "Your Advisor"))
+            _combined_block.append(section_header("Section 6", "Your Advisor"))
 
             if _has_photo:
                 try:
@@ -6464,19 +10707,33 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
             )
             _sig_card.setStyle(TableStyle([
                 ("VALIGN",       (0,0), (-1,-1), "TOP"),
-                ("LEFTPADDING",  (0,0), (-1,-1), 12),
-                ("RIGHTPADDING", (0,0), (-1,-1), 12),
-                ("TOPPADDING",   (0,0), (-1,-1), 12),
-                ("BOTTOMPADDING",(0,0), (-1,-1), 12),
-                ("BOX",          (0,0), (-1,-1), 0.6, BORDER),
+                ("LEFTPADDING",  (0,0), (-1,-1), 10),
+                ("RIGHTPADDING", (0,0), (-1,-1), 10),
+                ("TOPPADDING",   (0,0), (-1,-1), 8),
+                ("BOTTOMPADDING",(0,0), (-1,-1), 8),
+                ("BOX",          (0,0), (-1,-1), 1.0, NAVY),
                 ("BACKGROUND",   (0,0), (-1,-1), BG_LIGHT),
             ]))
-            story.append(KeepTogether([Spacer(1, 0.10*inch), _sig_card]))
+            _combined_block.append(Spacer(1, 0.06*inch))
+            _combined_block.append(_sig_card)
+
+        if _show_notes:
+            # Advisor Notes — sits between the advisor signature card and
+            # the implementation plan. Same content as before; just relocated.
+            _combined_block.append(Spacer(1, 0.18*inch))
+            _combined_block.append(section_header("Section 7", "Advisor Notes"))
+            _notes = (proposal.get("advisor_notes") or "").strip()
+            if _notes:
+                _combined_block.append(Paragraph(_notes, body))
+            else:
+                _combined_block.append(Paragraph(
+                    "<i>No additional notes were attached to this proposal version.</i>",
+                    body_small,
+                ))
 
         if _show_implementation:
-            _impl_block = []
-            _impl_block.append(Spacer(1, 0.25*inch))
-            _impl_block.append(section_header("Section 8", "Implementation Plan"))
+            _combined_block.append(Spacer(1, 0.18*inch))
+            _combined_block.append(section_header("Section 8", "Implementation Plan"))
             impl_rows = [
                 ["Stage", "Cadence", "Action"],
                 ["Initial Funding", "Day 0",
@@ -6502,87 +10759,19 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                 ("VALIGN",       (0,0), (-1,-1), "TOP"),
                 ("LEFTPADDING",  (0,0), (-1,-1), 8),
                 ("RIGHTPADDING", (0,0), (-1,-1), 8),
-                ("TOPPADDING",   (0,0), (-1,-1), 6),
-                ("BOTTOMPADDING",(0,0), (-1,-1), 6),
+                ("TOPPADDING",   (0,0), (-1,-1), 5),
+                ("BOTTOMPADDING",(0,0), (-1,-1), 5),
                 ("ROWBACKGROUNDS",(0,1), (-1,-1), [WHITE, BG_SOFT]),
-                ("BOX",          (0,0), (-1,-1), 0.5, BORDER),
+                ("BOX",          (0,0), (-1,-1), 1.0, NAVY),
                 ("LINEBELOW",    (0,0), (-1,0), 1.2, ACCENT),
             ]))
-            _impl_block.append(tbl)
-            story.append(KeepTogether(_impl_block))
+            _combined_block.append(tbl)
 
-    # ═══════════════════════════════════════════════════════════
-    # OPTIONAL — FEE COMPARISON TABLE (own page)
-    # ═══════════════════════════════════════════════════════════
-    # When the advisor ticks "Fee comparison table" in the section picker,
-    # render the table on its own page so the client can study it without
-    # the visual weight of disclosure paragraphs around it. The table
-    # itself stays in the disclosures section as well (smaller, tighter)
-    # for compliance — this version is the larger comparison-focused one.
-    if sections.get("fee_comparison", False):
-        story.append(PageBreak())
-        story.append(section_header("Section 9", "Fee Comparison"))
+        # Single KeepTogether for all three sections so ReportLab evaluates
+        # them as a unit. If the unit doesn't fit, it moves to next page
+        # whole — but the three sections won't split apart.
+        story.append(KeepTogether(_combined_block))
 
-        _adv_fee_pct_for_compare = _resolve_advisory_fee_pct(
-            proposal, client_profile, _firm_settings,
-        )
-
-        story.append(Paragraph(
-            f"This table illustrates how different annual advisory fee levels "
-            f"affect the growth of a hypothetical $100 starting balance over "
-            f"common time horizons. Your firm's fee of "
-            f"<b>{_adv_fee_pct_for_compare:.2f}%</b> is shown alongside "
-            f"industry benchmark levels (0%, 0.75%, 1%, 1.5%, 2%, 2.5%) "
-            f"so you can compare. All figures assume a 7% gross annual return "
-            f"compounded monthly. Actual returns will differ.",
-            body,
-        ))
-        story.append(Spacer(1, 0.15*inch))
-
-        # Build a fee table that includes the firm's actual rate alongside
-        # the standard benchmarks. Inserts the firm rate in sorted order so
-        # the table reads as a smooth gradient. If the firm rate matches a
-        # benchmark exactly (e.g. 1.00%), no duplicate is inserted.
-        _benchmark_fees = [0.0, 0.75, 1.0, 1.5, 2.0, 2.5]
-        _all_fees = sorted(set(_benchmark_fees + [round(_adv_fee_pct_for_compare, 2)]))
-        _fee_rows_full = _fee_impact_table_data(fee_levels=_all_fees)
-
-        # Highlight the firm's row by inserting an asterisk marker into the
-        # fee column. ReportLab will pick it up via Paragraph rendering;
-        # for plain string cells we just append " ←" so the row stands out.
-        _firm_fee_str = f"{_adv_fee_pct_for_compare:.2f}%"
-        for i, row in enumerate(_fee_rows_full):
-            if i > 0 and row[0] == _firm_fee_str:
-                row[0] = f"{_firm_fee_str}  ★"
-
-        _fee_tbl_full = Table(
-            _fee_rows_full,
-            colWidths=[0.95*inch] + [1.05*inch] * (len(_fee_rows_full[0]) - 1),
-        )
-        _fee_tbl_full.setStyle(TableStyle([
-            ("BACKGROUND",    (0, 0), (-1, 0), NAVY),
-            ("TEXTCOLOR",     (0, 0), (-1, 0), WHITE),
-            ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("ALIGN",         (0, 0), (-1, -1), "RIGHT"),
-            ("ALIGN",         (0, 0), (0, -1),  "LEFT"),
-            ("FONTSIZE",      (0, 0), (-1, -1), 9),
-            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING",   (0, 0), (-1, -1), 8),
-            ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
-            ("TOPPADDING",    (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("ROWBACKGROUNDS",(0, 1), (-1, -1), [WHITE, BG_SOFT]),
-            ("BOX",           (0, 0), (-1, -1), 0.5, BORDER),
-            ("LINEBELOW",     (0, 0), (-1, 0),  1.2, ACCENT),
-        ]))
-        story.append(_fee_tbl_full)
-        story.append(Spacer(1, 0.10*inch))
-        story.append(Paragraph(
-            "<i>★ marks your firm's actual fee. Performance figures are "
-            "hypothetical and for illustration only. Past performance does "
-            "not guarantee future results.</i>",
-            caption,
-        ))
 
     # ═══════════════════════════════════════════════════════════
     # FINAL PAGE — Methodology + Disclosures
@@ -6640,7 +10829,7 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         ("TOPPADDING",    (0,0), (-1,-1), 6),
         ("BOTTOMPADDING", (0,0), (-1,-1), 6),
         ("LINEBELOW",     (0,0), (-1,-1), 0.4, BORDER_SOFT),
-        ("BOX",           (0,0), (-1,-1), 0.5, BORDER),
+        ("BOX",           (0,0), (-1,-1), 1.0, NAVY),
     ]))
     story.append(gl)
 
@@ -6711,16 +10900,15 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         body_small,
     ))
 
-    story.append(Spacer(1, 0.2*inch))
-    story.append(thin_rule(BORDER, 0.5))
-    story.append(Paragraph(
-        f"Proposal <b>{proposal.get('version_id','—')}</b> &nbsp;·&nbsp; "
-        f"Prepared for <b>{client_profile.get('client_name','—')}</b> &nbsp;·&nbsp; "
-        f"Generated <b>{_dt.now().strftime('%B %d, %Y at %I:%M %p')}</b>",
-        caption,
-    ))
+    # NOTE: the "Proposal v… · Prepared for … · Generated …" trailing footer
+    # credit that previously rendered here was removed May 2026. The disclosure
+    # paragraphs above were tall enough to overflow that final block onto an
+    # otherwise-empty trailing page (showing only the footer credit on a blank
+    # page). The same identifying info already appears on every page in the
+    # page footer ("Confidential — Client · Prepared Date" + "Page N"), so
+    # the standalone block was redundant.
 
-    doc.build(story, onFirstPage=_on_first_page, onLaterPages=_on_page)
+    doc.build(story)
     buf.seek(0)
     return buf.getvalue()
 
@@ -7127,23 +11315,38 @@ def risk_color(score):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def security_risk_score(ticker):
-    """Compute annualized vol and max drawdown for a single ticker over 3 years.
+    """Compute annualized vol and max drawdown for a single ticker over 10 years.
 
     Cached for 1 hour: this function gets called many times per render (PCM
     rows, optimizer tier gauges, PDF holdings table) for the same tickers.
     Caching here eliminates 80%+ of redundant price fetches and makes the
     optimizer tab feel snappy after the first load.
+
+    Window: 10 years. The recalibration that anchors SPY at score ~65 in
+    shared.py was tuned to 10-year vol (~17%) and 10-year max drawdown
+    (~34% — COVID 2020 was 34%). Previously this function used a 3-year
+    window which produced lower vol numbers (~14%) and shallower drawdowns
+    (~11%, no major crashes in 2023-2026), giving SPY a score around
+    53-58 instead of the calibrated ~65. Aligning this window to the
+    shared.py anchor fixes the mismatch across every score that flows
+    from security_risk_score (single-ticker tables, PCM weighted scores,
+    Optimizer tier gauges, PDF holdings table risk numbers).
     """
     try:
         end_dt   = date.today()
-        start_dt = end_dt - relativedelta(years=3)
+        start_dt = end_dt - relativedelta(years=10)
 
-        # get_prices returns a DataFrame with ticker symbol as the column name
-        # (NOT "Close", and NOT a MultiIndex — that's flattened in get_prices).
-        # The previous version had unreachable MultiIndex/"Close" branches that
-        # only worked by accident via the iloc[:,0] fallback.
-        raw, _src = get_prices([ticker], start_dt, end_dt)
-        if raw is None or raw.empty:
+        # Use proxy-stitched prices so short-history tickers (SGOV, FBTC,
+        # etc.) get back-filled with their proxy's older history. Matches
+        # how every other scoring path in the app fetches data — without
+        # proxies, a short-history ticker would only score against its own
+        # limited window and produce a different number than the same
+        # ticker scored elsewhere.
+        raw, _ = get_prices_with_proxies(
+            (ticker,), str(start_dt), str(end_dt),
+            min_days=max(60, 2400),  # ~10yr business days
+        )
+        if raw is None or (hasattr(raw, "empty") and raw.empty):
             return None
 
         # Pick the ticker's column; defensive fallback to first column if missing
@@ -10916,7 +15119,7 @@ with main_tab3:
             # (per advisor preference):
             #   Option 1 = Proposed (balanced — Step 1 holdings verbatim)
             #   Option 2 = Slightly more conservative (corridor min-vol)
-            #   Option 3 = Slightly more aggressive (corridor max-Sharpe)
+            #   Option 3 = Slightly more aggressive (corridor max-return)
             # The Proposed option is presented first because that's the
             # default starting point the advisor will most often build from;
             # the conservative/aggressive variants are alternatives.
@@ -10991,13 +15194,97 @@ with main_tab3:
                     prop = _working[_tk]
                     st.caption(prop["rationale"])
 
-                    # ── Save-to-profile checkbox (per-tier flag) ─────
-                    prop["save_to_profile"] = st.checkbox(
-                        "💾 Save this tier as a recommended portfolio on the client's profile",
-                        value=prop.get("save_to_profile", False),
-                        key=f"save_flag_{_ck}_{_tk}",
-                        help="When checked, this tier will appear in the Option #1/2/3 dropdowns below as a recommended portfolio.",
+                    # ── Save this tier to my saved portfolios ────────
+                    # Replaces the prior save-to-profile checkbox. Writes
+                    # the tier's current tickers + weights to SAVE_FILE
+                    # (the same store the Analyzer's "Save Portfolio"
+                    # writes to via _shared_update_json), so the tier
+                    # then appears as a 📁 option in the Step 2 ·
+                    # Select Final Proposal for Report dropdowns below
+                    # as well as throughout the Analyzer.
+                    #
+                    # Pattern mirrors the Analyzer save row at line
+                    # ~11867: text_input + button, deferred name-clear
+                    # on a successful save (Streamlit forbids widget-key
+                    # writes after the widget has rendered, so the actual
+                    # clear is staged via a session_state flag and runs
+                    # at the top of the next rerun before the widget
+                    # instantiates).
+                    _save_name_key = f"save_to_list_name_{_ck}_{_tk}"
+                    _clear_flag_key = f"_clear_{_save_name_key}_next"
+                    if st.session_state.pop(_clear_flag_key, False):
+                        st.session_state[_save_name_key] = ""
+                    _default_save_name = (
+                        f"Recommended — {prop.get('label', _tk.title())}"
                     )
+                    _name_col, _btn_col = st.columns([2, 1])
+                    with _name_col:
+                        _save_name = st.text_input(
+                            "Save name",
+                            value=st.session_state.get(_save_name_key,
+                                                         _default_save_name),
+                            key=_save_name_key,
+                            label_visibility="collapsed",
+                            placeholder=_default_save_name,
+                        )
+                    with _btn_col:
+                        _do_save = st.button(
+                            "💾 Save to my portfolios",
+                            key=f"save_to_list_btn_{_ck}_{_tk}",
+                            use_container_width=True,
+                            help=(
+                                "Saves this tier's current tickers + "
+                                "weights to your saved portfolios. It "
+                                "will then appear as a 📁 option in "
+                                "the Step 2 dropdowns below and in the "
+                                "Analyzer."
+                            ),
+                        )
+                    if _do_save:
+                        _name_clean = (_save_name or "").strip()
+                        _tier_tks = list(prop.get("tickers", []) or [])
+                        _tier_wts_raw = list(prop.get("weights", []) or [])
+                        if not _name_clean:
+                            st.warning("Enter a name above before saving.")
+                        elif not _tier_tks or not _tier_wts_raw:
+                            st.warning(
+                                "This tier has no tickers/weights yet."
+                            )
+                        else:
+                            _w_total = sum(float(w or 0)
+                                           for w in _tier_wts_raw)
+                            if _w_total <= 0:
+                                st.warning(
+                                    "Weights must sum to a positive total."
+                                )
+                            else:
+                                # Tier weights are already stored as
+                                # decimals (0.0-1.0) on the proposal,
+                                # but normalize defensively so the saved
+                                # schema matches what
+                                # load_portfolio_into_session expects.
+                                _decimals = [
+                                    round(float(w or 0) / _w_total, 6)
+                                    for w in _tier_wts_raw
+                                ]
+                                _payload = {
+                                    "tickers": _tier_tks,
+                                    "weights": _decimals,
+                                    "saved_at": datetime.now().isoformat(
+                                        timespec="minutes"),
+                                }
+                                _shared_update_json(
+                                    SAVE_FILE,
+                                    lambda d, n=_name_clean, p=_payload:
+                                        d.update({n: p}),
+                                )
+                                st.success(
+                                    f"✅ Saved as **{_name_clean}** — "
+                                    "available as a 📁 option in the "
+                                    "Step 2 dropdowns below."
+                                )
+                                st.session_state[_clear_flag_key] = True
+                                st.rerun()
 
                     # ── Live tier: gauge + pie on left, editable key on right ─
                     _live_tks = prop.get("tickers", [])
@@ -11222,7 +15509,7 @@ with main_tab3:
         #   Option 1 → Subject Portfolio (Step 1 holdings verbatim)
         #              — falls back to Balanced tier if subject not available
         #   Option 2 → Recommended Conservative tier (corridor min-vol)
-        #   Option 3 → Recommended Aggressive tier (corridor max-Sharpe)
+        #   Option 3 → Recommended Aggressive tier (corridor max-return)
         _slot_defaults_priority = {
             "option_1": [("subject", None), ("recommended", "balanced")],
             "option_2": [("recommended", "conservative")],

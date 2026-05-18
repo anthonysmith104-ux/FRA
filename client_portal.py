@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import json
+import math
 from datetime import datetime, date
 from typing import Optional
 
@@ -995,66 +996,121 @@ def pulse_line(color: str = None, width: int = 56, height: int = 14,
 
 
 def make_risk_ring(score: int, height: int = 320) -> str:
-    """Crest medallion risk badge — gold concentric rings + serif numeral.
+    """Profile-style risk badge — circular, matches the advisor PDF's
+    page-1 Alignment Summary PROFILE badge.
 
-    This used to return a Plotly figure (RiskRing). Now it returns an HTML
-    string containing an SVG crest badge that matches the design system's
-    crest_badge spec. The visual is the same kind of "circular emblem with
-    the risk number inside" but with the navy + gold + serif aesthetic
-    of the wealth-management brand rather than the clinical / dashboard
-    look.
+    Layout (concentric, from outside in):
+      • Thick navy outer ring (3px)
+      • Thin gold inner ring (0.8px)
+      • Cream fill
+      • Gauge gradient arc (green→amber→red) along the top 120° of
+        the inner ring, with a navy tick at the client's score/99
+        position
+      • "PROFILE" eyebrow + big serif numeral + "/99" footer stacked
+        vertically inside the rings
+      • Score band label (e.g. "Moderate") below the badge in serif
+        navy
 
-    Call sites use st.markdown(html, unsafe_allow_html=True) instead of
-    st.plotly_chart. The `height` argument is interpreted as the outer
-    diameter in pixels and the inner content scales proportionally.
+    The earlier crest version used double gold rings without the gauge
+    chrome. This version brings the client portal into visual parity
+    with the advisor PDF's PROFILE badge so the two views read as the
+    same brand system — clients see the same anchor visual whether
+    they're in the portal or reading the PDF proposal.
 
-    Returns an HTML string (not a Plotly figure).
+    The square chromed variant (with the gauge stripe along the TOP
+    EDGE rather than the inner ring arc) is reserved for portfolio
+    badges in the advisor PDF and is NOT used in the client portal —
+    the client portal only ever surfaces the profile, not a portfolio.
+
+    The `height` argument is interpreted as the outer diameter scale
+    factor; the rendered SVG is `int(height * 0.625)` pixels square,
+    preserving the convention from the previous implementation so
+    callers don't need to change.
     """
     label, _, _ = score_band(score)
-    navy   = resolve_color_key("brand.primary.navy", SETTINGS)
-    gold   = resolve_color_key("brand.accent.gold", SETTINGS)
-    cream  = resolve_color_key("brand.surface.cream", SETTINGS)
-    muted  = resolve_color_key("brand.text.muted", SETTINGS)
+    navy  = resolve_color_key("brand.primary.navy",  SETTINGS)
+    gold  = resolve_color_key("brand.accent.gold",   SETTINGS)
+    cream = resolve_color_key("brand.surface.cream", SETTINGS)
+    muted = resolve_color_key("brand.text.muted",    SETTINGS)
 
-    # Outer diameter and proportional inner ring. The crest spec uses
-    # 140 outer / 124 inner; scale both proportionally with the
-    # caller-supplied height so the badge fits whatever space it's in
-    # without redesigning. 320 → 200 size is a good dashboard default.
-    outer = int(height * 0.625)   # 200 for height=320
-    inner = int(outer * 0.886)    # 177 for outer=200
-    num_pt = int(outer * 0.42)    # 84pt for outer=200
-    eyebrow_pt = max(9, int(outer * 0.065))   # ~13pt for outer=200
-    of99_pt = max(10, int(outer * 0.07))      # ~14pt for outer=200
+    # Rendered SVG size — same scaling convention as the previous
+    # crest implementation (height=320 → 200px diameter).
+    px = int(height * 0.625)
 
-    # Two concentric gold rings (the crest "ring within a ring"
-    # signature) with the score and label centered inside.
+    # Tick position on the 120° gauge arc (math 30°–150°, where 30° is
+    # the right end / aggressive side and 150° is the left / conservative
+    # side). Score 0 → 150°, score 99 → 30°.
+    s = max(1, min(99, int(score)))
+    tick_math_deg = 150.0 - (s / 99.0) * 120.0
+    _rad = math.radians(tick_math_deg)
+    _cos = math.cos(_rad)
+    _sin = math.sin(_rad)
+    _cx, _cy = 100.0, 100.0
+    # Place the tick straddling the inner ring (r=86) by 6px each side
+    # so it reads as a small navy notch on the gauge.
+    _r_inner = 80.0
+    _r_outer = 92.0
+    _tx_in  = _cx + _r_inner * _cos
+    _ty_in  = _cy - _r_inner * _sin
+    _tx_out = _cx + _r_outer * _cos
+    _ty_out = _cy - _r_outer * _sin
+
+    # Unique gradient ID per-render so multiple badges on one page
+    # (e.g. comparing profiles, or A/B mocks) don't collide on the
+    # same <defs>.
+    _grad_id = f"profile_gauge_{s}"
+
     return (
         f'<div style="display:flex;flex-direction:column;align-items:center;'
         f'            justify-content:center;padding:8px 0">'
-        f'  <div style="width:{outer}px;height:{outer}px;border-radius:50%;'
-        f'              border:2.5px solid {gold};background:{cream};'
-        f'              display:flex;align-items:center;justify-content:center;'
-        f'              flex-shrink:0">'
-        f'    <div style="width:{inner}px;height:{inner}px;border-radius:50%;'
-        f'                border:0.5px solid {gold};'
-        f'                display:flex;flex-direction:column;'
-        f'                align-items:center;justify-content:center">'
-        f'      <div style="font-size:{eyebrow_pt}px;letter-spacing:0.18em;'
-        f'                  text-transform:uppercase;color:{gold};'
-        f'                  font-weight:500;margin-bottom:4px">'
-        f'        Risk number'
-        f'      </div>'
-        f'      <div style="font-family:\'Source Serif Pro\',Georgia,serif;'
-        f'                  font-size:{num_pt}px;font-weight:500;color:{navy};'
-        f'                  line-height:0.95;letter-spacing:-0.04em">'
-        f'        {int(score)}'
-        f'      </div>'
-        f'      <div style="font-size:{of99_pt}px;color:{muted};'
-        f'                  margin-top:6px;letter-spacing:0.04em">'
-        f'        / 99'
-        f'      </div>'
-        f'    </div>'
-        f'  </div>'
+        f'  <svg viewBox="0 0 200 200" width="{px}" height="{px}" '
+        f'       xmlns="http://www.w3.org/2000/svg" '
+        f'       role="img" aria-label="Risk profile {int(score)} of 99">'
+        f'    <defs>'
+        f'      <linearGradient id="{_grad_id}" x1="0" y1="0" x2="1" y2="0">'
+        f'        <stop offset="0"   stop-color="#97C459"/>'
+        f'        <stop offset="0.5" stop-color="#FAC775"/>'
+        f'        <stop offset="1"   stop-color="#F09595"/>'
+        f'      </linearGradient>'
+        f'    </defs>'
+        # Cream fill + thick navy outer ring (the brand-anchor stroke)
+        f'    <circle cx="100" cy="100" r="92" fill="{cream}" '
+        f'            stroke="{navy}" stroke-width="3"/>'
+        # Thin gold inner ring — the secondary brand stroke; sits just
+        # inside the navy and gives the badge the double-ring chrome
+        # that mirrors the advisor PDF.
+        f'    <circle cx="100" cy="100" r="86" fill="none" '
+        f'            stroke="{gold}" stroke-width="0.8"/>'
+        # Gauge arc — top 120° of the inner ring, green→amber→red
+        # gradient via the linearGradient defined above. The arc
+        # endpoints (25.5, 57) and (174.5, 57) are the points where
+        # the inner ring (r=86) crosses the math 150°/30° rays.
+        f'    <path d="M 25.5 57 A 86 86 0 0 1 174.5 57" '
+        f'          fill="none" stroke="url(#{_grad_id})" '
+        f'          stroke-width="6" stroke-linecap="butt"/>'
+        # Navy tick at the score's position on the arc, straddling
+        # the inner-ring radius by ±6 so it reads as a clear notch.
+        f'    <line x1="{_tx_in:.2f}" y1="{_ty_in:.2f}" '
+        f'          x2="{_tx_out:.2f}" y2="{_ty_out:.2f}" '
+        f'          stroke="{navy}" stroke-width="2.4" '
+        f'          stroke-linecap="round"/>'
+        # PROFILE eyebrow — navy bold sans-serif, sits in the upper
+        # third of the inner area.
+        f'    <text x="100" y="82" text-anchor="middle" '
+        f'          font-family="Helvetica, Arial, sans-serif" '
+        f'          font-size="13" font-weight="bold" '
+        f'          letter-spacing="1.5" fill="{navy}">PROFILE</text>'
+        # Score numeral — big navy serif, vertically centered.
+        f'    <text x="100" y="140" text-anchor="middle" '
+        f'          font-family="\'Source Serif Pro\', Georgia, serif" '
+        f'          font-size="58" fill="{navy}">{int(score)}</text>'
+        # /99 footer — small gray helvetica below the numeral.
+        f'    <text x="100" y="162" text-anchor="middle" '
+        f'          font-family="Helvetica, Arial, sans-serif" '
+        f'          font-size="11" fill="{muted}">/ 99</text>'
+        f'  </svg>'
+        # Band label below the badge (e.g. "Moderate") — preserved
+        # from the previous implementation, in serif navy.
         f'  <div style="font-family:\'Source Serif Pro\',Georgia,serif;'
         f'              font-size:1.05rem;color:{navy};font-weight:500;'
         f'              letter-spacing:0.02em;margin-top:14px">'
@@ -2056,7 +2112,8 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
     # as the previous teal-square icon.
     company_logo_svg = logo_mark(THEME["primary"], 22)
     st.markdown(
-        f'<div style="background:{THEME["surface2"]};border:1px solid {THEME["line"]};'
+        f'<div style="background:{THEME["surface2"]};'
+        f'            border:1.5px solid {THEME["primary"]};'
         f'            border-radius:14px;padding:14px 16px;margin-top:18px;'
         f'            display:flex;align-items:center;gap:14px">'
         f'  <div style="flex-shrink:0">{a["photo_svg"]}</div>'
@@ -2125,17 +2182,23 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
         ), unsafe_allow_html=True)
 
     # ── Row 2: Net Worth | Cash Position ────────────────────────────────────
+    # When the client hasn't entered any holdings yet, show "—" rather
+    # than "$0" so the tile reads as "no data yet" instead of "your net
+    # worth is literally zero" — accurate AND avoids accidental alarm
+    # before onboarding is complete.
     g3, g4 = st.columns(2)
     with g3:
         nw_delta  = (fmt_pct(vitals["gain_pct"]) if vitals["cost_basis"] else "")
         st.markdown(_tile(
-            "Net Worth", fmt_money(vitals["net_worth"]),
+            "Net Worth",
+            fmt_money(vitals["net_worth"]) if holdings else "—",
             f"{len(holdings)} positions" if holdings else "no positions yet",
             "", delta=nw_delta,
         ), unsafe_allow_html=True)
     with g4:
         st.markdown(_tile(
-            "Cash Position", fmt_money(vitals["cash"]),
+            "Cash Position",
+            fmt_money(vitals["cash"]) if holdings else "—",
             f"{cash_pct:.1f}% of portfolio" if vitals["net_worth"]
                 else "no positions yet",
             "",
