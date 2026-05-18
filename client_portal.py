@@ -238,9 +238,16 @@ if ADVISOR_PHOTO_DATA_URI:
         '</svg>'
     )
 
+# Browser-tab favicon. Streamlit's page_icon accepts an emoji, a URL, a
+# PIL Image, or a local file path. Prefer the firm's own logo at
+# firm_logo.png (same asset already used inline via FIRM_LOGO_DATA_URI)
+# so the tab favicon matches the in-app brand. Falls back to the
+# stethoscope emoji only if the logo file is missing — keeps the app
+# bootable in environments where branding assets aren't deployed yet.
+_FAVICON_PATH = _data_path("firm_logo.png")
 st.set_page_config(
     page_title=f'{SETTINGS["firm"]["name"]} · Risk Profile',
-    page_icon="🩺",
+    page_icon=_FAVICON_PATH if os.path.exists(_FAVICON_PATH) else "🩺",
     layout="centered",
 )
 
@@ -2162,7 +2169,7 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
     company_logo_svg = logo_mark(THEME["primary"], 22)
     st.markdown(
         f'<div style="background:{THEME["surface2"]};'
-        f'            border:1px solid {THEME["line"]};'
+        f'            border:1.5px solid {THEME["primary"]};'
         f'            border-radius:10px;padding:14px 16px;margin-top:18px;'
         f'            display:flex;align-items:center;gap:14px">'
         f'  <div style="flex-shrink:0">{a["photo_svg"]}</div>'
