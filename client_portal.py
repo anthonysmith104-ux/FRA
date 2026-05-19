@@ -327,7 +327,7 @@ st.markdown(
 
         .fr-card {{
             background: {THEME['surface2']};
-            border: 1px solid {THEME['line']};
+            border: 1.5px solid {THEME['primary']};
             border-radius: 18px;
             padding: 22px 22px;
             margin-bottom: 16px;
@@ -342,7 +342,7 @@ st.markdown(
         }}
         .fr-vital {{
             background: {THEME['surface2']};
-            border: 1px solid {THEME['line']};
+            border: 1.5px solid {THEME['primary']};
             border-radius: 14px;
             padding: 14px 14px;
             min-height: 102px;
