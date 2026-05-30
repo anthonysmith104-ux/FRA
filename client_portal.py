@@ -168,7 +168,59 @@ def _load_firm_settings_into_advisor():
     if advisor.get("bio"):     ADVISOR["bio"]     = advisor["bio"].strip()
 
 
+def _overlay_shared_identity():
+    """Overlay the EDITABLE firm/advisor identity from the shared GitHub store
+    on top of the committed defaults.
+
+    load_settings() (mrb_design) only reads the local committed
+    firm_settings.json — it never touches data_store — so edits the advisor
+    makes in the advisor app's Firm Branding panel (which writes to the shared
+    store) never reached the portal. This pulls those fields from the same
+    shared store and applies them last, so the panel actually drives what the
+    client sees. Design tokens (brand/typography/copy) still come from the
+    committed file via load_settings(); only identity fields are overlaid.
+
+    Handles both the v2.4 nested schema (firm.* / advisor.*) written by the
+    patched advisor app and the legacy flat schema (advisor_name, advisor_bio,
+    …) in case an older write is still in the store. Falls back silently to
+    the committed values if the shared store is unavailable."""
+    try:
+        shared = _shared_load_json("firm_settings.json", default={}) or {}
+    except Exception:
+        return
+    if not isinstance(shared, dict):
+        return
+
+    s_firm = shared.get("firm", {}) or {}
+    s_adv  = shared.get("advisor", {}) or {}
+
+    def _set(key, val):
+        if val and str(val).strip():
+            ADVISOR[key] = str(val).strip()
+
+    # v2.4 nested schema (what the patched advisor app writes)
+    _set("firm",    s_firm.get("name"))
+    _set("website", s_firm.get("website"))
+    _set("address", s_firm.get("address"))
+    _set("name",    s_adv.get("name"))
+    _set("title",   s_adv.get("title"))
+    _set("email",   s_adv.get("email"))
+    _set("phone",   s_adv.get("phone"))
+    _set("bio",     s_adv.get("bio"))
+
+    # Legacy flat schema (pre-patch advisor app), applied last as a fallback.
+    _set("firm",    shared.get("firm_name"))
+    _set("website", shared.get("firm_website"))
+    _set("address", shared.get("firm_address"))
+    _set("name",    shared.get("advisor_name"))
+    _set("title",   shared.get("advisor_title"))
+    _set("email",   shared.get("advisor_email"))
+    _set("phone",   shared.get("advisor_phone"))
+    _set("bio",     shared.get("advisor_bio"))
+
+
 _load_firm_settings_into_advisor()
+_overlay_shared_identity()
 
 
 # ── Logo / photo asset loading ────────────────────────────────────────────────
