@@ -497,7 +497,7 @@ st.markdown(
         }}
         .stAlert {{
             background: {THEME['surface']} !important;
-            border: 1px solid {THEME['line']} !important;
+            border: 1.5px solid {THEME['primary']} !important;
             border-left: 3px solid {THEME['primary']} !important;
             color: {THEME['ink']} !important;
             border-radius: 12px !important;
@@ -505,7 +505,7 @@ st.markdown(
         [data-testid="stDataFrame"] {{
             background: {THEME['surface']};
             border-radius: 14px;
-            border: 1px solid {THEME['line']};
+            border: 1.5px solid {THEME['primary']};
         }}
 
         .js-plotly-plot, .plot-container {{ background: transparent !important; }}
@@ -2601,7 +2601,7 @@ def _render_plan_tab(ck: str):
                        if total_target else 0)
         st.markdown(
             f'<div style="margin-top:14px;background:{THEME["surface2"]};'
-            f'            border:1px solid {THEME["line"]};border-radius:14px;'
+            f'            border:1.5px solid {THEME["primary"]};border-radius:14px;'
             f'            padding:14px 16px">'
             f'  <div style="display:flex;justify-content:space-between;'
             f'              align-items:baseline">'
@@ -2712,7 +2712,7 @@ def _render_plan_tab(ck: str):
 
     st.markdown(
         f'<div style="height:10px"></div>'
-        f'<div style="background:{THEME["surface2"]};border:1px solid {THEME["line"]};'
+        f'<div style="background:{THEME["surface2"]};border:1.5px solid {THEME["primary"]};'
         f'            border-radius:14px;padding:14px 16px">'
         f'  <div style="display:flex;justify-content:space-between;'
         f'              align-items:baseline">'
@@ -3275,7 +3275,7 @@ def render_edit_holdings():
     new_total = new_shares * new_cost
     a4.markdown(
         f'<div style="margin-top:30px;padding:8px 12px;'
-        f'            background:{THEME["surface2"]};border:1px solid {THEME["line"]};'
+        f'            background:{THEME["surface2"]};border:1.5px solid {THEME["primary"]};'
         f'            border-radius:10px;font-weight:600;color:{THEME["primary"]};'
         f'            font-size:0.85rem">'
         f'Total: {fmt_money(new_total)}</div>',

@@ -740,6 +740,178 @@ def save_firm_settings(settings: dict) -> None:
     shared GitHub repo (where the portal can read it)."""
     _shared_save_json(FIRM_SETTINGS_FILE, settings)
 
+
+# ── PDF CONTENT (advisor-customizable closing sections) ───────────
+# The closing sections of the client proposal PDF — Advisor Notes,
+# Implementation Plan, How This Proposal Was Built, Key Definitions
+# and Disclosures — are editable from the "PDF Content" tab.
+# Customizations persist to pdf_content.json (its OWN file, kept
+# separate from firm_settings.json so the Firm Branding save in
+# Settings — which rewrites that whole file — can't clobber them).
+# Any section the advisor hasn't customized falls back to
+# DEFAULT_PDF_CONTENT below, so an untouched install renders exactly
+# as it did before this tab existed.
+PDF_CONTENT_FILE = _data_path("pdf_content.json")
+
+DEFAULT_PDF_CONTENT = {
+    # Generic advisor note — used when an individual proposal carries
+    # no note of its own. Paragraphs are blank-line separated.
+    "advisor_notes": (
+        "Thank you for the opportunity to review your portfolio and "
+        "prepare this proposal. The recommendations on the preceding "
+        "pages reflect the risk profile and goals we discussed, and "
+        "are intended as a starting point for our conversation rather "
+        "than a final decision.\n\n"
+        "I would welcome the chance to walk through any section in "
+        "more detail and answer any questions before we move "
+        "forward. Please don't hesitate to reach out."
+    ),
+    # Implementation Plan — rows of [Stage, Cadence, Action].
+    "implementation_plan": [
+        ["Initial Funding", "Day 0",
+         "Fund account and execute initial allocation per selected "
+         "option."],
+        ["First Review", "30 days",
+         "Confirm execution, verify holdings match proposal."],
+        ["Rebalancing", "Quarterly",
+         "Drift threshold 5% per position; tax-aware rebalancing "
+         "where applicable."],
+        ["Performance Review", "Semi-Annual",
+         "Review against benchmarks; discuss changes in goals."],
+        ["Full Re-Assessment", "Annual",
+         "Update risk profile; refresh proposal if score or goals "
+         "change."],
+    ],
+    # How This Proposal Was Built — blank-line-separated paragraphs.
+    "methodology": (
+        "Each recommended portfolio is constructed using "
+        "institutional-grade optimization techniques. Allocations are "
+        "informed by risk-score-targeted equity/bond/cash splits with "
+        "priority-driven tilts applied on top.\n\n"
+        "<b>Risk-targeted base allocation</b> - a mapping from the "
+        "client's 1-99 risk score to a target equity / bond / cash "
+        "split forms the starting point.\n\n"
+        "<b>Priority tilts</b> - client-stated goals (e.g. capital "
+        "preservation, income, social impact) adjust both the "
+        "asset-class mix and the ticker universe.\n\n"
+        "<b>Holdings selection</b> - where possible, proposals use "
+        "the client's own submitted securities; gaps are filled with "
+        "broadly-diversified index ETFs."
+    ),
+    # Key Definitions — rows of [Term, Definition].
+    "key_definitions": [
+        ["Risk Number",
+         "Integer 1-99 summarizing combined risk tolerance "
+         "(willingness) and capacity (ability)."],
+        ["Equity / Bond / Cash",
+         "High-level split across growth, stability, and liquidity "
+         "objectives."],
+        ["Sharpe Ratio",
+         "Return per unit of total volatility. Values above 1.0 "
+         "indicate strong risk-adjusted performance."],
+        ["Maximum Drawdown",
+         "Largest peak-to-trough decline over the measurement "
+         "period."],
+        ["Priority Tilt",
+         "Adjustment to base allocation based on client-stated "
+         "goals."],
+    ],
+    # Disclosures — blank-line-separated paragraphs. The token
+    # {advisory_fee} is replaced with the firm's resolved advisory
+    # fee at render time.
+    "disclosures": (
+        "<b>Past performance is no guarantee of future results.</b> "
+        "Investment return and principal value of an investment will "
+        "fluctuate; therefore, you may have a gain or loss when you "
+        "sell your shares. Current performance may be higher or lower "
+        "than the performance data quoted.\n\n"
+        "<b>Net of Fees Performance.</b> Performance figures shown in "
+        "this report reflect the underlying funds' net expense ratios "
+        "but are gross of advisory fees. Your actual return would be "
+        "reduced by the firm's advisory fee of {advisory_fee} per "
+        "year, as well as any brokerage commissions, custodial costs "
+        "and other expenses.\n\n"
+        "<b>Hypothetical and Backtested Data.</b> Where the analysis "
+        "includes performance for portfolio combinations the client "
+        "did not actually hold during the measurement period, those "
+        "results are hypothetical and backtested. Such results are "
+        "achieved by retroactively applying a model to historical "
+        "data and do not represent actual trading. Forward-looking "
+        "projections (e.g., Monte Carlo) are estimates, not "
+        "guarantees.\n\n"
+        "<b>Benchmark Comparisons.</b> Where a benchmark portfolio is "
+        "shown for comparative purposes, it is illustrative only. "
+        "Indexes are unmanaged; you cannot invest directly in an "
+        "index. Benchmark performance reflects only the underlying "
+        "index or model and not the deduction of advisory fees.\n\n"
+        "<b>Limitations and Risk.</b> All investing involves risk, "
+        "including possible loss of principal. Diversification and "
+        "asset allocation do not guarantee a profit or protect "
+        "against loss. This report is informational only and does "
+        "not constitute tax, legal, or accounting advice."
+    ),
+}
+
+
+def load_pdf_content() -> dict:
+    """Return advisor-saved PDF section customizations from
+    pdf_content.json. Routes through data_store (same as
+    firm_settings.json). Returns {} if nothing is saved or on error."""
+    try:
+        val = _shared_load_json(PDF_CONTENT_FILE, default={})
+        return val if isinstance(val, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_pdf_content(content: dict) -> None:
+    """Persist PDF section customizations to pdf_content.json via
+    data_store (so the file lands in the shared GitHub repo)."""
+    _shared_save_json(PDF_CONTENT_FILE, content)
+
+
+def get_pdf_content() -> dict:
+    """Effective PDF section content: advisor customizations layered
+    over DEFAULT_PDF_CONTENT. A section the advisor hasn't customized
+    — or has cleared back to empty — falls back to its default, so the
+    PDF is unchanged until something is actually edited."""
+    custom = load_pdf_content()
+    merged = {}
+    for key, default in DEFAULT_PDF_CONTENT.items():
+        val = custom.get(key)
+        if val is None or val == "" or val == []:
+            merged[key] = default
+        else:
+            merged[key] = val
+    return merged
+
+
+def _render_pdf_prose(text, style, gap=5.76):
+    """Split advisor-edited prose into ReportLab flowables.
+
+    Paragraphs are separated by blank lines; a small Spacer (default
+    5.76pt = 0.08in) is placed between them. Bare ampersands are
+    escaped so ReportLab's mini-HTML parser doesn't choke, while
+    <b>/<i> tags are left intact so the advisor can bold lead-ins.
+    Single newlines within a paragraph become <br/> line breaks.
+
+    Paragraph/Spacer are imported here, not at module scope: the PDF
+    builder imports reportlab.platypus locally inside its own
+    function, so this module-level helper can't rely on those names
+    being in the global namespace.
+    """
+    from reportlab.platypus import Paragraph, Spacer
+    flows = []
+    for chunk in str(text).split("\n\n"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if flows:
+            flows.append(Spacer(1, gap))
+        safe = chunk.replace("&", "&amp;").replace("\n", "<br/>")
+        flows.append(Paragraph(safe, style))
+    return flows
+
 # ── POPULAR PUBLIC PORTFOLIOS ─────────────────────────────────────────────────
 # Lifted to module scope so the sidebar (which runs before the main tab body)
 # can render these as quick-load buttons. The Securities section also reads
@@ -1203,6 +1375,18 @@ _EXPENSE_RATIO_OVERRIDES = {
     # ── Money market funds ──
     "VMFXX": 0.0011, "VUSXX": 0.0009, "SPAXX": 0.0042, "FZDXX": 0.0030,
     "SWVXX": 0.0034,
+    # ── Niche / specialty ETFs added 2026-05-28 ──
+    # Tickers yfinance funds_data / AV / FMP don't reliably cover.
+    # Verified against issuer fact sheets and SEC 485BPOS filings,
+    # conservative round-up where multiple sources disagreed.
+    "VGT":  0.0009,  # Vanguard Information Technology ETF
+    "SPMO": 0.0013,  # Invesco S&P 500 Momentum ETF
+    "AVUV": 0.0025,  # Avantis US Small Cap Value
+    "AVEM": 0.0033,  # Avantis Emerging Markets Equity
+    "FBTC": 0.0025,  # Fidelity Wise Origin Bitcoin Fund
+    "UTES": 0.0049,  # Virtus Reaves Utilities ETF (active)
+    "CTA":  0.0076,  # Simplify Managed Futures Strategy (gross)
+    "MNA":  0.0077,  # NYLI Merger Arbitrage (formerly IQ Merger Arbitrage)
 }
 
 
@@ -1232,6 +1416,15 @@ def _load_er_cache():
     Returns dict keyed by ticker → {er, fetched (ISO date), source}.
     Tolerates missing/corrupt remote state by falling back to {}.
 
+    SELF-HEALING: any cached entries tagged ``source: stock-fallback``
+    are dropped at load time and the cleaned cache is persisted back.
+    Those entries represent the "I don't know — defaulting to 0.0"
+    branch for equity-classified tickers; once we added yfinance as a
+    real lookup source above the API tier, any leftover 0.0s from the
+    old fallback path were silently shadowing fresh yfinance data for
+    30 days. Filtering on load makes existing bad entries expire
+    immediately without manual cache-clear.
+
     Memoized in module attribute — data_store is hit once per process,
     then kept in memory. _save_er_cache() updates the in-memory copy too.
     """
@@ -1243,6 +1436,17 @@ def _load_er_cache():
             cache = {}
     except Exception:
         cache = {}
+    # Strip self-healing-targeted entries and persist the cleaned cache
+    # back so the next process doesn't see them either.
+    _stale = [k for k, v in cache.items()
+              if isinstance(v, dict) and v.get("source") == "stock-fallback"]
+    if _stale:
+        for _k in _stale:
+            cache.pop(_k, None)
+        try:
+            _shared_save_json(EXPENSE_RATIO_CACHE_FILE, cache)
+        except Exception:
+            pass
     _load_er_cache._cache = cache
     return cache
 
@@ -1384,6 +1588,63 @@ def _alphavantage_fetch_expense_ratio(ticker, api_key):
         if er > 0.5:
             er = er / 100.0
         return er
+    except Exception:
+        return None
+
+
+def _yfinance_fetch_expense_ratio(ticker):
+    """Fetch a fund's annual-report expense ratio via yfinance funds_data.
+
+    Reads Ticker.funds_data.fund_operations — the same fund table Yahoo
+    Finance displays. Free and unmetered (no API key, no daily quota),
+    so this sits ABOVE the Alpha Vantage / FMP tiers in
+    _expense_ratio_for_ticker. AV (25 calls/day, 12s throttle) and FMP
+    (paywalled endpoints on free tier) become genuine fallbacks rather
+    than load-bearing primary sources.
+
+    Returns a decimal expense ratio (0.0003 = 0.03%) or None.
+
+    SCALING ASSUMPTION: yfinance fund_operations is assumed to report
+    the ratio as a raw decimal fraction (VTI ~ 0.0003), matching this
+    app's internal representation — so no conversion is applied for
+    normal values. The > 0.05 guard only catches a value clearly
+    delivered as a percent figure. VERIFY after deploy: VTI must
+    resolve to ~0.0003. If VTI comes back as 0.03, yfinance is handing
+    back percent figures and the normalization needs to flip (drop the
+    guard, divide everything by 100 instead).
+    """
+    if not ticker:
+        return None
+    try:
+        import yfinance as _yf
+        _fd = getattr(_yf.Ticker(ticker), "funds_data", None)
+        if _fd is None:
+            return None
+        _ops = getattr(_fd, "fund_operations", None)
+        if _ops is None or getattr(_ops, "empty", True):
+            return None
+        # Match the expense-ratio row by substring (label-change safe)
+        _row_label = next(
+            (ix for ix in _ops.index
+             if "expense ratio" in str(ix).lower()), None)
+        if _row_label is None:
+            return None
+        _row = _ops.loc[_row_label]
+        # Prefer the fund's own column; fall back to the first column
+        _col = next(
+            (c for c in _ops.columns if str(c).upper() == ticker.upper()),
+            _ops.columns[0] if len(_ops.columns) else None)
+        if _col is None:
+            return None
+        _er = float(_row[_col])
+        # NaN guard (pandas missing values are floats that != themselves)
+        if _er != _er or _er <= 0:
+            return None
+        # Defensive: a value > 5% as a fraction is almost certainly a
+        # percent figure that slipped through — normalize it down.
+        if _er > 0.05:
+            _er = _er / 100.0
+        return _er
     except Exception:
         return None
 
@@ -1541,7 +1802,7 @@ def _resolve_av_key():
 def _expense_ratio_for_ticker(ticker):
     """Return the annual expense ratio (decimal) for a ticker.
 
-    Decision tree (Schwab JSON > shared cache > APIs > hardcoded):
+    Decision tree (curated sources > yfinance > metered APIs > hardcoded):
       1. In-session cache (per-process, fastest)
       2. Schwab model portfolios JSON (authoritative for the ~30 tickers
          in the four Schwab series — Core ETF, Core Income, Enhanced
@@ -1550,13 +1811,15 @@ def _expense_ratio_for_ticker(ticker):
       3. Stocks (via _classify_ticker) → 0.0  (no ER applies)
       4. Crypto → 0.0
       5. Curated mutual fund table (_MUTUAL_FUND_TABLE) — covers Vanguard,
-         Fidelity, etc. active funds whose ERs the Alpha Vantage endpoint
-         doesn't reliably return.
+         Fidelity, etc. active funds whose ERs the live APIs don't
+         reliably return.
       6. Shared cache via data_store (30-day TTL) — survives restarts
-      7. Alpha Vantage ETF_PROFILE → cache + return  (PRIMARY API)
-      8. FMP profile API → cache + return  (secondary API)
-      9. Hardcoded `_EXPENSE_RATIO_OVERRIDES` — last-resort fallback
-     10. None for genuinely unknown tickers (rare)
+      7. yfinance funds_data.fund_operations → cache + return  (PRIMARY
+         LIVE SOURCE; free and unmetered)
+      8. Alpha Vantage ETF_PROFILE → cache + return  (fallback)
+      9. FMP profile API → cache + return  (fallback)
+     10. Hardcoded `_EXPENSE_RATIO_OVERRIDES` — last-resort emergency
+     11. None for genuinely unknown tickers (rare)
 
     Why Schwab JSON sits above APIs: the four Schwab model series
     include active mutual funds (PRFDX, PDBZX, CPXIX, RPIFX, HFQIX,
@@ -1565,6 +1828,12 @@ def _expense_ratio_for_ticker(ticker):
     0.0% and understate portfolio cost. By promoting the JSON above
     the API tiers we get correct numbers for those funds without
     waiting for AV/FMP coverage to improve.
+
+    Why yfinance was promoted above AV/FMP: AV is capped at 25 calls/day
+    with 12s throttling on the free tier, so a cold-start 30-fund lookup
+    blows past quota in seconds. yfinance is already the price backbone,
+    has no rate limit, and carries the annual-report expense ratio for
+    both ETFs and mutual funds.
 
     Stocks return 0.0 (not None) so they count as "fully covered" in
     the weighted ER calculation.
@@ -1622,10 +1891,28 @@ def _expense_ratio_for_ticker(ticker):
         sess[t] = float(_mf_lookup[2])
         return sess[t]
 
-    # 4. Alpha Vantage ETF_PROFILE — PRIMARY SOURCE.
-    # Free tier supports this endpoint reliably and pulls from SEC
-    # filings (same primary source as FINRA Fund Analyzer).
     from datetime import datetime as _dt
+
+    # 6. yfinance funds_data.fund_operations — PRIMARY LIVE SOURCE.
+    # Free, unmetered, no API key required. Reads the same fund table
+    # Yahoo Finance displays. Sits above AV/FMP so those become genuine
+    # emergency fallbacks rather than load-bearing primaries.
+    _yf_er = _yfinance_fetch_expense_ratio(t)
+    if _yf_er is not None:
+        disk_cache[t] = {
+            "er": float(_yf_er),
+            "fetched": _dt.now().isoformat(),
+            "source": "yfinance",
+        }
+        _save_er_cache(disk_cache)
+        sess[t] = float(_yf_er)
+        return sess[t]
+
+    # 7. Alpha Vantage ETF_PROFILE — fallback (was PRIMARY before
+    # yfinance was added above). Free tier is 25 calls/day with a 12s
+    # throttle, so a cold-start lookup of a 30-fund portfolio would
+    # exceed quota in seconds — kept as fallback for the rare ticker
+    # yfinance doesn't cover.
     av_key = None
     try:
         av_key = st.session_state.get("av_api_key_manual")
@@ -1691,13 +1978,12 @@ def _expense_ratio_for_ticker(ticker):
 
     # 7. All sources failed. For equity-classified tickers, return 0.0
     # (almost certainly a stock with no expense ratio). Otherwise None.
+    # IMPORTANT: do NOT disk-cache this fallback. The "equity" class
+    # also catches uncovered ETFs (e.g. niche thematic funds yfinance
+    # hasn't indexed yet) — writing 0.0 to a 30-day disk cache would
+    # shadow yfinance once coverage arrives. Session-cache only so
+    # the next session retries fresh.
     if cls == "equity":
-        disk_cache[t] = {
-            "er": 0.0,
-            "fetched": _dt.now().isoformat(),
-            "source": "stock-fallback",
-        }
-        _save_er_cache(disk_cache)
         sess[t] = 0.0
         return 0.0
     sess[t] = None
@@ -3187,9 +3473,64 @@ def generate_three_tier_from_blend(basis, client_risk_score, priorities=None,
         "aggressive":   aggr_tier,
     }
 
+def _make_favicon():
+    """Build the hexagon-pulse logo as a PIL Image for the browser-tab
+    favicon.
+
+    Mirrors _HEADER_LOGO_SVG (the in-app header mark) so the browser
+    tab icon and the header logo are the same symbol — the advisor app
+    previously showed a generic chart emoji (📈) in the tab.
+
+    Streamlit's page_icon doesn't accept a raw SVG string, so the SVG
+    path geometry is redrawn here with PIL primitives. The icon is
+    rendered at 4× and downsampled with LANCZOS so the strokes get
+    anti-aliased edges rather than the jagged ones PIL's line drawing
+    produces natively. Pillow is a hard dependency of Streamlit, so
+    it's always importable wherever this app runs.
+    """
+    from PIL import Image, ImageDraw
+    _VB    = 24             # SVG viewBox is 24×24
+    _OUT   = 64             # final favicon size in px
+    _SS    = 4              # supersample factor for anti-aliasing
+    _SZ    = _OUT * _SS     # 256px render canvas
+    _scale = _SZ / _VB
+    _teal  = (14, 92, 94, 255)   # #0E5C5E — same teal as _HEADER_LOGO_SVG
+    _lw    = max(1, int(round(1.6 * _scale)))   # stroke width, scaled
+
+    _img = Image.new("RGBA", (_SZ, _SZ), (0, 0, 0, 0))
+    _d   = ImageDraw.Draw(_img)
+
+    def _pts(seq):
+        return [(x * _scale, y * _scale) for x, y in seq]
+
+    # Hexagon outline — SVG path "M12 2 L21 7 L21 17 L12 22 L3 17 L3 7 Z".
+    # Drawn as a closed polyline (loop back to the first vertex) with
+    # joint="curve" so the corners are rounded, matching the SVG's
+    # stroke-linejoin="round".
+    _hexagon = [(12, 2), (21, 7), (21, 17), (12, 22), (3, 17), (3, 7)]
+    _hx = _pts(_hexagon)
+    _d.line(_hx + [_hx[0]], fill=_teal, width=_lw, joint="curve")
+
+    # Pulse line — SVG path "M6 12 L9 12 L10.5 9 L12 15 L13.5 11 L15
+    # 13 L18 13". The heartbeat trace inside the hexagon.
+    _pulse = [(6, 12), (9, 12), (10.5, 9), (12, 15),
+              (13.5, 11), (15, 13), (18, 13)]
+    _d.line(_pts(_pulse), fill=_teal, width=_lw, joint="curve")
+
+    return _img.resize((_OUT, _OUT), Image.LANCZOS)
+
+
+# Favicon — hexagon-pulse mark matching the in-app header logo. Falls
+# back to the chart emoji if PIL rendering ever fails so the app still
+# boots.
+try:
+    _FAVICON = _make_favicon()
+except Exception:
+    _FAVICON = "📈"
+
 st.set_page_config(
     page_title="Foresight Portfolio Intelligence",
-    page_icon="📈",
+    page_icon=_FAVICON,
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -3425,6 +3766,17 @@ st.markdown("""
         border-radius: 10px !important;
         color: #0B1F2A !important;
         font-size: 0.875rem !important;
+    }
+    /* Hide the blinking text caret inside selectbox inputs. The
+       BaseWeb select widget Streamlit wraps internally renders a
+       focusable <input> for keyboard filtering, which shows a
+       caret to the right of the selected label even though the
+       widget is functionally a dropdown rather than a free-text
+       field. caret-color: transparent removes the caret without
+       disabling keyboard navigation or filtering. */
+    [data-baseweb="select"] input,
+    .stSelectbox input {
+        caret-color: transparent !important;
     }
     .stMultiSelect [data-baseweb="tag"] {
         background: #D8ECEC !important;
@@ -4814,7 +5166,8 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                                     KeepTogether, Flowable, Image)
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
     from reportlab.graphics.shapes import (Drawing, Wedge, Rect, String,
-                                            Circle, Line, PolyLine, Path)
+                                            Circle, Ellipse, Line, PolyLine,
+                                            Path)
     from reportlab.graphics.charts.piecharts import Pie
     from reportlab.graphics import renderPDF
     from datetime import datetime as _dt
@@ -5989,9 +6342,16 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
             ReportLab Drawing.
         """
         W = total_width
-        # 60pt compact spectrum height. Layout top to bottom: legend row
-        # (eyebrow on left, legend keys on right) · profile numeral ·
-        # gradient bar · portfolio numeral · endpoint labels.
+        # 60pt compact spectrum height. NOTE: this was briefly bumped
+        # to 68pt to give the numerals more clearance, but the extra
+        # 8pt pushed the "Your Current Portfolio" block off the bottom
+        # of page 1 (the cover page has no spare vertical room), so
+        # it's back to 60pt. The content-page Risk Spectrum
+        # (spectrum_band) keeps the taller, roomier layout — only this
+        # cover band must stay compact to hold page 1. Layout top to
+        # bottom: legend row (eyebrow on left, legend keys on right) ·
+        # profile numeral · gradient bar · portfolio numeral ·
+        # endpoint labels.
         H = 60
         d = Drawing(W, H)
 
@@ -6120,10 +6480,10 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         # CHARCOAL 9.5pt). Navy ties the endpoints to the new navy
         # treatment of the RISK SPECTRUM eyebrow above, anchoring the
         # spectrum chrome in a single color family.
-        d.add(String(band_left, 3, "Conservative",
+        d.add(String(band_left, 3, "More Conservative",
                      fontName="Helvetica-Bold", fontSize=8.5,
                      fillColor=NAVY, textAnchor="start"))
-        d.add(String(band_right, 3, "Aggressive",
+        d.add(String(band_right, 3, "More Aggressive",
                      fontName="Helvetica-Bold", fontSize=8.5,
                      fillColor=NAVY, textAnchor="end"))
 
@@ -6276,7 +6636,7 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         Calls lump_to_other() so the legend exactly matches the pie. Auto-
         splits into 2 columns when > max_rows_per_col rows. The Other row
         (if present) sits at the end and renders in italic muted text with
-        the label "Other holdings" instead of the ticker symbol.
+        the label "OTHER" instead of the ticker symbol.
         """
         ts, ws, has_other = lump_to_other(tickers, weights, _SETTINGS)
         if not ts:
@@ -6288,8 +6648,7 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         row_colors = resolve_chart_colors(ts)
         n = len(ts)
 
-        # Styles for the Other row (italic, muted, friendly label)
-        _other_lbl = _SETTINGS["chart_palette"]["other_bucket"]["other_label"]
+        # Styles for the Other row — italic + muted gray.
         body_other = ParagraphStyle(
             "body_other", parent=body_small,
             fontName="Helvetica-Oblique", textColor=GRAY,
@@ -6297,14 +6656,27 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         body_pct_muted = ParagraphStyle(
             "body_pct_muted", parent=body_small, textColor=GRAY,
         )
+        # The rollup bucket's ticker is the configured other_label
+        # (commonly "Other holdings"); some code paths use the literal
+        # "Other" instead. _row matches either and always displays the
+        # row as "OTHER".
+        try:
+            _other_lbl = (_SETTINGS.get("chart_palette", {})
+                          .get("other_bucket", {})
+                          .get("other_label", "Other"))
+        except AttributeError:
+            _other_lbl = "Other"
 
         def _row(color, t, w):
             swatch = Drawing(10, 10)
             swatch.add(Rect(0, 0, 10, 10, fillColor=color,
                             strokeColor=None, strokeWidth=0))
-            if t == "Other":
+            if t == "Other" or t == _other_lbl:
+                # Rollup row label — "OTHER" in all caps (advisor
+                # request) so it reads as a category tag rather than
+                # the descriptive phrase "Other holdings".
                 return [swatch,
-                        Paragraph(_other_lbl, body_other),
+                        Paragraph("OTHER", body_other),
                         Paragraph(f"{w:.2f}%", body_pct_muted)]
             return [swatch,
                     Paragraph(f"<b>{t}</b>", body_small),
@@ -6725,6 +7097,13 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         _firm_settings = load_firm_settings() or {}
     except Exception:
         _firm_settings = {}
+
+    # Effective text/tables for the customizable closing sections
+    # (Advisor Notes, Implementation Plan, How This Proposal Was Built,
+    # Key Definitions, Disclosures). Advisor edits from the PDF Content
+    # tab layered over DEFAULT_PDF_CONTENT; untouched sections use the
+    # standard wording.
+    _pdf_content = get_pdf_content()
 
     _has_logo = os.path.exists(FIRM_LOGO_PATH)
     # v2.5 schema: nested under firm.* and advisor.*. Use _SETTINGS which is
@@ -8474,12 +8853,12 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                 total_width: usable horizontal space in points
             """
             W = total_width
-            # 64pt — compact band height (was 90pt). Matches the
-            # cover_spectrum_band height treatment for cross-page
-            # consistency; bumped 4pt over the cover band to make room
-            # for proposed-option captions that can flip above/below to
-            # avoid collision with the portfolio caption.
-            H = 64
+            # 72pt band height. Bumped from 64pt per advisor: the
+            # profile and proposed score numerals each get ~4pt more
+            # clearance from the gradient band, which needs the extra
+            # panel height so the lower numeral doesn't collide with
+            # the endpoint labels at the panel floor.
+            H = 72
             d = Drawing(W, H)
 
             # Background panel — pale cream (BG_SOFT) with a thin
@@ -8550,11 +8929,11 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
             # Left dash (flat segment in lieu of a curved paren at scale)
             d.add(Line(_mini_left, _mini_y, _mini_left + 5, _mini_y,
                        strokeColor=NAVY, strokeWidth=1.2))
-            # Empty O at midpoint — gold to mirror the on-band
-            # treatment (only the central circle takes the accent
-            # color; the flanking dashes stay navy).
+            # Empty O at midpoint — navy, mirroring the on-band
+            # treatment where the central circle is navy to match the
+            # paren-bracketed dotted range drawn around it.
             d.add(Circle(_mini_left + _mini_w/2, _mini_y, 2.2,
-                         fillColor=None, strokeColor=ACCENT,
+                         fillColor=None, strokeColor=NAVY,
                          strokeWidth=1.0))
             # Right dash
             d.add(Line(_mini_left + _mini_w - 5, _mini_y,
@@ -8599,7 +8978,7 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                 pf_x = _x_at(profile)
                 d.add(Line(pf_x, band_y - 4, pf_x, band_y + band_h + 4,
                            strokeColor=ACCENT, strokeWidth=2.5))
-                d.add(String(pf_x, band_y + band_h + 6, str(int(profile)),
+                d.add(String(pf_x, band_y + band_h + 10, str(int(profile)),
                              fontName="Times-Bold", fontSize=11,
                              fillColor=ACCENT, textAnchor="middle"))
                 placed_xs.append((pf_x, "above"))
@@ -8709,22 +9088,19 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                                    strokeColor=NAVY, strokeWidth=1.2,
                                    strokeDashArray=[1, 2.5]))
 
-                # Empty gold O at the proposed score — always drawn
+                # Empty navy O at the proposed score — always drawn
                 # (this is the single-element fallback for the
                 # degenerate cases above, and the centerpiece of the
                 # range otherwise). Per advisor revision pass: the
-                # central hollow circle is now GOLD while the
-                # surrounding paren-bracketed dotted line stays navy,
-                # so the circle reads as the headline "this is where
-                # the proposed portfolio sits" marker — the warm gold
-                # ties it visually to the gold "Your profile" tick
-                # above the band, presenting both client-facing
-                # anchor points (target + proposal) in the same
-                # accent color while the navy parens/dashes recede
-                # as supporting span structure.
+                # central hollow circle is navy, matching the
+                # surrounding paren-bracketed dotted range so the
+                # whole "advisor's proposed range" symbol reads as one
+                # navy unit. The gold "Your profile" tick above the
+                # band stays the lone gold element, so the client's
+                # target still contrasts against the navy proposal.
                 d.add(Circle(_proposed_x, _center_y, _circle_r,
                              fillColor=None,
-                             strokeColor=ACCENT, strokeWidth=1.8))
+                             strokeColor=NAVY, strokeWidth=1.8))
 
                 # Proposed-score caption — ALWAYS below the band.
                 # The gold profile-tick caption sits above the band,
@@ -8732,7 +9108,7 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                 # regardless of how close the two scores are. Per
                 # advisor: portfolio risk score should be below the
                 # line.
-                _proposed_caption_y = band_y - 14
+                _proposed_caption_y = band_y - 18
                 d.add(String(_proposed_x, _proposed_caption_y,
                              str(_proposed_score),
                              fontName="Times-Bold", fontSize=11,
@@ -8740,10 +9116,10 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
 
             # Endpoint labels at the very bottom — NAVY at 8.5pt to
             # match the cover spectrum (was charcoal 8pt).
-            d.add(String(band_left, 3, "Conservative",
+            d.add(String(band_left, 3, "More Conservative",
                          fontName="Helvetica-Bold", fontSize=8.5,
                          fillColor=NAVY, textAnchor="start"))
-            d.add(String(band_right, 3, "Aggressive",
+            d.add(String(band_right, 3, "More Aggressive",
                          fontName="Helvetica-Bold", fontSize=8.5,
                          fillColor=NAVY, textAnchor="end"))
 
@@ -10302,16 +10678,42 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                     )
             for idx, (lbl, sub, tk, ptks, pws, pscore) in enumerate(ordered_picks):
                 if ptks and pws:
-                    # Match the recommendation cards' COMPARISON #N convention
-                    # — keeps the historical backtest legend in sync with the
-                    # cards so a reader can map "Comparison #2" on the chart
-                    # to the matching middle card above without translation.
-                    # The table column headers must stay COMPACT (the table
-                    # has 5 columns and each column gets ~1.3" — long names
-                    # like "Comparison #2: Proposed" don't fit). Just the
-                    # number; page 3 already names each.
+                    # Label each backtest portfolio by its DESCRIPTOR,
+                    # mirroring the comparison cards on page 3 (which show
+                    # PROPOSED / MORE CONSERVATIVE / MORE AGGRESSIVE as the
+                    # headline). The previous code used a positional
+                    # "Comparison #{idx+1}" index — but ordered_picks sorts
+                    # conservative → balanced → aggressive, so the balanced
+                    # tier (which IS the proposed portfolio) always landed
+                    # at idx 1 and got mislabeled "Comparison #2". The
+                    # backtest legend now names the proposed portfolio
+                    # "Proposed" outright.
+                    #
+                    # Compact single-word forms ("Proposed" / "Conservative"
+                    # / "Aggressive") keep the backtest table's column
+                    # headers within their ~1.3"-per-column budget — the
+                    # "More" prefix the cards use is dropped here for fit.
+                    if tk == "balanced":
+                        _bt_label = "Proposed"
+                    elif tk == "conservative":
+                        _bt_label = "Conservative"
+                    elif tk == "aggressive":
+                        _bt_label = "Aggressive"
+                    else:
+                        # Custom / alternate pick with no standard tier
+                        # key — inspect the human-readable label the same
+                        # way the page-3 card descriptor logic does.
+                        _u = (lbl or "").upper()
+                        if "PROPOSED" in _u or "RECOMMENDED" in _u:
+                            _bt_label = "Proposed"
+                        elif "CONSERVATIVE" in _u:
+                            _bt_label = "Conservative"
+                        elif "AGGRESSIVE" in _u:
+                            _bt_label = "Aggressive"
+                        else:
+                            _bt_label = f"Comparison #{idx+1}"
                     bt_portfolios.append(
-                        (f"Comparison #{idx+1}", ptks, pws)
+                        (_bt_label, ptks, pws)
                     )
 
             # Fetch price data for all unique tickers across ALL portfolios
@@ -10659,11 +11061,48 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         if _show_advisor_card:
             _combined_block.append(section_header("Section 6", "Your Advisor"))
 
+            def _circular_photo(path, diameter):
+                """Advisor headshot clipped to a circle — mirrors the
+                client portal, which clips the photo into an SVG
+                <circle> with preserveAspectRatio='xMidYMid slice'.
+
+                ReportLab's Image flowable can't clip to a shape, so
+                the photo is center-cropped to a square and given a
+                circular alpha mask here with PIL; the masked PNG
+                (transparent outside the circle) is then embedded, so
+                the card background shows through the corners.
+                Rendered at 4x and downsampled so the circular edge is
+                anti-aliased rather than stair-stepped.
+                """
+                from PIL import Image as PILImage, ImageDraw
+                _SS = 4
+                _R  = 256 * _SS
+                src = PILImage.open(path).convert("RGBA")
+                _w, _h = src.size
+                # Center-crop to a square (= the portal's xMidYMid slice).
+                _side = min(_w, _h)
+                _l = (_w - _side) // 2
+                _t = (_h - _side) // 2
+                src = src.crop((_l, _t, _l + _side, _t + _side)
+                               ).resize((_R, _R), PILImage.LANCZOS)
+                # Circular alpha mask — hard-edged at 4x, then photo and
+                # mask are downsampled together for a smooth edge.
+                _mask = PILImage.new("L", (_R, _R), 0)
+                ImageDraw.Draw(_mask).ellipse((0, 0, _R - 1, _R - 1),
+                                              fill=255)
+                _out = PILImage.new("RGBA", (_R, _R), (0, 0, 0, 0))
+                _out.paste(src, (0, 0), _mask)
+                _out = _out.resize((_R // _SS, _R // _SS),
+                                   PILImage.LANCZOS)
+                _buf = BytesIO()
+                _out.save(_buf, format="PNG")
+                _buf.seek(0)
+                return Image(_buf, width=diameter, height=diameter)
+
             if _has_photo:
                 try:
-                    _photo_flow = Image(ADVISOR_PHOTO_PATH,
-                                        width=0.95*inch, height=0.95*inch,
-                                        kind="proportional")
+                    _photo_flow = _circular_photo(ADVISOR_PHOTO_PATH,
+                                                  0.95*inch)
                 except Exception:
                     _photo_flow = Paragraph("", body_small)
             else:
@@ -10686,6 +11125,112 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                 fontName="Helvetica", alignment=TA_LEFT, spaceAfter=1,
             )
 
+            # Contact-row icons matching the client portal's outline glyphs.
+            # The emoji characters used previously (envelope, telephone, globe)
+            # rendered as missing-glyph boxes because the embedded Helvetica
+            # fonts in this PDF don't carry color emoji. Drawing them as
+            # small vector shapes guarantees they render identically across
+            # PDF viewers and stays consistent with the client portal's
+            # outline-icon treatment for email / phone / website.
+            # Contact-row icons — geometry translated from the client
+            # portal's Lucide icon set (mail / phone / globe) so the PDF
+            # advisor card and the portal's contact rows show the same
+            # symbols. Lucide icons are authored on a 24-unit grid; the
+            # X()/Y() helpers scale that grid into this `size`-unit
+            # Drawing and flip Y (SVG is y-down, ReportLab is y-up).
+            def _email_icon(size=10, color=SLATE):
+                """Envelope — rounded-rectangle body + chevron flap.
+                Translated from the client portal's Lucide 'mail' icon
+                (rect x3 y5 w18 h14 rx2; flap path M3 7 l9 6 l9 -6)."""
+                d = Drawing(size, size)
+                k = size / 24.0
+                def X(v): return v * k
+                def Y(v): return size - v * k
+                # Envelope body — rounded rectangle. ReportLab Rect takes
+                # the BOTTOM-left corner, so y is the SVG bottom edge (19).
+                d.add(Rect(X(3), Y(19), X(18), X(14),
+                           rx=X(2), ry=X(2),
+                           fillColor=None, strokeColor=color,
+                           strokeWidth=0.8))
+                # Chevron flap — polyline through (3,7) (12,13) (21,7).
+                d.add(PolyLine([X(3),  Y(7),
+                                X(12), Y(13),
+                                X(21), Y(7)],
+                               strokeColor=color, strokeWidth=0.8,
+                               strokeLineJoin=1))
+                return d
+
+            def _phone_icon(size=10, color=SLATE):
+                """Phone handset — a thick, gently-curved stroke with
+                round caps. The round caps form the earpiece /
+                mouthpiece bulbs and the quarter-bend curve is the
+                receiver's handle, matching the form of the client
+                portal's Lucide 'phone' handset.
+
+                A verbatim trace of the Lucide path isn't possible
+                here: that path relies on SVG arc ('a') commands, and
+                ReportLab's Path object supports only moveTo / lineTo /
+                curveTo / closePath. The handset is therefore
+                reconstructed from a single thick cubic-bezier stroke
+                — chunky enough that the round line caps read as the
+                two bulbs.
+                """
+                d = Drawing(size, size)
+                s = size
+                p = Path(strokeColor=color, fillColor=None,
+                         strokeWidth=s * 0.23,   # chunky → caps read as bulbs
+                         strokeLineCap=1)        # round caps = the bulbs
+                # Quarter-bend: earpiece upper-left → mouthpiece
+                # lower-right, concave side facing the upper-right.
+                p.moveTo(s * 0.30, s * 0.72)
+                p.curveTo(s * 0.30, s * 0.46,
+                          s * 0.46, s * 0.30,
+                          s * 0.72, s * 0.30)
+                d.add(p)
+                return d
+
+            def _globe_icon(size=10, color=SLATE):
+                """Globe — circle + straight equator + vertical meridian
+                lens. Translated from the client portal's Lucide 'globe'
+                icon (circle r10; equator M2 12 h20; the curved meridian
+                lens is approximated by an ellipse rx≈4 ry≈10)."""
+                d = Drawing(size, size)
+                k = size / 24.0
+                def X(v): return v * k
+                def Y(v): return size - v * k
+                cx, cy = X(12), Y(12)
+                # Outer circle (Lucide r=10)
+                d.add(Circle(cx, cy, X(10), fillColor=None,
+                             strokeColor=color, strokeWidth=0.8))
+                # Equator — straight horizontal line (Lucide "M2 12 h20")
+                d.add(Line(X(2), cy, X(22), cy,
+                           strokeColor=color, strokeWidth=0.8))
+                # Meridian lens — Lucide draws a curved lens via SVG
+                # arcs; an ellipse (rx≈4, ry≈10) is a faithful stand-in.
+                d.add(Ellipse(cx, cy, X(4), X(10), fillColor=None,
+                              strokeColor=color, strokeWidth=0.8))
+                return d
+
+            def _contact_row(icon_draw, text):
+                """Small 2-column row — icon on the left, contact text on
+                the right. Used for the three contact lines below the
+                advisor name so each icon aligns vertically with its text.
+                colWidths sum (0.25 + 5.60 = 5.85") fits within the parent
+                cell's effective width (6.15" outer − 0.14" L/R padding =
+                5.87")."""
+                t = Table(
+                    [[icon_draw, Paragraph(text, _sig_contact)]],
+                    colWidths=[0.25*inch, 5.60*inch],
+                )
+                t.setStyle(TableStyle([
+                    ("VALIGN",       (0,0), (-1,-1), "MIDDLE"),
+                    ("LEFTPADDING",  (0,0), (-1,-1), 0),
+                    ("RIGHTPADDING", (0,0), (-1,-1), 0),
+                    ("TOPPADDING",   (0,0), (-1,-1), 1),
+                    ("BOTTOMPADDING",(0,0), (-1,-1), 1),
+                ]))
+                return t
+
             _sig_right = [Paragraph("YOUR ADVISOR", _sig_label)]
             if _adv_name:
                 _sig_right.append(Paragraph(_adv_name, _sig_name))
@@ -10695,11 +11240,11 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
             if _role_bits:
                 _sig_right.append(Paragraph(" · ".join(_role_bits), _sig_role))
             if _adv_email:
-                _sig_right.append(Paragraph(f"📧 &nbsp;{_adv_email}", _sig_contact))
+                _sig_right.append(_contact_row(_email_icon(), _adv_email))
             if _adv_phone:
-                _sig_right.append(Paragraph(f"📞 &nbsp;{_adv_phone}", _sig_contact))
+                _sig_right.append(_contact_row(_phone_icon(), _adv_phone))
             if _firm_website:
-                _sig_right.append(Paragraph(f"🌐 &nbsp;{_firm_website}", _sig_contact))
+                _sig_right.append(_contact_row(_globe_icon(), _firm_website))
 
             _sig_card = Table(
                 [[_photo_flow, _sig_right]],
@@ -10718,13 +11263,18 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
             _combined_block.append(_sig_card)
 
         if _show_notes:
-            # Advisor Notes — sits between the advisor signature card and
-            # the implementation plan. Same content as before; just relocated.
+            # Advisor Notes — sits between the advisor signature card
+            # and the implementation plan. The note shown is the
+            # per-proposal note if one was attached, otherwise the
+            # firm-wide generic note from the PDF Content tab.
             _combined_block.append(Spacer(1, 0.18*inch))
             _combined_block.append(section_header("Section 7", "Advisor Notes"))
             _notes = (proposal.get("advisor_notes") or "").strip()
+            if not _notes:
+                _notes = (_pdf_content.get("advisor_notes") or "").strip()
             if _notes:
-                _combined_block.append(Paragraph(_notes, body))
+                for _flow in _render_pdf_prose(_notes, body):
+                    _combined_block.append(_flow)
             else:
                 _combined_block.append(Paragraph(
                     "<i>No additional notes were attached to this proposal version.</i>",
@@ -10734,19 +11284,12 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         if _show_implementation:
             _combined_block.append(Spacer(1, 0.18*inch))
             _combined_block.append(section_header("Section 8", "Implementation Plan"))
-            impl_rows = [
-                ["Stage", "Cadence", "Action"],
-                ["Initial Funding", "Day 0",
-                 "Fund account and execute initial allocation per selected option."],
-                ["First Review", "30 days",
-                 "Confirm execution, verify holdings match proposal."],
-                ["Rebalancing", "Quarterly",
-                 "Drift threshold 5% per position; tax-aware rebalancing where applicable."],
-                ["Performance Review", "Semi-Annual",
-                 "Review against benchmarks; discuss changes in goals."],
-                ["Full Re-Assessment", "Annual",
-                 "Update risk profile; refresh proposal if score or goals change."],
-            ]
+            # Header row is fixed; body rows come from the PDF Content
+            # tab (advisor edits) or DEFAULT_PDF_CONTENT.
+            impl_rows = [["Stage", "Cadence", "Action"]]
+            for _ir in _pdf_content.get("implementation_plan", []):
+                _ir = (list(_ir) + ["", "", ""])[:3]
+                impl_rows.append([str(_c) for _c in _ir])
             tbl = Table(impl_rows, colWidths=[1.5*inch, 1.1*inch, 4.3*inch])
             tbl.setStyle(TableStyle([
                 ("BACKGROUND",   (0,0), (-1,0), NAVY),
@@ -10784,121 +11327,52 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
     # client's eye on "how was this built and what are the limitations"
     # in one place rather than spread across the document.
     story.append(section_header("Methodology", "How This Proposal Was Built"))
-    story.append(Paragraph(
-        "Each recommended portfolio is constructed using institutional-grade "
-        "optimization techniques. Allocations are informed by risk-score-targeted "
-        "equity/bond/cash splits with priority-driven tilts applied on top.",
-        body,
-    ))
-    story.append(Paragraph(
-        "&bull; <b>Risk-targeted base allocation</b> — a mapping from the client's "
-        "1-99 risk score to a target equity / bond / cash split forms the starting point.<br/>"
-        "&bull; <b>Priority tilts</b> — client-stated goals (e.g. capital preservation, "
-        "income, social impact) adjust both the asset-class mix and the ticker universe.<br/>"
-        "&bull; <b>Holdings selection</b> — where possible, proposals use the client's "
-        "own submitted securities; gaps are filled with broadly-diversified index ETFs.",
-        body,
-    ))
+    # Body text comes from the PDF Content tab (advisor edits) or
+    # DEFAULT_PDF_CONTENT — blank-line-separated paragraphs.
+    for _flow in _render_pdf_prose(_pdf_content.get("methodology", ""), body):
+        story.append(_flow)
     story.append(Spacer(1, 0.20*inch))
 
     # ── Disclosures (final page below methodology) ──────────────
     story.append(section_header("Disclosures", "Important Information"))
 
     story.append(Paragraph("Key Definitions", h3))
-    glossary = [
-        ["Risk Number",
-         "Integer 1-99 summarizing combined risk tolerance (willingness) and capacity (ability)."],
-        ["Equity / Bond / Cash",
-         "High-level split across growth, stability, and liquidity objectives."],
-        ["Sharpe Ratio",
-         "Return per unit of total volatility. Values above 1.0 indicate strong risk-adjusted performance."],
-        ["Maximum Drawdown",
-         "Largest peak-to-trough decline over the measurement period."],
-        ["Priority Tilt",
-         "Adjustment to base allocation based on client-stated goals."],
-    ]
-    gl = Table(glossary, colWidths=[1.5*inch, 5.4*inch])
-    gl.setStyle(TableStyle([
-        ("FONTNAME",      (0,0), (0,-1),  "Helvetica-Bold"),
-        ("TEXTCOLOR",     (0,0), (0,-1),  NAVY),
-        ("TEXTCOLOR",     (1,0), (-1,-1), CHARCOAL),
-        ("FONTSIZE",      (0,0), (-1,-1), 9),
-        ("VALIGN",        (0,0), (-1,-1), "TOP"),
-        ("LEFTPADDING",   (0,0), (-1,-1), 8),
-        ("RIGHTPADDING",  (0,0), (-1,-1), 8),
-        ("TOPPADDING",    (0,0), (-1,-1), 6),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
-        ("LINEBELOW",     (0,0), (-1,-1), 0.4, BORDER_SOFT),
-        ("BOX",           (0,0), (-1,-1), 1.0, NAVY),
-    ]))
-    story.append(gl)
+    # Glossary rows come from the PDF Content tab or DEFAULT_PDF_CONTENT.
+    glossary = []
+    for _gr in _pdf_content.get("key_definitions", []):
+        _gr = (list(_gr) + ["", ""])[:2]
+        glossary.append([str(_c) for _c in _gr])
+    if glossary:
+        gl = Table(glossary, colWidths=[1.5*inch, 5.4*inch])
+        gl.setStyle(TableStyle([
+            ("FONTNAME",      (0,0), (0,-1),  "Helvetica-Bold"),
+            ("TEXTCOLOR",     (0,0), (0,-1),  NAVY),
+            ("TEXTCOLOR",     (1,0), (-1,-1), CHARCOAL),
+            ("FONTSIZE",      (0,0), (-1,-1), 9),
+            ("VALIGN",        (0,0), (-1,-1), "TOP"),
+            ("LEFTPADDING",   (0,0), (-1,-1), 8),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 8),
+            ("TOPPADDING",    (0,0), (-1,-1), 6),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+            ("LINEBELOW",     (0,0), (-1,-1), 0.4, BORDER_SOFT),
+            ("BOX",           (0,0), (-1,-1), 1.0, NAVY),
+        ]))
+        story.append(gl)
 
     story.append(Spacer(1, 0.15*inch))
     story.append(Paragraph("Important Performance Disclosures", h3))
 
-    # Resolve the advisory fee using the fallback chain so the disclosure
-    # accurately reflects what the client is being charged. If nothing is
-    # configured anywhere, falls back to 1.00% (a typical small-RIA AUM
-    # fee) — but the firm default SHOULD be set in firm_settings so the
-    # disclosure matches the actual ADV.
-    _adv_fee_pct = _resolve_advisory_fee_pct(proposal, client_profile, _firm_settings)
-
-    story.append(Paragraph(
-        "<b>Past performance is no guarantee of future results.</b> "
-        "Investment return and principal value of an investment will fluctuate; "
-        "therefore, you may have a gain or loss when you sell your shares. "
-        "Current performance may be higher or lower than the performance data quoted.",
-        body_small,
-    ))
-    story.append(Spacer(1, 0.08*inch))
-
-    story.append(Paragraph(
-        "<b>Net of Fees Performance.</b> Performance figures shown in this "
-        "report reflect the underlying funds' net expense ratios but are "
-        f"<b>gross of advisory fees</b>. Your actual return would be reduced "
-        f"by the firm's advisory fee of <b>{_adv_fee_pct:.2f}%</b> per year, "
-        "as well as any brokerage commissions, custodial costs, and other "
-        f"expenses. {'See the Fee Comparison section above for a side-by-side illustration of the impact at common fee levels.' if sections.get('fee_comparison', False) else 'A fee comparison table illustrating the impact at common fee levels is available on request.'}",
-        body_small,
-    ))
-    story.append(Spacer(1, 0.08*inch))
-
-    story.append(Paragraph(
-        "<b>Hypothetical and Backtested Data.</b> Where the analysis includes "
-        "performance for portfolio combinations the client did not actually "
-        "hold during the measurement period, those results are <b>hypothetical "
-        "and backtested</b>. Such results are achieved by retroactively applying "
-        "a model to historical data and do not represent actual trading. "
-        "Hypothetical performance has inherent limitations: it does not reflect "
-        "the impact that material economic and market factors might have had "
-        "on an advisor's decision-making if the advisor were actually managing "
-        "client money. Forward-looking projections (e.g., Monte Carlo) are "
-        "estimates, not guarantees.",
-        body_small,
-    ))
-    story.append(Spacer(1, 0.08*inch))
-
-    story.append(Paragraph(
-        "<b>Benchmark Comparisons.</b> Where a benchmark portfolio (such as "
-        "the S&amp;P 500 Index, a Schwab Core ETF model, or another reference) "
-        "is shown for comparative purposes, it is illustrative only. Indexes "
-        "are unmanaged; you cannot invest directly in an index, although you "
-        "may be able to invest in a fund that tracks an index. Benchmark "
-        "performance reflects only the underlying index or model and not the "
-        "deduction of advisory fees.",
-        body_small,
-    ))
-    story.append(Spacer(1, 0.08*inch))
-
-    story.append(Paragraph(
-        "<b>Limitations and Risk.</b> All investing involves risk, including "
-        "possible loss of principal. Diversification and asset allocation do "
-        "not guarantee a profit or protect against loss. This report is "
-        "informational only and does not constitute tax, legal, or accounting "
-        "advice. It is intended for use in a one-on-one discussion with your "
-        "advisor so that you can ask questions and fully understand the analysis.",
-        body_small,
-    ))
+    # Advisory fee resolved via the fallback chain so {advisory_fee}
+    # tokens in the (possibly advisor-edited) disclosure text reflect
+    # what the client is actually charged. Falls back to 1.00% if
+    # nothing is configured — the firm default SHOULD be set in
+    # firm_settings so the disclosure matches the actual ADV.
+    _adv_fee_pct = _resolve_advisory_fee_pct(
+        proposal, client_profile, _firm_settings)
+    _disc_text = (_pdf_content.get("disclosures") or "").replace(
+        "{advisory_fee}", f"{_adv_fee_pct:.2f}%")
+    for _flow in _render_pdf_prose(_disc_text, body_small):
+        story.append(_flow)
 
     # NOTE: the "Proposal v… · Prepared for … · Generated …" trailing footer
     # credit that previously rendered here was removed May 2026. The disclosure
@@ -11295,6 +11769,77 @@ def compute_portfolio_risk_score(holdings, weights, holding_scores=None,
 
     final = base - (1.0 - div_ratio) * 10.0
     return int(round(min(99, max(1, final))))
+
+
+def _portfolio_label_with_score(label):
+    """Decorate a portfolio-selectbox label with its risk score in
+    parentheses for display.
+
+    Used as `format_func` on the firm-wide portfolio pickers (Load
+    portfolio, Client's current portfolio, Select saved portfolio) so
+    the advisor can see each portfolio's risk score at a glance without
+    expanding the dropdown — "Schwab Core ETF 56/44" becomes
+    "Schwab Core ETF 56/44 (61)" in the rendered list. The selectbox
+    VALUE remains the original undecorated label, so every downstream
+    lookup keyed off the selection (load_saved, _resolve_preset, etc.)
+    continues to work unchanged.
+
+    Sentinel rows (Custom, Use analyzed portfolio, separators) and
+    anything that fails to resolve are passed through unchanged — the
+    function silently fails open so a misconfigured saved portfolio
+    can never break the picker.
+
+    Score computation is cheap: compute_portfolio_risk_score does
+    arithmetic, and the per-ticker security_risk_score it depends on
+    is @st.cache_data'd at 1h TTL, so on a warm cache every call here
+    is effectively free.
+    """
+    if not label:
+        return label
+    # Sentinel / non-portfolio rows pass through unchanged
+    if label in (
+        "Custom — Enter Your Own Tickers",
+        "Use analyzed portfolio (Section 1)",
+    ) or label.startswith("── "):
+        return label
+    try:
+        # Saved portfolio: "📁 <name>". Saved entries store weights as
+        # decimals (0.6 = 60%); compute_portfolio_risk_score expects
+        # percentages, so convert.
+        if label.startswith("📁 "):
+            sp = load_saved().get(label[2:])
+            if not sp:
+                return label
+            _tks = sp.get("tickers", []) or []
+            _ws_dec = sp.get("weights", []) or []
+            if not _tks or not _ws_dec:
+                return label
+            _ws_pct = [float(w) * 100 for w in _ws_dec]
+            _score = compute_portfolio_risk_score(_tks, _ws_pct)
+            return f"{label} ({_score})"
+        # Preset portfolio — _resolve_preset returns weights as a
+        # ticker→percent dict, so flatten back to a parallel list
+        # for compute_portfolio_risk_score.
+        _tks, _wmap = _resolve_preset(label)
+        if _tks and _wmap:
+            _score = compute_portfolio_risk_score(
+                _tks, [_wmap.get(t, 0.0) for t in _tks])
+            return f"{label} ({_score})"
+        # Raw saved-portfolio name (without "📁 " prefix). Used by the
+        # benchmark picker, which passes load_saved().keys() directly.
+        _sp_raw = load_saved().get(label)
+        if _sp_raw:
+            _tks = _sp_raw.get("tickers", []) or []
+            _ws_dec = _sp_raw.get("weights", []) or []
+            if _tks and _ws_dec:
+                _ws_pct = [float(w) * 100 for w in _ws_dec]
+                _score = compute_portfolio_risk_score(_tks, _ws_pct)
+                return f"{label} ({_score})"
+    except Exception:
+        # Fall through to undecorated label — never let a scoring
+        # failure break the dropdown render.
+        pass
+    return label
 
 
 def risk_label(score):
@@ -12247,11 +12792,11 @@ st.markdown(f"""
 # The `with main_tabN:` blocks farther down in this file are keyed by variable
 # name, NOT by position — so to move a tab in the UI we just rebind its
 # variable to a new st.tabs() position. main_tab6 (Fee Drag) is bound to the
-# 4th position; main_tab4 (Client Records) is bound to the 5th. main_tab5
-# (Settings) stays rightmost.
-main_tab1, main_tab2, main_tab3, main_tab6, main_tab4, main_tab5 = st.tabs([
+# 4th position; main_tab4 (Client Records) is bound to the 5th. main_tab7
+# (PDF Content) is the 6th; main_tab5 (Settings) stays rightmost.
+main_tab1, main_tab2, main_tab3, main_tab6, main_tab4, main_tab7, main_tab5 = st.tabs([
     "Analyzer", "Results & Charts", "Optimizer", "Fee Drag Analyzer",
-    "Client Records", "Settings"
+    "Client Records", "PDF Content", "Settings"
 ])
 
 # ═══════════════════════════════════════════════════════════════
@@ -12403,6 +12948,7 @@ with main_tab1:
         index=source_opts.index(st.session_state.portfolio_source)
               if st.session_state.portfolio_source in source_opts else 0,
         key="portfolio_source_sel",
+        format_func=_portfolio_label_with_score,
         label_visibility="collapsed"
     )
     if sel_src != st.session_state.portfolio_source:
@@ -12612,6 +13158,7 @@ with main_tab1:
         index=curr_opts.index(st.session_state.client_current_portfolio_sel)
               if st.session_state.client_current_portfolio_sel in curr_opts else 0,
         key="client_current_sel_widget",
+        format_func=_portfolio_label_with_score,
         help=(
             "What the client actually holds today. Used as the comparison "
             "baseline alongside the Optimizer's recommendations — shows up "
@@ -12826,7 +13373,9 @@ with main_tab1:
     else:
         saved_names = list(load_saved().keys())
         if saved_names:
-            sel_saved = bm_col2.selectbox("Select saved portfolio", saved_names, key="bm_saved_sel")
+            sel_saved = bm_col2.selectbox("Select saved portfolio", saved_names,
+                                          key="bm_saved_sel",
+                                          format_func=_portfolio_label_with_score)
             st.session_state.benchmark_ticker = f"SAVED::{sel_saved}"
             st.session_state.benchmark_label  = f"📁 {sel_saved}"
         else:
@@ -16112,6 +16661,121 @@ with main_tab4:
 
 
 # ═══════════════════════════════════════════════════════════════
+# TAB 7 — PDF CONTENT (customizable closing sections)
+# ═══════════════════════════════════════════════════════════════
+with main_tab7:
+    st.session_state["optimizer_tab_active"] = False
+    st.markdown(
+        "<h3 style='color:#0E5C5E;font-weight:600;letter-spacing:-0.015em;"
+        "margin:0 0 6px 0'>PDF Content</h3>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Customize the closing sections of the client proposal PDF — "
+        "everything from Advisor Notes onward. Each box is pre-filled "
+        "with the current wording; edit what you like, then Save. Clear "
+        "a box completely and Save to restore that section's default."
+    )
+    st.markdown("---")
+
+    # Effective content (advisor edits layered over defaults) pre-fills
+    # the editors so the advisor always starts from real text.
+    _pdfc = get_pdf_content()
+
+    with st.expander("Advisor Notes", expanded=False):
+        st.caption(
+            "Firm-wide default note — used on a proposal only when that "
+            "proposal doesn't carry its own advisor note. Separate "
+            "paragraphs with a blank line."
+        )
+        _pdfc_notes = st.text_area(
+            "Advisor note", value=_pdfc["advisor_notes"], height=160,
+            key="pdfc_notes_input", label_visibility="collapsed",
+        )
+
+    with st.expander("Implementation Plan", expanded=False):
+        st.caption(
+            "Rows of the Implementation Plan table. Use the controls at "
+            "the bottom of the grid to add or remove rows."
+        )
+        _pdfc_impl = st.data_editor(
+            pd.DataFrame(_pdfc["implementation_plan"],
+                         columns=["Stage", "Cadence", "Action"]),
+            num_rows="dynamic", use_container_width=True,
+            key="pdfc_impl_input",
+        )
+
+    with st.expander("How This Proposal Was Built", expanded=False):
+        st.caption(
+            "Separate paragraphs with a blank line. Wrap text in "
+            "`<b>...</b>` to bold it."
+        )
+        _pdfc_method = st.text_area(
+            "Methodology", value=_pdfc["methodology"], height=220,
+            key="pdfc_method_input", label_visibility="collapsed",
+        )
+
+    with st.expander("Key Definitions", expanded=False):
+        st.caption(
+            "Term / definition rows of the Key Definitions table. Use "
+            "the controls at the bottom of the grid to add or remove "
+            "rows."
+        )
+        _pdfc_kd = st.data_editor(
+            pd.DataFrame(_pdfc["key_definitions"],
+                         columns=["Term", "Definition"]),
+            num_rows="dynamic", use_container_width=True,
+            key="pdfc_kd_input",
+        )
+
+    with st.expander("Disclosures", expanded=False):
+        st.caption(
+            "Separate paragraphs with a blank line. Wrap text in "
+            "`<b>...</b>` to bold it. Use the token `{advisory_fee}` "
+            "where the firm's advisory fee should appear — it's filled "
+            "in automatically on each PDF."
+        )
+        _pdfc_disc = st.text_area(
+            "Disclosures", value=_pdfc["disclosures"], height=300,
+            key="pdfc_disc_input", label_visibility="collapsed",
+        )
+
+    st.markdown("---")
+    if st.button("💾 Save PDF content", type="primary",
+                 key="pdfc_save_btn"):
+        def _rows_from_editor(_df):
+            """Edited grid → list of string rows; fully-blank rows are
+            dropped and NaN/None cells become empty strings."""
+            _out = []
+            for _row in _df.fillna("").values.tolist():
+                _cells = [str(_c).strip() for _c in _row]
+                if any(_cells):
+                    _out.append(_cells)
+            return _out
+
+        _pdfc_payload = {
+            "advisor_notes":       _pdfc_notes.strip(),
+            "implementation_plan": _rows_from_editor(_pdfc_impl),
+            "methodology":         _pdfc_method.strip(),
+            "key_definitions":     _rows_from_editor(_pdfc_kd),
+            "disclosures":         _pdfc_disc.strip(),
+        }
+        try:
+            save_pdf_content(_pdfc_payload)
+        except Exception as _pdfc_err:
+            st.error(f"Couldn't save PDF content: {_pdfc_err}")
+            with st.expander("Debug info"):
+                import traceback as _pdfc_tb
+                st.code(_pdfc_tb.format_exc())
+        else:
+            st.success(
+                "✅ PDF content saved. Newly generated proposal PDFs "
+                "will use this wording."
+            )
+            st.caption(f"Saved to: `{PDF_CONTENT_FILE}`")
+
+
+# ═══════════════════════════════════════════════════════════════
 # TAB 5 — SETTINGS (firm branding, advisor info, logo + photo)
 # ═══════════════════════════════════════════════════════════════
 with main_tab5:
@@ -16133,44 +16797,49 @@ with main_tab5:
     # (firm logo + advisor photo) that get embedded on every generated
     # proposal PDF. Stored globally so all client PDFs share the same
     # branding. Pass B picks these up in the PDF builder.
-    _fs = load_firm_settings()
+    _fs  = load_firm_settings()
+    # v2.4 nested schema — the client portal + mrb_design read firm.* and
+    # advisor.* (not the legacy flat keys). Pre-fill from there so a save
+    # round-trips the canonical values instead of blanking them.
+    _adv = _fs.get("advisor", {}) or {}
+    _frm = _fs.get("firm", {}) or {}
 
     fb_l, fb_r = st.columns(2)
     with fb_l:
         firm_name = st.text_input(
             "Firm name",
-            value=_fs.get("firm_name", ""),
+            value=_frm.get("name", ""),
             placeholder="Foresight Wealth Partners",
             key="fb_firm_name",
         )
         advisor_name = st.text_input(
             "Advisor name",
-            value=_fs.get("advisor_name", ""),
+            value=_adv.get("name", ""),
             placeholder="Sarah Whitfield, CFP®",
             key="fb_advisor_name",
         )
         advisor_title = st.text_input(
             "Advisor title",
-            value=_fs.get("advisor_title", ""),
+            value=_adv.get("title", ""),
             placeholder="Senior Financial Advisor",
             key="fb_advisor_title",
         )
     with fb_r:
         advisor_email = st.text_input(
             "Advisor email",
-            value=_fs.get("advisor_email", ""),
+            value=_adv.get("email", ""),
             placeholder="sarah@foresightwealth.com",
             key="fb_advisor_email",
         )
         advisor_phone = st.text_input(
             "Advisor phone",
-            value=_fs.get("advisor_phone", ""),
+            value=_adv.get("phone", ""),
             placeholder="(612) 555-0142",
             key="fb_advisor_phone",
         )
         firm_website = st.text_input(
             "Firm website",
-            value=_fs.get("firm_website", ""),
+            value=_frm.get("website", ""),
             placeholder="www.foresightwealth.com",
             key="fb_firm_website",
         )
@@ -16185,7 +16854,7 @@ with main_tab5:
     default_advisory_fee_pct = st.number_input(
         "Default advisory fee (% per year)",
         min_value=0.0, max_value=10.0, step=0.05, format="%.2f",
-        value=float(_fs.get("default_advisory_fee_pct", 1.00)),
+        value=float(_fs.get("default_advisory_fee_pct", _frm.get("fee_pct", 1.00))),
         help=("Annual AUM fee that appears in the SEC Marketing Rule "
               "disclosure on every generated proposal PDF. Should match "
               "the fee schedule on your firm's Form ADV. Set to 0 if your "
@@ -16201,13 +16870,13 @@ with main_tab5:
     st.caption("**Shown on the client portal Advisor tab:**")
     firm_address = st.text_input(
         "Firm address",
-        value=_fs.get("firm_address", ""),
+        value=_frm.get("address", ""),
         placeholder="200 South Sixth Street, Suite 1200, Minneapolis, MN 55402",
         key="fb_firm_address",
     )
     advisor_bio = st.text_area(
         "Advisor bio (short paragraph)",
-        value=_fs.get("advisor_bio", ""),
+        value=_adv.get("bio", ""),
         placeholder=("Sarah has spent fifteen years helping families plan "
                      "for retirement, education, and legacy goals. She's a "
                      "Certified Financial Planner™ and a fiduciary."),
@@ -16267,26 +16936,41 @@ with main_tab5:
 
     st.markdown("---")
     if st.button("💾 Save firm details", type="primary", key="fb_save"):
-        _payload = {
-            "firm_name":     firm_name.strip(),
-            "advisor_name":  advisor_name.strip(),
-            "advisor_title": advisor_title.strip(),
-            "advisor_email": advisor_email.strip(),
-            "advisor_phone": advisor_phone.strip(),
-            "firm_website":  firm_website.strip(),
-            "firm_address":  firm_address.strip(),
-            "advisor_bio":   advisor_bio.strip(),
-            # SEC Marketing Rule disclosure — appears on every proposal PDF.
-            # Rounded to 2 decimal places to match the disclosure formatter.
-            "default_advisory_fee_pct": round(float(default_advisory_fee_pct), 2),
+        # Merge into the v2.4 NESTED schema the client portal + mrb_design
+        # actually read (firm.* / advisor.*). update_json is a read-modify-write
+        # under a lock, so it preserves the rest of firm_settings.json (brand,
+        # typography, proposal_copy) instead of the old flat full-overwrite,
+        # which would have clobbered the entire design system.
+        _fee = round(float(default_advisory_fee_pct), 2)
+        _fields = {
+            "firm.name":     firm_name.strip(),
+            "firm.website":  firm_website.strip(),
+            "firm.address":  firm_address.strip(),
+            "advisor.name":  advisor_name.strip(),
+            "advisor.title": advisor_title.strip(),
+            "advisor.email": advisor_email.strip(),
+            "advisor.phone": advisor_phone.strip(),
+            "advisor.bio":   advisor_bio.strip(),
         }
-        # Try the write, surface any error visibly, then re-read the
-        # file to verify the data actually landed on disk. If save was
-        # silently failing before this, the user would see a dead
-        # button — now they get either a green confirmation that
-        # includes the file path + field count, or a red error.
+
+        def _merge_branding(s):
+            s.setdefault("firm", {})
+            s.setdefault("advisor", {})
+            s["firm"]["name"]     = firm_name.strip()
+            s["firm"]["website"]  = firm_website.strip()
+            s["firm"]["address"]  = firm_address.strip()
+            s["advisor"]["name"]  = advisor_name.strip()
+            s["advisor"]["title"] = advisor_title.strip()
+            s["advisor"]["email"] = advisor_email.strip()
+            s["advisor"]["phone"] = advisor_phone.strip()
+            s["advisor"]["bio"]   = advisor_bio.strip()
+            # Fee stays top-level - the proposal fee resolver reads it there.
+            s["default_advisory_fee_pct"] = _fee
+
+        # Write, surface any error visibly, then re-read to verify the data
+        # landed. A silent failure would otherwise look like a dead button.
         try:
-            save_firm_settings(_payload)
+            _shared_update_json(FIRM_SETTINGS_FILE, _merge_branding)
         except Exception as _save_err:
             import traceback as _tb
             st.error(f"Couldn't save firm settings: {_save_err}")
@@ -16297,34 +16981,43 @@ with main_tab5:
                     f"**App directory:** `{_APP_DIR}`"
                 )
         else:
-            # Verify by re-reading
+            # Verify by re-reading the nested blocks.
             _verify = load_firm_settings()
+            _vadv   = _verify.get("advisor", {}) or {}
+            _vfrm   = _verify.get("firm", {}) or {}
+            _resolved = {
+                "firm.name":     _vfrm.get("name", ""),
+                "firm.website":  _vfrm.get("website", ""),
+                "firm.address":  _vfrm.get("address", ""),
+                "advisor.name":  _vadv.get("name", ""),
+                "advisor.title": _vadv.get("title", ""),
+                "advisor.email": _vadv.get("email", ""),
+                "advisor.phone": _vadv.get("phone", ""),
+                "advisor.bio":   _vadv.get("bio", ""),
+            }
+            _total_filled = sum(1 for v in _fields.values() if v)
             _populated = sum(
-                1 for k, v in _payload.items()
-                if isinstance(v, str) and v.strip() and _verify.get(k) == v
+                1 for k, v in _fields.items()
+                if v and _resolved.get(k) == v
             )
-            _total_filled = sum(
-                1 for v in _payload.values()
-                if isinstance(v, str) and v.strip()
-            )
-            if _populated == _total_filled and _total_filled > 0:
-                st.success(
-                    f"✅ Firm branding saved — {_populated} field(s) written to disk. "
-                    "Updates apply to new PDFs and the client portal immediately. "
-                    "Refresh the portal page to see changes."
-                )
-                st.caption(f"Saved to: `{FIRM_SETTINGS_FILE}`")
-            elif _total_filled == 0:
+            if _total_filled == 0:
                 st.warning(
-                    "All fields are blank — nothing was saved. "
-                    "Fill in at least one field (firm name, advisor name, etc.) "
-                    "and try again."
+                    "All fields are blank \u2014 nothing was saved. Fill in at "
+                    "least one field (firm name, advisor name, etc.) and retry."
                 )
+            elif _populated == _total_filled:
+                st.success(
+                    f"\u2705 Firm branding saved \u2014 {_populated} field(s) written. "
+                    "The portal reads settings at startup and caches ~60s, so "
+                    "reboot the portal app to see the change."
+                )
+                st.caption(f"Saved to: `{FIRM_SETTINGS_FILE}` (firm.* / advisor.*)")
             else:
                 st.warning(
-                    f"Save partially succeeded: {_populated} of {_total_filled} "
-                    f"non-empty fields verified on re-read. The file may be "
-                    f"locked or have permission issues."
+                    f"Save partially verified: {_populated} of {_total_filled} "
+                    "non-empty fields confirmed on re-read. If this persists, the "
+                    "portal may read a different settings source \u2014 confirm "
+                    "mrb_design.load_settings() reads via data_store."
                 )
                 st.caption(f"Wrote to: `{FIRM_SETTINGS_FILE}`")
 
@@ -16580,7 +17273,7 @@ with main_tab5:
                         "will show '—'."
                     )
 
-        # 4. Cache stats
+        # 4. Cache stats + clear button
         try:
             _disk_cache = _load_er_cache()
             _ses_cache = getattr(_expense_ratio_for_ticker, "_session_cache", {}) or {}
@@ -16588,6 +17281,26 @@ with main_tab5:
                 f"Cache: **{len(_disk_cache)}** tickers on disk · "
                 f"**{len(_ses_cache)}** in this session"
             )
+            if st.button("🗑️ Clear ER cache (disk + session)",
+                         key="_er_cache_clear_btn",
+                         use_container_width=True,
+                         help="Wipes both the on-disk expense-ratio cache "
+                              "and the in-memory session cache. Next ER "
+                              "lookup runs the full waterfall fresh — "
+                              "use this if old stock-fallback 0.0 values "
+                              "are shadowing yfinance results."):
+                # Wipe disk cache via the data_store layer
+                try:
+                    _save_er_cache({})
+                except Exception:
+                    pass
+                # Wipe the in-process memoized copy too
+                if hasattr(_load_er_cache, "_cache"):
+                    _load_er_cache._cache = {}
+                # Wipe the session-level memoization on the resolver
+                _expense_ratio_for_ticker._session_cache = {}
+                st.success("ER cache cleared. Re-render to refresh.")
+                st.rerun()
         except Exception:
             pass
 
