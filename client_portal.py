@@ -206,37 +206,42 @@ ADVISOR_PHOTO_DATA_URI = _load_image_as_data_uri("advisor_photo.png")
 # layer when the real photo isn't uploaded yet.
 _NAVY = resolve_color_key("brand.primary.navy", SETTINGS)
 _GOLD = resolve_color_key("brand.accent.gold", SETTINGS)
-ADVISOR["photo_svg"] = (
-    '<svg viewBox="0 0 80 80" width="80" height="80" '
-    'xmlns="http://www.w3.org/2000/svg">'
-    '<defs><linearGradient id="adv_bg" x1="0" y1="0" x2="1" y2="1">'
-    f'<stop offset="0" stop-color="{_NAVY}"/>'
-    f'<stop offset="1" stop-color="{_GOLD}"/></linearGradient></defs>'
-    '<circle cx="40" cy="40" r="40" fill="url(#adv_bg)"/>'
-    '<circle cx="40" cy="32" r="13" fill="#FFFFFF" opacity="0.95"/>'
-    '<path d="M16 70 C 18 56, 28 50, 40 50 S 62 56, 64 70 Z" '
-    'fill="#FFFFFF" opacity="0.95"/>'
-    '</svg>'
-)
-
-# If we have an advisor photo, swap it into the ADVISOR dict so existing
-# code paths (which read `a["photo_svg"]`) get the real photo instead of
-# the generic silhouette. We render it as an SVG containing an <image>
-# element so the existing markup that just drops `photo_svg` inline still
-# works — same outer dimensions, same circular treatment, just a real
-# face inside the circle.
-if ADVISOR_PHOTO_DATA_URI:
-    ADVISOR["photo_svg"] = (
+def advisor_photo_svg(uid: str = "main") -> str:
+    """Return the advisor photo (or silhouette fallback) as an 80x80 CIRCULAR
+    SVG. `uid` makes the internal element ids unique per call site. Streamlit
+    renders every tab into the DOM simultaneously, so reusing one id (the
+    clipPath) across the home card and the Advisor-tab card made the second
+    instance's circular clip silently fail and render as a square. Unique ids
+    per usage keep every copy circular."""
+    if ADVISOR_PHOTO_DATA_URI:
+        cid = f"adv_photo_clip_{uid}"
+        return (
+            '<svg viewBox="0 0 80 80" width="80" height="80" '
+            'xmlns="http://www.w3.org/2000/svg">'
+            f'<defs><clipPath id="{cid}">'
+            '<circle cx="40" cy="40" r="40"/></clipPath></defs>'
+            f'<image href="{ADVISOR_PHOTO_DATA_URI}" '
+            'x="0" y="0" width="80" height="80" '
+            f'preserveAspectRatio="xMidYMid slice" clip-path="url(#{cid})"/>'
+            '</svg>'
+        )
+    gid = f"adv_bg_{uid}"
+    return (
         '<svg viewBox="0 0 80 80" width="80" height="80" '
         'xmlns="http://www.w3.org/2000/svg">'
-        '<defs>'
-        '<clipPath id="adv_photo_clip"><circle cx="40" cy="40" r="40"/></clipPath>'
-        '</defs>'
-        f'<image href="{ADVISOR_PHOTO_DATA_URI}" '
-        'x="0" y="0" width="80" height="80" '
-        'preserveAspectRatio="xMidYMid slice" clip-path="url(#adv_photo_clip)"/>'
+        f'<defs><linearGradient id="{gid}" x1="0" y1="0" x2="1" y2="1">'
+        f'<stop offset="0" stop-color="{_NAVY}"/>'
+        f'<stop offset="1" stop-color="{_GOLD}"/></linearGradient></defs>'
+        f'<circle cx="40" cy="40" r="40" fill="url(#{gid})"/>'
+        '<circle cx="40" cy="32" r="13" fill="#FFFFFF" opacity="0.95"/>'
+        '<path d="M16 70 C 18 56, 28 50, 40 50 S 62 56, 64 70 Z" '
+        'fill="#FFFFFF" opacity="0.95"/>'
         '</svg>'
     )
+
+# Default (home/compact card) variant. The Advisor tab calls
+# advisor_photo_svg("advisor") directly so its ids don't collide with this.
+ADVISOR["photo_svg"] = advisor_photo_svg("main")
 
 # Browser-tab favicon. Streamlit's page_icon accepts an emoji, a URL, a
 # PIL Image, or a local file path. Prefer the firm's own logo at
@@ -394,7 +399,7 @@ st.markdown(
         .stTextArea textarea {{
             background-color: {THEME['surface']} !important;
             color: {THEME['ink']} !important;
-            border: 1px solid {THEME['line']} !important;
+            border: 1.5px solid {THEME['primary']} !important;
             border-radius: 10px !important;
             font-family: 'Inter', sans-serif;
         }}
@@ -406,7 +411,7 @@ st.markdown(
         }}
         .stSelectbox > div > div, .stMultiSelect > div > div {{
             background-color: {THEME['surface']} !important;
-            border: 1px solid {THEME['line']} !important;
+            border: 1.5px solid {THEME['primary']} !important;
             border-radius: 10px !important;
         }}
         .stMultiSelect [data-baseweb="tag"] {{
@@ -473,7 +478,7 @@ st.markdown(
             transition: all 0.15s ease;
             background: {THEME['surface']};
             color: {THEME['ink']};
-            border: 1px solid {THEME['line']};
+            border: 1.5px solid {THEME['primary']};
         }}
         .stButton > button:hover {{
             background: {THEME['surface2']};
@@ -506,6 +511,7 @@ st.markdown(
             background: {THEME['surface']};
             border-radius: 14px;
             border: 1.5px solid {THEME['primary']};
+            overflow: hidden;
         }}
 
         .js-plotly-plot, .plot-container {{ background: transparent !important; }}
@@ -3017,7 +3023,7 @@ def _render_advisor_tab():
     st.markdown(
         f'<div class="fr-card">'
         f'  <div style="display:flex;gap:18px;align-items:center">'
-        f'    <div style="flex-shrink:0">{a["photo_svg"]}</div>'
+        f'    <div style="flex-shrink:0">{advisor_photo_svg("advisor")}</div>'
         f'    <div style="flex:1">'
         f'      <div class="fr-eyebrow">Your advisor</div>'
         f'      <div style="font-size:1.15rem;font-weight:600;color:{THEME["ink"]};'
