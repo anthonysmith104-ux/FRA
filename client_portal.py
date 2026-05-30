@@ -1359,6 +1359,19 @@ def _logout():
     st.rerun()
 
 
+def _render_sign_out(suffix: str):
+    """Sign-out control. Shown only on the Home and My Info tabs (not every
+    tab). `suffix` keeps the Streamlit button key unique per call site, since
+    both tabs render into the DOM at once."""
+    st.markdown('<div style="height:32px"></div>', unsafe_allow_html=True)
+    _so_l, _so_c, _so_r = st.columns([1, 2, 1])
+    with _so_c:
+        if st.button("Sign out", key=f"fr_logout_btn_{suffix}",
+                     use_container_width=True):
+            _logout()
+    st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # LOGIN
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2017,6 +2030,7 @@ def render_dashboard():
 
     with tab_home:
         _render_home_tab(profile, holdings, ck)
+        _render_sign_out("home")
     with tab_goals:
         _render_plan_tab(ck)
     with tab_holdings:
@@ -2025,20 +2039,7 @@ def render_dashboard():
         _render_advisor_tab()
     with tab_my_info:
         _render_my_info_tab()
-
-    # ── Sign out (bottom of page) ──────────────────────────────────────────
-    # Placed after the tabs so it sits at the bottom of whichever tab the
-    # user is on. Constrained-width so it doesn't span the whole viewport
-    # — same column proportions as the welcome screen's CTA for visual
-    # consistency. Subtle styling (not type="primary") since this is a
-    # destructive/exit action, not the primary thing the user came to do.
-    st.markdown('<div style="height:32px"></div>', unsafe_allow_html=True)
-    _so_l, _so_c, _so_r = st.columns([1, 2, 1])
-    with _so_c:
-        if st.button("Sign out", key="fr_logout_btn",
-                     use_container_width=True):
-            _logout()
-    st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
+        _render_sign_out("myinfo")
 
 
 def _render_home_tab(profile: dict, holdings: dict, ck: str):
@@ -2543,100 +2544,90 @@ def _render_plan_tab(ck: str):
         unsafe_allow_html=True,
     )
 
-    # Goals list — a single editable table. No cap on number of goals; users
-    # add rows by typing into the empty bottom row, delete by selecting rows
-    # via the row-handle and pressing Delete (Streamlit's data_editor pattern,
-    # same as the holdings editor elsewhere in this app).
     today = date.today()
-
-    import pandas as pd  # local import — only needed for the goals/budget tab
-
-    # Build the editable dataframe. We always append one blank row at the end
-    # so there's a visible "add a goal here" affordance even when the list
-    # is full of saved goals.
     default_target = today.replace(year=today.year + 5)
-    goal_rows = []
-    for g in goals:
-        try:
-            tdt = date.fromisoformat(g.get("target_date", ""))
-        except Exception:
-            tdt = default_target
-        goal_rows.append({
-            "Goal":         g.get("name", ""),
-            "Target $":     float(g.get("amount") or 0),
-            "Saved":        float(g.get("saved") or 0),
-            "Target date":  tdt,
-        })
-    goals_df = pd.DataFrame(
-        goal_rows,
-        columns=["Goal", "Target $", "Saved", "Target date"],
-    )
 
-    edited_df = st.data_editor(
-        goals_df,
-        key="fr_goals_editor",
-        num_rows="dynamic",            # users can add/delete rows freely
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Goal": st.column_config.TextColumn(
-                "Goal",
-                help="What are you saving toward? "
-                     "(e.g., House down payment, Sabbatical, College fund)",
-                required=False,
-                max_chars=80,
-            ),
-            "Target $": st.column_config.NumberColumn(
-                "Target $",
-                help="Dollar amount you want to reach",
-                min_value=0.0, step=1000.0, format="$%d",
-            ),
-            "Saved": st.column_config.NumberColumn(
-                "Saved",
-                help="How much you've set aside toward this goal so far",
-                min_value=0.0, step=500.0, format="$%d",
-            ),
-            "Target date": st.column_config.DateColumn(
-                "Target date",
-                help="When you want to reach the goal",
-                min_value=today,
-            ),
-        },
-    )
+    # Mobile-first goals UI: each goal is a stacked card (no wide scrolling
+    # grid), with an inline Edit/Remove panel. New goals are added through the
+    # form at the bottom. This replaced st.data_editor, whose 4-column grid
+    # forced horizontal scrolling that was unusable on a phone.
+    if goals:
+        for _i, _g in enumerate(goals):
+            _name  = (str(_g.get("name") or "Goal")).strip() or "Goal"
+            _amt   = float(_g.get("amount") or 0)
+            _saved = float(_g.get("saved") or 0)
+            try:
+                _tdt   = date.fromisoformat(_g.get("target_date", ""))
+                _mleft = max(1, (_tdt.year - today.year) * 12
+                                + (_tdt.month - today.month))
+                _tdt_str = _tdt.strftime("%b %Y")
+            except Exception:
+                _tdt, _mleft, _tdt_str = default_target, 12, "\u2014"
+            _rem   = max(0.0, _amt - _saved)
+            _permo = _rem / _mleft
+            _pct   = min(100, (_saved / _amt * 100) if _amt else 0)
 
-    # Save changes whenever the table edits land. We keep only rows that have
-    # both a name and a positive target — partially-typed rows are ignored
-    # until they're complete, so the user's in-progress entry doesn't get
-    # discarded on rerun.
-    cleaned = []
-    for _, row in edited_df.iterrows():
-        name = (str(row.get("Goal") or "")).strip()
-        amt  = float(row.get("Target $") or 0)
-        if not name or amt <= 0:
-            continue
-        saved = float(row.get("Saved") or 0)
-        tdt = row.get("Target date") or default_target
-        try:
-            tdt_iso = (tdt.isoformat() if hasattr(tdt, "isoformat")
-                       else str(tdt))
-        except Exception:
-            tdt_iso = default_target.isoformat()
-        cleaned.append({
-            "name":        name,
-            "amount":      round(amt, 2),
-            "saved":       round(saved, 2),
-            "target_date": tdt_iso,
-            "added_at":    datetime.now().isoformat(timespec="minutes"),
-        })
+            st.markdown(
+                f'<div style="margin-top:12px;background:{THEME["surface2"]};'
+                f'            border:1.5px solid {THEME["primary"]};'
+                f'            border-radius:14px;padding:14px 16px">'
+                f'  <div style="display:flex;justify-content:space-between;'
+                f'              align-items:baseline;gap:10px">'
+                f'    <span style="font-weight:600;color:{THEME["ink"]};'
+                f'                 font-size:0.98rem">{_name}</span>'
+                f'    <span class="fr-mono" style="color:{THEME["ink"]};'
+                f'                 font-weight:600;white-space:nowrap">'
+                f'      {fmt_money(_saved)} / {fmt_money(_amt)}</span>'
+                f'  </div>'
+                f'  <div style="height:6px;background:{THEME["line"]};'
+                f'              border-radius:3px;margin-top:8px;overflow:hidden">'
+                f'    <div style="height:100%;width:{_pct:.0f}%;'
+                f'                background:{THEME["primary"]}"></div>'
+                f'  </div>'
+                f'  <div style="display:flex;justify-content:space-between;'
+                f'              font-size:0.78rem;color:{THEME["muted"]};'
+                f'              margin-top:8px">'
+                f'    <span>Target {_tdt_str}</span>'
+                f'    <span class="fr-mono">{fmt_money(_permo)}/mo</span>'
+                f'  </div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
-    # Persist only when the cleaned list actually differs from what's saved
-    # (otherwise every dashboard rerun would re-write the file).
-    def _normalize(g_list):
-        return [(g["name"], g["amount"], g["saved"], g["target_date"])
-                for g in g_list]
-    if _normalize(cleaned) != _normalize(goals):
-        save_goals_for(ck, cleaned)
-        goals = cleaned
+            with st.expander("Edit / remove"):
+                with st.form(f"fr_goal_edit_{_i}", clear_on_submit=False):
+                    _e_amt = st.number_input(
+                        "Target amount ($)", min_value=0.0, step=1000.0,
+                        value=float(_amt), format="%.0f",
+                        key=f"fr_goal_amt_{_i}")
+                    _e_saved = st.number_input(
+                        "Already saved ($)", min_value=0.0, step=500.0,
+                        value=float(_saved), format="%.0f",
+                        key=f"fr_goal_saved_{_i}")
+                    _e_date = st.date_input(
+                        "Target date",
+                        value=(_tdt if _tdt >= today else today),
+                        min_value=today, key=f"fr_goal_date_{_i}")
+                    _ce1, _ce2 = st.columns(2)
+                    _save_clicked = _ce1.form_submit_button(
+                        "Save", type="primary", use_container_width=True)
+                    _del_clicked = _ce2.form_submit_button(
+                        "Remove", use_container_width=True)
+                if _save_clicked:
+                    goals[_i] = {
+                        "name":        _name,
+                        "amount":      round(float(_e_amt), 2),
+                        "saved":       round(float(_e_saved), 2),
+                        "target_date": _e_date.isoformat(),
+                        "added_at":    _g.get("added_at")
+                                       or datetime.now().isoformat(timespec="minutes"),
+                    }
+                    save_goals_for(ck, goals)
+                    st.rerun()
+                if _del_clicked:
+                    goals.pop(_i)
+                    save_goals_for(ck, goals)
+                    st.rerun()
 
     # Roll-up summary: total target, total saved, total monthly need across
     # all goals. Replaces the per-card progress bars; users see at a glance
@@ -2687,8 +2678,42 @@ def _render_plan_tab(ck: str):
             unsafe_allow_html=True,
         )
     else:
-        st.caption("Type a goal name in the empty row above to add your "
-                   "first one. Add as many goals as you'd like.")
+        st.caption("No goals yet \u2014 use the \u201cAdd a goal\u201d "
+                   "form below to create your first one.")
+
+    # ── Add a goal (stacked form; mobile-friendly) ───────────────────────
+    with st.expander("Add a goal", expanded=not goals):
+        with st.form("fr_goal_add", clear_on_submit=True):
+            _a_name = st.text_input(
+                "Goal", placeholder="e.g., House down payment, College fund",
+                max_chars=80, key="fr_goal_add_name")
+            _a_amt = st.number_input(
+                "Target amount ($)", min_value=0.0, step=1000.0, value=0.0,
+                format="%.0f", key="fr_goal_add_amt")
+            _a_saved = st.number_input(
+                "Already saved ($)", min_value=0.0, step=500.0, value=0.0,
+                format="%.0f", key="fr_goal_add_saved")
+            _a_date = st.date_input(
+                "Target date", value=default_target, min_value=today,
+                key="fr_goal_add_date")
+            _a_submit = st.form_submit_button(
+                "Add goal", type="primary", use_container_width=True)
+        if _a_submit:
+            _nm = (_a_name or "").strip()
+            if not _nm:
+                st.warning("Give your goal a name.")
+            elif _a_amt <= 0:
+                st.warning("Enter a target amount greater than $0.")
+            else:
+                goals.append({
+                    "name":        _nm,
+                    "amount":      round(float(_a_amt), 2),
+                    "saved":       round(float(_a_saved), 2),
+                    "target_date": _a_date.isoformat(),
+                    "added_at":    datetime.now().isoformat(timespec="minutes"),
+                })
+                save_goals_for(ck, goals)
+                st.rerun()
 
     # Visual separator between the Goals section and the Budget section,
     # since we no longer have card backgrounds providing that separation.
