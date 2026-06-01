@@ -446,15 +446,28 @@ st.markdown(
         }}
         .fr-headline-accent {{ color: {THEME['primary']}; }}
 
-        /* Inputs — blue outline on the whole box (text, number, date),
-           including the number steppers and the date field, with the inner
-           field borderless so there's no double outline. */
+        /* Inputs — blue outline on the whole box. Text and date fields are a
+           single box, so we border that. */
         .stTextInput > div > div,
-        .stNumberInput > div > div,
         .stDateInput > div > div {{
             background-color: {THEME['surface']} !important;
             border: 1.5px solid {THEME['primary']} !important;
             border-radius: 10px !important;
+        }}
+        /* Number inputs render the value field and the +/- steppers as TWO
+           sibling boxes. Border the wrapper that holds both, and strip the
+           inner borders/backgrounds so they read as one unified control
+           (value on the left, steppers on the right). */
+        .stNumberInput > div {{
+            background-color: {THEME['surface']} !important;
+            border: 1.5px solid {THEME['primary']} !important;
+            border-radius: 10px !important;
+            overflow: hidden !important;
+            gap: 0 !important;
+        }}
+        .stNumberInput > div > div {{
+            border: none !important;
+            background-color: transparent !important;
         }}
         .stTextInput > div > div > input,
         .stNumberInput > div > div > input,
@@ -472,7 +485,7 @@ st.markdown(
             font-family: 'Inter', sans-serif;
         }}
         .stTextInput > div > div:focus-within,
-        .stNumberInput > div > div:focus-within,
+        .stNumberInput > div:focus-within,
         .stDateInput > div > div:focus-within {{
             box-shadow: 0 0 0 3px {THEME['primary_soft']} !important;
         }}
@@ -1610,7 +1623,7 @@ def _screen_quiz():
         f'                transition:width 0.3s ease"></div>'
         f'  </div>'
         f'  <div class="fr-eyebrow">{q["section"]}</div>'
-        f'  <h2 style="font-size:1.55rem;font-weight:600;color:{THEME["ink"]};'
+        f'  <h2 style="font-size:1.7rem;font-weight:600;color:{THEME["ink"]};'
         f'             letter-spacing:-0.015em;line-height:1.25;margin:6px 0 22px">'
         f'    {q["text"]}'
         f'  </h2>'
