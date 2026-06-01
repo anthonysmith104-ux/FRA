@@ -1,0 +1,350 @@
+{
+  "_comment": "Firm-wide settings file consumed by both the advisor app (app.py) and the client portal (client_portal.py). The product (Foresight Risk Analytics) is white-labelable: this file's contents define the firm-branded experience, the app code stays generic. To onboard a different firm, swap this file for theirs (different firm_id) and the apps repaint accordingly. Do NOT hardcode colors, fonts, or copy in rendering code — always read from here via mrb_design.load_settings().",
+  "_version": "2.5",
+  "_updated": "2026-05-13",
+  "_changelog": {
+    "2.5": "Refined chart palette to 10 hand-tuned, evenly-spaced hues (was 14, with several near-duplicates). Added reserved 'Other holdings' gray (#a8a8a8) for the lump bucket. Added chart_palette.other_bucket config with max_distinct=10 and min_other_weight threshold. Result: every pie segment is visually distinct; portfolios >10 holdings collapse their smallest into one clean gray wedge.",
+    "2.4": "Added firm_id at top level to support white-label deployment across multiple firms. Each firm gets its own firm_settings.json with a unique firm_id, and the apps can switch experiences without code changes.",
+    "2.3": "Locked design system. Added gauge_geometry block for the speedometer arc. Added horizon block for the pre-retirement / retired row on page 1, with three status shapes (preretirement/retired/working_past_age). Added gradient_band block for the conservative-to-aggressive secondary indicator on option cards. Added crest_badge block for the cover risk badge sizing.",
+    "2.2": "Simplified alignment to three tiers (aligned/slight_drift/misaligned) using delta thresholds ≤5/6-10/11+. Color now carries status (green/amber/red). Added brand.semantic.warning tokens.",
+    "2.1": "Split chart_palette out from brand. Tickers now use Option C (Schwab-inspired, tuned for navy). asset_class and benchmarks moved under chart_palette but kept on brand colors as structural categories.",
+    "2.0": "Initial spec: navy + gold brand, editorial serif type, full proposal_copy block, ticker_colors map."
+  },
+
+  "firm_id": "mrb_capital_group",
+  "_firm_id_comment": "Stable identifier used by the apps to namespace per-firm data and to switch behavior in the rare case where firm-specific logic is needed (e.g. compliance disclosure variants). Lowercase, underscored, no spaces. New firms onboarding to Foresight get a new firm_id and a new firm_settings.json file. Do not change the firm_id of an existing firm — it's a key in stored data.",
+
+  "firm": {
+    "name": "MRB Capital Group",
+    "tagline": "Wealth advisory · Registered Investment Advisor",
+    "website": "www.mrb-capital-group.com",
+    "logo_path": "assets/firm_logo.png",
+    "logo_alt_text": "MRB Capital Group crest",
+    "fee_pct": 1.00
+  },
+
+  "advisor": {
+    "name": "Anthony Smith",
+    "title": "Financial Advisor",
+    "email": "anthonysmith@mrb-capital-group.com",
+    "phone": "651-216-6664",
+    "photo_path": "assets/advisor_photo.png"
+  },
+
+  "brand": {
+    "_comment": "Brand colors. Match the MRB website palette. Use these tokens by name throughout the apps — never hardcode hex values in rendering code.",
+
+    "primary": {
+      "navy":           "#1a2b4a",
+      "navy_dark":      "#0e1830",
+      "navy_light":     "#2b3d5e"
+    },
+    "accent": {
+      "gold":           "#b8943f",
+      "gold_dark":      "#8e6f2a",
+      "gold_light":     "#d4b676"
+    },
+    "surface": {
+      "white":          "#ffffff",
+      "cream":          "#fafaf6",
+      "cream_warm":     "#fbf8ef",
+      "cream_warmer":   "#fbf2ec",
+      "page_bg":        "#ffffff"
+    },
+    "text": {
+      "primary":        "#1a2030",
+      "secondary":      "#4a4a4a",
+      "tertiary":       "#6b6b6b",
+      "muted":          "#888888",
+      "on_navy":        "#ffffff",
+      "on_gold":        "#1a2b4a"
+    },
+    "border": {
+      "soft":           "#f0ece6",
+      "light":          "#e8e4dc",
+      "medium":         "#d8d8d8",
+      "strong":         "#1a2b4a",
+      "gold_soft":      "#e8dfc4"
+    },
+    "semantic": {
+      "_comment": "Reserved for risk warnings, gains/losses, and alignment status. Do not use for general UI. Three-tier alignment uses success (aligned), warning (slight drift), and danger (misaligned).",
+      "danger":         "#a32d2d",
+      "danger_bg":      "#fbecec",
+      "danger_warm_bg": "#fbf2ec",
+      "warning":        "#b8770b",
+      "warning_bg":     "#fbf4e3",
+      "success":        "#0f6e56",
+      "success_bg":     "#e7f3ed"
+    }
+  },
+
+  "typography": {
+    "_comment": "Editorial serif for display + headings; clean sans for everything else. Both Google Fonts, free for commercial use.",
+
+    "fonts": {
+      "serif":          "Source Serif Pro, Georgia, serif",
+      "sans":           "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+      "mono":           "JetBrains Mono, ui-monospace, monospace"
+    },
+    "weights": {
+      "regular":        400,
+      "medium":         500,
+      "bold":           600
+    },
+    "scale_pt": {
+      "_comment": "Sizes in points for PDF rendering. Multiply by ~1.333 for px-equivalent on screen.",
+      "display":        24,
+      "h1":             18,
+      "h2":             14,
+      "h3":             12,
+      "body":           9,
+      "small":          8,
+      "caption":        7,
+      "eyebrow":        7
+    }
+  },
+
+  "layout": {
+    "_comment": "PDF page geometry. All values in points (72pt = 1 inch).",
+
+    "page": {
+      "portrait_width":   612,
+      "portrait_height":  792,
+      "landscape_width":  792,
+      "landscape_height": 612
+    },
+    "margin": {
+      "top":    36,
+      "right":  44,
+      "bottom": 32,
+      "left":   44
+    },
+    "border_radius": {
+      "sm":     2,
+      "md":     4,
+      "lg":     6
+    },
+    "rule": {
+      "thick_pt": 1.0,
+      "thin_pt":  0.5
+    }
+  },
+
+  "proposal_copy": {
+    "_comment": "All client-facing copy that the proposal renders. Edit here; never hardcode in templates. Supports {placeholder} formatting where noted.",
+
+    "cover": {
+      "eyebrow":      "Portfolio proposal",
+      "title_html":   "Aligning your portfolio with your <em>profile.</em>",
+      "lede":         "This proposal compares your current holdings against three allocation options selected to better match your risk profile, time horizon, and stated priorities. Review with your advisor before making any changes.",
+      "risk_caption": "A composite of your willingness to take risk (tolerance) and your ability to absorb losses (capacity). The recommendations on the following pages are calibrated to this profile."
+    },
+    "alignment_status_copy": {
+      "_comment": "Three-tier system using absolute delta between profile and current portfolio risk numbers. Color tells the status; copy stays short. Thresholds: aligned ≤5, slight_drift 6-10, misaligned 11+. Use brand.semantic.success / .warning / .danger for the colors.",
+      "aligned":      "Aligned",
+      "slight_drift": "Slight drift",
+      "misaligned":   "Misaligned",
+      "detail_template": "Current portfolio score {current} sits {position_phrase} your {profile} profile.",
+      "_position_phrases": {
+        "within_above": "within tolerance of",
+        "within_below": "within tolerance of",
+        "slightly_above": "slightly above",
+        "slightly_below": "slightly below",
+        "well_above":   "well above",
+        "well_below":   "well below"
+      }
+    },
+    "options": {
+      "_comment": "Card labels for Section 2 — Proposed Portfolios. Keep client-friendly; never expose 'min-vol' or 'max-Sharpe' methodology here.",
+      "option_1": {
+        "tag":   "Option 1",
+        "title": "Recommended option"
+      },
+      "option_2": {
+        "tag":   "Option 2",
+        "title": "Slightly more conservative"
+      },
+      "option_3": {
+        "tag":   "Option 3",
+        "title": "Slightly more aggressive"
+      },
+      "section_lede": "Three allocation options aligned to your risk profile. The recommended option uses your holdings verbatim; the other two re-optimize the same holdings within a ±50% weight corridor to dial risk down or up."
+    },
+    "horizon_copy": {
+      "_comment": "Page 1 horizon row. The advisor app should set client.is_retired and client.target_retirement_age. Rendering code picks a shape based on (is_retired, current_age vs target_retirement_age). Three shapes: preretirement (still working, age < target), working_past_age (age >= target, still working), retired (is_retired=true).",
+      "status_labels": {
+        "preretirement":     "Pre-retirement",
+        "working_past_age":  "Working past target",
+        "retired":           "Retired"
+      },
+      "status_sublabels": {
+        "preretirement":     "Accumulation phase",
+        "working_past_age":  "Extended accumulation",
+        "retired":           "Withdrawal phase"
+      },
+      "horizon_headline_templates": {
+        "preretirement":     "{years} years",
+        "working_past_age":  "Open horizon",
+        "retired":           "{years}+ years"
+      },
+      "horizon_sublabel_templates": {
+        "preretirement":     "Age {current_age} → {target_age}",
+        "working_past_age":  "Past age {target_age}",
+        "retired":           "Income from age {retired_since_age}"
+      },
+      "horizon_bar_labels": {
+        "preretirement":     ["Working life · {current_age}", "Retirement · {target_age}"],
+        "working_past_age":  ["Past target · {target_age}", "Today · {current_age}"],
+        "retired":           ["Retired · {retired_since_age}", "Today · {current_age}"]
+      },
+      "_retired_default_horizon_years": 30,
+      "_retired_default_horizon_comment": "Default years to display for the retired status when the advisor hasn't entered a planning horizon. 30 years is reasonable for someone retiring at 65 with longevity planning to 95."
+    },
+    "sections": {
+      "current_holdings":     "Current holdings",
+      "recommendations":      "Proposed portfolios",
+      "backtest":             "Historical backtest",
+      "notable_periods":      "Notable market periods",
+      "fees":                 "Fee comparison",
+      "advisor":              "Your advisor",
+      "advisor_notes":        "Advisor notes",
+      "implementation":       "Implementation plan",
+      "methodology":          "How this proposal was built",
+      "definitions":          "Terms used in this report",
+      "disclosures":          "Important disclosures"
+    },
+    "implementation_stages": [
+      { "stage": "Initial funding",     "cadence": "Day 0",       "action": "Fund account and execute initial allocation per selected option." },
+      { "stage": "First review",        "cadence": "30 days",     "action": "Confirm execution and verify holdings match proposal." },
+      { "stage": "Rebalancing",         "cadence": "Quarterly",   "action": "Drift threshold 5% per position; tax-aware rebalancing where applicable." },
+      { "stage": "Performance review",  "cadence": "Semi-annual", "action": "Review against benchmarks; discuss any changes in goals or circumstances." },
+      { "stage": "Full re-assessment",  "cadence": "Annual",      "action": "Update risk profile; refresh proposal if score or goals change." }
+    ],
+    "footer_template": "Confidential · {client_name} · Prepared {prepared_date}"
+  },
+
+  "chart_palette": {
+    "_comment": "CHART-ONLY palette, separate from brand. Used for data visualization (donut segments, holdings dots) where ≥10 categorical hues need clear differentiation. Inspired by Schwab/Finsen statement charts but tuned to coexist with the navy + gold brand layer on the same page. Vibrancy lives here; brand cohesion lives in the `brand` block above. RULE: this palette is for individual data categories only. Structural categories (asset classes, gain/loss) stay on the brand+semantic palette.",
+
+    "tickers": {
+      "_comment": "Stable per-ticker colors used in donut segments AND holdings-grid dots. 10 hand-tuned hues with proper hue-wheel spacing (every ~30°) — every color is clearly distinguishable from every other. Plus a reserved 'Other' gray that absorbs lumped smaller holdings. The 10 explicit slots cover the 10 highest-allocation tickers in the firm's universe; tickers beyond the top 10 in any portfolio collapse into Other (see chart_palette.other_bucket).",
+
+      "SCHD":  "#a8388a",
+      "VOO":   "#7a2d8a",
+      "SPMO":  "#b85528",
+      "SGOV":  "#3a6db8",
+      "GLDM":  "#c89933",
+      "AVUV":  "#5b3eb8",
+      "VEA":   "#2f8f54",
+      "AVEM":  "#1f95a8",
+      "FBTC":  "#c43868",
+      "VGT":   "#8a9a3a",
+
+      "_fallback_palette": [
+        "#a8388a", "#7a2d8a", "#b85528", "#3a6db8", "#c89933",
+        "#5b3eb8", "#2f8f54", "#1f95a8", "#c43868", "#8a9a3a"
+      ],
+      "_fallback_rule": "If a ticker is not in chart_palette.tickers AND it survives the Other-bucket logic (i.e. it's in the top N for this portfolio), hash the ticker symbol and pick from _fallback_palette by index. Lumped tickers always get chart_palette.other_color regardless."
+    },
+
+    "other_bucket": {
+      "_comment": "Top-N rule for collapsing smaller holdings. The pie chart keeps the top `max_distinct` holdings (by weight) and lumps everything else into a single 'Other' wedge rendered in chart_palette.other_color. Set max_distinct=10 to match the explicit ticker palette size. min_other_weight prevents a 0.1% other wedge from showing — if the lumped total is below that threshold, the small holdings are simply dropped from the chart entirely.",
+      "max_distinct":     10,
+      "min_other_weight": 0.5,
+      "other_label":      "Other holdings"
+    },
+
+    "other_color": "#a8a8a8",
+    "_other_color_comment": "Reserved gray for the Other bucket. Never assign this hex to any individual ticker — it's the universal 'all the small stuff' signal.",
+
+    "asset_class": {
+      "_comment": "Used for the equity/bond/cash mini-bar on each option card. STRUCTURAL categories, so these stay on the brand palette — never use vibrant chart colors here.",
+      "equity":  "#1a2b4a",
+      "bond":    "#b8943f",
+      "cash":    "#d4c89a"
+    },
+
+    "benchmarks": {
+      "_comment": "Used on Section 4 — Notable Market Periods, where 4 series share one chart. Each series is a distinct semantic role (recommended vs current vs index benchmarks), so these stay on the brand + semantic palette for the recommended/current pair, with two muted neutrals for the index benchmarks.",
+      "recommended": "#1a2b4a",
+      "current":     "#a32d2d",
+      "spy":         "#b8943f",
+      "bnd":         "#6b87b3"
+    }
+  },
+
+  "donut_geometry": {
+    "_comment": "Geometric parameters for the holdings donut. Match these in any rendering implementation.",
+    "stroke_width":   10,
+    "radius":         42,
+    "viewbox":        [0, 0, 200, 160],
+    "rotation_start": -90,
+    "center_label_font_pt":     11,
+    "center_label_sublabel_pt":  5
+  },
+
+  "gauge_geometry": {
+    "_comment": "Speedometer half-circle gauge used on the recommendation cards. Fill is rendered as a stroke-dasharray on the same arc path as the background — DO NOT use arc-endpoint math, it leaves disconnected fragments at certain percentages. arc_length = π × radius is precomputed for convenience.",
+    "viewbox":             [0, 0, 180, 110],
+    "start_point":         [20, 90],
+    "end_point":           [160, 90],
+    "radius":              70,
+    "arc_length":          219.911,
+    "stroke_width":        9,
+    "stroke_linecap":      "round",
+    "endpoint_label_y":    105,
+    "endpoint_label_font_pt": 8,
+    "center_num_font_pt":     32,
+    "center_label_font_pt":    9,
+    "fill_color_key":      "brand.primary.navy",
+    "track_color_key":     "brand.border.soft"
+  },
+
+  "crest_badge": {
+    "_comment": "Cover-page risk badge (option C from the badge explorations). Concentric gold rings around a serif numeral. Three sizes — large for cover, medium reserved for future use (sidebar / TOC card), small not implemented in this badge style (use editorial numeral instead at small sizes).",
+    "large": {
+      "outer_size_px":       140,
+      "outer_border_pt":     2.5,
+      "inner_size_px":       124,
+      "inner_border_pt":     0.5,
+      "background_color_key": "brand.surface.cream",
+      "ring_color_key":      "brand.accent.gold",
+      "numeral_font_pt":     58,
+      "eyebrow_font_pt":      9,
+      "of_99_font_pt":       11
+    },
+    "medium": {
+      "outer_size_px":        60,
+      "outer_border_pt":     1.5,
+      "background_color_key": "brand.surface.cream",
+      "ring_color_key":      "brand.accent.gold",
+      "numeral_font_pt":     22
+    }
+  },
+
+  "gradient_band": {
+    "_comment": "Conservative→aggressive gradient strip used as a secondary indicator below the gauge on each option card. Three-stop linear gradient using the semantic backgrounds (green→amber→red, all in their lightest _bg variants). Marker is solid navy positioned at risk/99 × 100%.",
+    "height_pt":         6,
+    "border_radius_pt":  3,
+    "gradient_stops": [
+      { "offset": "0%",   "color_key": "brand.semantic.success_bg" },
+      { "offset": "50%",  "color_key": "brand.semantic.warning_bg" },
+      { "offset": "100%", "color_key": "brand.semantic.danger_bg"  }
+    ],
+    "marker_width_pt":    3,
+    "marker_color_key":   "brand.primary.navy",
+    "endpoint_labels":    ["Conservative", "Aggressive"]
+  },
+
+  "horizon_bar": {
+    "_comment": "Page 1 horizon bar visualization. Three layered elements: track (warm gray), fill (gold for completed portion), marker (navy at current position). For pre-retirement: fill = current_age/target_age × 100%, marker at same position. For retired: track represents planned income horizon, fill = (current_age - retired_since_age)/horizon_years × 100%. For working_past_age: omit the bar entirely (no meaningful range to plot).",
+    "height_pt":         5,
+    "border_radius_pt":  2.5,
+    "track_color_key":   "brand.border.soft",
+    "fill_color_key":    "brand.accent.gold",
+    "marker_color_key":  "brand.primary.navy",
+    "marker_width_pt":   2,
+    "marker_overhang_pt": 4,
+    "endpoint_label_font_pt": 9
+  }
+}
