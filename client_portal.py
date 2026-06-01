@@ -446,9 +446,24 @@ st.markdown(
         }}
         .fr-headline-accent {{ color: {THEME['primary']}; }}
 
-        /* Inputs */
+        /* Inputs — blue outline on the whole box (text, number, date),
+           including the number steppers and the date field, with the inner
+           field borderless so there's no double outline. */
+        .stTextInput > div > div,
+        .stNumberInput > div > div,
+        .stDateInput > div > div {{
+            background-color: {THEME['surface']} !important;
+            border: 1.5px solid {THEME['primary']} !important;
+            border-radius: 10px !important;
+        }}
         .stTextInput > div > div > input,
         .stNumberInput > div > div > input,
+        .stDateInput input {{
+            background-color: transparent !important;
+            color: {THEME['ink']} !important;
+            border: none !important;
+            font-family: 'Inter', sans-serif;
+        }}
         .stTextArea textarea {{
             background-color: {THEME['surface']} !important;
             color: {THEME['ink']} !important;
@@ -456,10 +471,9 @@ st.markdown(
             border-radius: 10px !important;
             font-family: 'Inter', sans-serif;
         }}
-        .stTextInput > div > div > input:focus,
-        .stNumberInput > div > div > input:focus,
-        .stTextArea textarea:focus {{
-            border-color: {THEME['primary']} !important;
+        .stTextInput > div > div:focus-within,
+        .stNumberInput > div > div:focus-within,
+        .stDateInput > div > div:focus-within {{
             box-shadow: 0 0 0 3px {THEME['primary_soft']} !important;
         }}
         .stSelectbox > div > div, .stMultiSelect > div > div {{
@@ -1465,9 +1479,9 @@ def _screen_welcome():
         _spc_l, _link, _spc_r = st.columns([1, 2, 1])
         with _link:
             st.markdown(
-                f'<div style="text-align:center;margin-top:14px;'
+                f'<div style="text-align:center;margin-top:6px;'
                 f'            font-size:0.92rem;color:{THEME["muted"]}">'
-                f'  Already a member?'
+                f'  Already registered?'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -1596,7 +1610,7 @@ def _screen_quiz():
         f'                transition:width 0.3s ease"></div>'
         f'  </div>'
         f'  <div class="fr-eyebrow">{q["section"]}</div>'
-        f'  <h2 style="font-size:1.4rem;font-weight:600;color:{THEME["ink"]};'
+        f'  <h2 style="font-size:1.55rem;font-weight:600;color:{THEME["ink"]};'
         f'             letter-spacing:-0.015em;line-height:1.25;margin:6px 0 22px">'
         f'    {q["text"]}'
         f'  </h2>'
@@ -2843,6 +2857,10 @@ def _render_plan_tab(ck: str):
         unsafe_allow_html=True,
     )
 
+    # Even the vertical rhythm: give the Reset/Save row the same breathing
+    # room above it (vs. the summary card) as there is between the two
+    # buttons. Tunable — bump this height if the gap should be larger.
+    st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
     sb1, sb2 = st.columns([1, 1])
     with sb1:
         if st.button("Reset budget", key="fr_bud_reset",
