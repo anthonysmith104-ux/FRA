@@ -450,7 +450,7 @@ st.markdown(
            font-size on injected markdown headings was being ignored, which is
            why earlier inline bumps had no visible effect. */
         .fr-question {{
-            font-size: 1.85rem !important;
+            font-size: 2.1rem !important;
             font-weight: 600;
             color: {THEME['ink']};
             letter-spacing: -0.015em;
