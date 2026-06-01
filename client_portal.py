@@ -445,6 +445,18 @@ st.markdown(
             letter-spacing: -0.015em; line-height: 1.18; margin: 0 0 14px 0;
         }}
         .fr-headline-accent {{ color: {THEME['primary']}; }}
+        /* Questionnaire question text — sized via a class with !important so
+           it reliably overrides Streamlit's default <h2> sizing. Inline
+           font-size on injected markdown headings was being ignored, which is
+           why earlier inline bumps had no visible effect. */
+        .fr-question {{
+            font-size: 1.85rem !important;
+            font-weight: 600;
+            color: {THEME['ink']};
+            letter-spacing: -0.015em;
+            line-height: 1.3;
+            margin: 6px 0 22px;
+        }}
 
         /* Inputs — blue outline on the whole box. Text and date fields are a
            single box, so we border that. */
@@ -1623,8 +1635,7 @@ def _screen_quiz():
         f'                transition:width 0.3s ease"></div>'
         f'  </div>'
         f'  <div class="fr-eyebrow">{q["section"]}</div>'
-        f'  <h2 style="font-size:1.85rem !important;font-weight:600;color:{THEME["ink"]};'
-        f'             letter-spacing:-0.015em;line-height:1.25;margin:6px 0 22px">'
+        f'  <h2 class="fr-question">'
         f'    {q["text"]}'
         f'  </h2>'
         f'</div>',
