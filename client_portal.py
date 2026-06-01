@@ -419,6 +419,7 @@ st.markdown(
         }}
         .fr-vital-detail {{
             display: flex; align-items: center; justify-content: space-between;
+            flex-wrap: wrap; gap: 2px 8px;
             font-size: 0.72rem; color: {THEME['muted']};
         }}
         .fr-mono {{
@@ -569,6 +570,19 @@ st.markdown(
         .js-plotly-plot, .plot-container {{ background: transparent !important; }}
 
         .block-container {{ padding-top: 1.4rem; padding-bottom: 4rem; max-width: 760px; }}
+
+        /* ── Mobile text-clipping hardening ──────────────────────────────
+           On narrow screens, side-by-side label/value rows
+           (justify-content:space-between) and long unbroken strings (big
+           dollar figures, emails) could run off the right edge and get
+           clipped instead of wrapping. These make all in-card content wrap
+           to fit; they engage only when content would otherwise overflow,
+           so the desktop layout is unchanged. */
+        [data-testid="stMarkdownContainer"] {{ overflow-wrap: break-word; }}
+        [data-testid="stMarkdownContainer"] div[style*="space-between"] {{
+            flex-wrap: wrap;
+            gap: 2px 12px;
+        }}
 
         .fr-cta-dark {{
             background: {THEME['ink']};
