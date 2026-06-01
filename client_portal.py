@@ -1623,7 +1623,7 @@ def _screen_quiz():
         f'                transition:width 0.3s ease"></div>'
         f'  </div>'
         f'  <div class="fr-eyebrow">{q["section"]}</div>'
-        f'  <h2 style="font-size:1.7rem;font-weight:600;color:{THEME["ink"]};'
+        f'  <h2 style="font-size:1.85rem !important;font-weight:600;color:{THEME["ink"]};'
         f'             letter-spacing:-0.015em;line-height:1.25;margin:6px 0 22px">'
         f'    {q["text"]}'
         f'  </h2>'
