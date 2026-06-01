@@ -1,0 +1,13 @@
+# Place this at  .streamlit/config.toml  in the repo root.
+# Pins the Streamlit theme to LIGHT so the app no longer follows the
+# viewer's device color scheme. Without this, a phone in dark mode made
+# Streamlit render native widgets dark — dark input boxes and WHITE label /
+# radio-option text — which was invisible against the app's cream background.
+# Colors below match the MRB brand palette from firm_settings.json.
+
+[theme]
+base = "light"
+primaryColor = "#1a2b4a"              # brand navy
+backgroundColor = "#fafaf6"           # cream
+secondaryBackgroundColor = "#fbf8ef"  # cream_warm
+textColor = "#1a2030"                 # ink (dark) — makes all labels/options readable
