@@ -141,7 +141,17 @@ def _github_get(name: str) -> tuple[Any, Optional[str]]:
         )
     payload = r.json()
     raw = base64.b64decode(payload["content"]).decode("utf-8")
-    parsed = json.loads(raw) if raw.strip() else None
+    if not raw.strip():
+        return None, payload.get("sha")
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        # The file exists but isn't valid JSON (e.g. a hand-edit left a
+        # trailing comma or unbalanced brace). Don't take the whole app down
+        # over one bad file — treat it as no usable value and keep the sha so
+        # a later write can overwrite the broken file cleanly. Callers get the
+        # default; the app loads instead of crashing.
+        return None, payload.get("sha")
     return parsed, payload.get("sha")
 
 
