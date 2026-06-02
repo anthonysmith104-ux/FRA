@@ -2063,24 +2063,30 @@ def _screen_register():
         st.caption("Your email is how you'll sign in next time.")
 
         # ── Required agreement ──────────────────────────────────────────
-        # The submit button stays disabled until this is checked, so a user
-        # cannot register without accepting. The accepted version + timestamp
-        # are recorded on the user record below for the audit trail.
-        agreed = st.checkbox(
-            "I agree to the Terms & Conditions and Privacy Policy",
-            key="fr_rg_consent",
-        )
-        v1, v2 = st.columns(2)
-        with v1:
-            if st.button("View Terms & Conditions", key="fr_rg_view_terms",
-                         use_container_width=True):
+        # The "Terms & Conditions" / "Privacy Policy" words in the checkbox
+        # label are links. Clicking one adds a ?agree= query param, which we
+        # catch here to open that document in a popup, then clear the param so
+        # the URL stays clean (and the same link can reopen it later). The
+        # submit button stays disabled until the box is checked; acceptance
+        # (version + timestamp) is recorded on the user record below.
+        _ag = st.query_params.get("agree")
+        if _ag in ("terms", "privacy"):
+            try:
+                del st.query_params["agree"]
+            except Exception:
+                pass
+            if _ag == "terms":
                 _agreement_popup("Terms & Conditions", TERMS_TEXT,
                                  "fr_terms_close", version=TOS_VERSION)
-        with v2:
-            if st.button("View Privacy Policy", key="fr_rg_view_privacy",
-                         use_container_width=True):
+            else:
                 _agreement_popup("Privacy Policy", PRIVACY_TEXT,
                                  "fr_privacy_close")
+
+        agreed = st.checkbox(
+            "I agree to the [Terms & Conditions](?agree=terms) and "
+            "[Privacy Policy](?agree=privacy)",
+            key="fr_rg_consent",
+        )
 
         b1, b2 = st.columns([1, 2])
         with b1:
