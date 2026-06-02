@@ -1200,6 +1200,33 @@ def logo_mark(color: str = None, size: int = 26) -> str:
     )
 
 
+# Public website the header brandmark links to. Prefer the website set in the
+# advisor app's Firm Branding panel (synced via shared identity); fall back to
+# the configured default if none is set.
+FIRM_WEBSITE_URL = "https://www.mrb-capital-group.com/"
+
+def _firm_url() -> str:
+    w = (ADVISOR.get("website") or "").strip()
+    if w:
+        return w if w.startswith(("http://", "https://")) else "https://" + w
+    return FIRM_WEBSITE_URL
+
+def firm_brandmark(size: int = 88, extra: str = "") -> str:
+    """Firm logo + wordmark wrapped as ONE live link to the firm website, so
+    clicking either the logo or the lettering opens the site in a new tab.
+    `extra` appends to the anchor's style (e.g. 'margin-bottom:14px')."""
+    return (
+        f'<a href="{_firm_url()}" target="_blank" rel="noopener" '
+        f'   style="display:flex;align-items:center;gap:10px;text-decoration:none;{extra}">'
+        f'{logo_mark(THEME["primary"], size)}'
+        f'<span style="font-size:1.5rem;font-weight:700;letter-spacing:0.06em;'
+        f'             color:{THEME["ink"]};text-transform:uppercase">'
+        f'{ADVISOR["firm"]}'
+        f'</span>'
+        f'</a>'
+    )
+
+
 def pulse_line(color: str = None, width: int = 56, height: int = 14,
                opacity: float = 0.7) -> str:
     color = color or THEME["primary"]
@@ -1526,7 +1553,7 @@ def _screen_welcome():
     welcome_html = (
         f'<div style="max-width:520px;margin:30px auto 0;padding:0 28px;text-align:center">'
         f'<div style="display:flex;align-items:center;justify-content:center;margin-bottom:36px">'
-        f'{logo_mark(THEME["primary"], 160)}'
+        f'<a href="{_firm_url()}" target="_blank" rel="noopener" style="text-decoration:none;display:inline-flex">{logo_mark(THEME["primary"], 160)}</a>'
         f'</div>'
         f'<h1 style="font-size:1.5rem;line-height:1.3;color:{THEME["ink"]};'
         f'font-weight:500;margin:14px auto 28px;letter-spacing:-0.015em;text-align:center">'
@@ -1672,13 +1699,7 @@ def _screen_quiz():
         f'<div style="max-width:560px;margin:20px auto 0;padding:0 28px">'
         f'  <div style="display:flex;align-items:center;justify-content:space-between;'
         f'              margin-bottom:14px">'
-        f'    <div style="display:flex;align-items:center;gap:10px">'
-        f'      {logo_mark(THEME["primary"], 88)}'
-        f'      <span style="font-size:1.5rem;font-weight:700;letter-spacing:0.06em;'
-        f'                   color:{THEME["ink"]};text-transform:uppercase">'
-        f'        {ADVISOR["firm"]}'
-        f'      </span>'
-        f'    </div>'
+        f'    {firm_brandmark(88)}'
         f'    <span style="font-size:0.78rem;color:{THEME["muted"]};'
         f'                 font-variant-numeric:tabular-nums">'
         f'      {idx+1} / {total}'
@@ -1832,13 +1853,7 @@ def _screen_results():
 
     st.markdown(
         f'<div style="max-width:560px;margin:20px auto 0;padding:0 28px">'
-        f'  <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
-        f'    {logo_mark(THEME["primary"], 88)}'
-        f'    <span style="font-size:1.5rem;font-weight:700;letter-spacing:0.06em;'
-        f'                 color:{THEME["ink"]};text-transform:uppercase">'
-        f'      {ADVISOR["firm"]}'
-        f'    </span>'
-        f'  </div>'
+        f'  {firm_brandmark(88, "margin-bottom:14px")}'
         f'  <div class="fr-eyebrow">Profile complete</div>'
         f'  <h1 class="fr-headline" style="font-size:1.85rem">'
         f'    Your risk profile is ready, {st.session_state.fr_first}.'
@@ -1930,13 +1945,7 @@ def _screen_register():
     not editable here to keep the form short)."""
     st.markdown(
         f'<div style="max-width:520px;margin:20px auto 0;padding:0 28px">'
-        f'  <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
-        f'    {logo_mark(THEME["primary"], 88)}'
-        f'    <span style="font-size:1.5rem;font-weight:700;letter-spacing:0.06em;'
-        f'                 color:{THEME["ink"]};text-transform:uppercase">'
-        f'      {ADVISOR["firm"]}'
-        f'    </span>'
-        f'  </div>'
+        f'  {firm_brandmark(88, "margin-bottom:14px")}'
         f'  <div class="fr-eyebrow">Almost done</div>'
         f'  <h1 class="fr-headline" style="font-size:1.7rem">Save your results</h1>'
         f'  <div style="color:{THEME["ink2"]};font-size:0.92rem;margin-bottom:8px">'
@@ -2098,13 +2107,7 @@ def render_dashboard():
     # Sign-out button moved to the bottom of the page (after the tabs) so
     # the top of the screen is reserved for branding and the user's data.
     st.markdown(
-        f'<div style="display:flex;align-items:center;gap:10px;padding-top:6px">'
-        f'  {logo_mark(THEME["primary"], 88)}'
-        f'  <span style="font-size:1.5rem;font-weight:700;letter-spacing:0.06em;'
-        f'               color:{THEME["ink"]};text-transform:uppercase">'
-        f'    {ADVISOR["firm"]}'
-        f'  </span>'
-        f'</div>',
+        f'{firm_brandmark(88, "padding-top:6px")}',
         unsafe_allow_html=True,
     )
 
@@ -3373,11 +3376,12 @@ def render_edit_profile():
     last_section = None
     for q in PROFILE_QUESTIONS:
         if q["section"] != last_section:
-            if last_section is not None:
-                st.markdown('</div>', unsafe_allow_html=True)
-            st.markdown('<div class="fr-card">', unsafe_allow_html=True)
+            # Section label only — no fr-card wrapper. The card divs rendered
+            # as empty divider boxes because Streamlit widgets attach as DOM
+            # siblings rather than nesting inside raw HTML. A spaced-out
+            # eyebrow label separates the sections without an empty box.
             st.markdown(
-                f'<div class="fr-eyebrow">{q["section"]}</div>',
+                f'<div class="fr-eyebrow" style="margin-top:18px">{q["section"]}</div>',
                 unsafe_allow_html=True,
             )
             last_section = q["section"]
@@ -3413,9 +3417,6 @@ def render_edit_profile():
                 )
                 val = list(val or [])[:mp]
             answers[qid] = val
-
-    if last_section is not None:
-        st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
     save_l, save_r = st.columns([1, 1])
