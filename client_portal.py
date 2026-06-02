@@ -1205,6 +1205,12 @@ def logo_mark(color: str = None, size: int = 26) -> str:
 # the configured default if none is set.
 FIRM_WEBSITE_URL = "https://www.mrb-capital-group.com/"
 
+# Advisor scheduling page (HubSpot Meetings, synced to Google Calendar). The
+# "Schedule my review" button opens this with the client's name/email
+# pre-filled; HubSpot logs the booking against the contact and writes the
+# event to the connected Google Calendar. Change the slug here if it moves.
+SCHEDULE_URL = "https://meetings-na2.hubspot.com/anthony-smith"
+
 def _firm_url() -> str:
     w = (ADVISOR.get("website") or "").strip()
     if w:
@@ -3338,11 +3344,27 @@ def _render_advisor_tab():
         f'</div>',
         unsafe_allow_html=True,
     )
-    if st.button("Schedule my review →", key="fr_schedule_btn",
-                 type="primary", use_container_width=True):
-        st.session_state.fr_flash = (
-            "Booking flow coming soon — your advisor will reach out.")
-        st.rerun()
+    # Schedule link — opens the advisor's HubSpot meetings page in a new tab,
+    # pre-filled with the client's name/email from their session. HubSpot
+    # writes the booking to the CRM (associated to the contact the portal
+    # already created) and to the connected Google Calendar.
+    from urllib.parse import urlencode as _urlencode
+    _su = st.session_state.get("fr_user") or {}
+    _sp = {}
+    if (_su.get("first_name") or "").strip(): _sp["firstName"] = _su["first_name"].strip()
+    if (_su.get("last_name")  or "").strip(): _sp["lastName"]  = _su["last_name"].strip()
+    if (_su.get("email")      or "").strip(): _sp["email"]     = _su["email"].strip()
+    _schedule_url = SCHEDULE_URL + (("?" + _urlencode(_sp)) if _sp else "")
+    st.markdown(
+        f'<a href="{_schedule_url}" target="_blank" rel="noopener" '
+        f'   style="display:block;width:100%;box-sizing:border-box;text-align:center;'
+        f'          background:{THEME["primary"]};color:#fff;padding:12px 16px;'
+        f'          border-radius:10px;text-decoration:none;font-weight:600;'
+        f'          font-size:0.95rem;margin-top:4px">'
+        f'  Schedule my review →'
+        f'</a>',
+        unsafe_allow_html=True,
+    )
 
 
 
