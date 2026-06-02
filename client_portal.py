@@ -1211,6 +1211,15 @@ FIRM_WEBSITE_URL = "https://www.mrb-capital-group.com/"
 # event to the connected Google Calendar. Change the slug here if it moves.
 SCHEDULE_URL = "https://meetings-na2.hubspot.com/anthony-smith"
 
+# Client-agreement links shown at registration. Point these at the real
+# published pages, and have your CCO/counsel review the documents themselves —
+# this code only records THAT the client agreed (version + timestamp); it does
+# not draft or constitute the agreement. Bump TOS_VERSION whenever the terms
+# change so the audit trail reflects which version each client accepted.
+TERMS_URL   = "https://www.mrb-capital-group.com/terms"
+PRIVACY_URL = "https://www.mrb-capital-group.com/privacy"
+TOS_VERSION = "2026-06-01"
+
 def _firm_url() -> str:
     w = (ADVISOR.get("website") or "").strip()
     if w:
@@ -1986,6 +1995,25 @@ def _screen_register():
 
         st.caption("Your email is how you'll sign in next time.")
 
+        # ── Required agreement ──────────────────────────────────────────
+        # The submit button stays disabled until this is checked, so a user
+        # cannot register without accepting. The accepted version + timestamp
+        # are recorded on the user record below for the audit trail.
+        agreed = st.checkbox(
+            "I agree to the Terms & Conditions and Privacy Policy",
+            key="fr_rg_consent",
+        )
+        st.markdown(
+            f'<div style="font-size:0.8rem;color:{THEME["muted"]};'
+            f'            margin:-6px 0 4px 2px">'
+            f'  Read the <a href="{TERMS_URL}" target="_blank" rel="noopener" '
+            f'     style="color:{THEME["primary"]}">Terms &amp; Conditions</a> and the '
+            f'  <a href="{PRIVACY_URL}" target="_blank" rel="noopener" '
+            f'     style="color:{THEME["primary"]}">Privacy Policy</a>.'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
         b1, b2 = st.columns([1, 2])
         with b1:
             if st.button("← Back", key="fr_rg_back",
@@ -1994,7 +2022,8 @@ def _screen_register():
                 st.rerun()
         with b2:
             if st.button("Save & view dashboard →", type="primary",
-                         key="fr_rg_submit", use_container_width=True):
+                         key="fr_rg_submit", use_container_width=True,
+                         disabled=not agreed):
                 # Validation
                 errors = []
                 if not is_valid_email(email):
@@ -2025,9 +2054,15 @@ def _screen_register():
                 # Pull the freshly-registered user and merge optional fields
                 user = find_user(email)
                 if user:
+                    from datetime import datetime as _dt, timezone as _tz
                     user["age"]     = int(st.session_state.fr_age)
                     user["address"] = (addr or "").strip()
                     user["zip"]     = (zipcode or "").strip()
+                    # Audit trail: which agreement version the client accepted
+                    # and when (UTC). Reaching here requires the consent box,
+                    # since it gates the submit button above.
+                    user["consent_tos_version"] = TOS_VERSION
+                    user["consent_tos_at"] = _dt.now(_tz.utc).isoformat(timespec="seconds")
                     _shared_update_json(
                         USERS_FILE,
                         lambda d, k=user["email"], u=user: d.update({k: u}),
