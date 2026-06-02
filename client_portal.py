@@ -1211,14 +1211,81 @@ FIRM_WEBSITE_URL = "https://www.mrb-capital-group.com/"
 # event to the connected Google Calendar. Change the slug here if it moves.
 SCHEDULE_URL = "https://meetings-na2.hubspot.com/anthony-smith"
 
-# Client-agreement links shown at registration. Point these at the real
-# published pages, and have your CCO/counsel review the documents themselves —
-# this code only records THAT the client agreed (version + timestamp); it does
-# not draft or constitute the agreement. Bump TOS_VERSION whenever the terms
-# change so the audit trail reflects which version each client accepted.
-TERMS_URL   = "https://www.mrb-capital-group.com/terms"
-PRIVACY_URL = "https://www.mrb-capital-group.com/privacy"
+# Client agreement shown at registration as an in-app popup. Replace the
+# placeholder body text below with your CCO/counsel-approved language before
+# launch — this code provides the popup and records acceptance (version +
+# timestamp); it does not constitute the agreement and is not legal advice.
+# Bump TOS_VERSION whenever the text changes so the audit trail stays accurate.
 TOS_VERSION = "2026-06-01"
+
+TERMS_TEXT = """
+**Placeholder — replace with your approved Terms & Conditions. Not legal advice.**
+
+**1. Acceptance.** By creating an account and checking the agreement box, you agree to these Terms and to the Privacy Policy.
+
+**2. Nature of the service.** This portal provides an educational risk-profile assessment and related information. It is not investment, legal, or tax advice and is not an offer to buy or sell any security. Advisory services are provided only under a separate written agreement with MRB Capital Group.
+
+**3. No guarantees.** All investing involves risk, including possible loss of principal. Risk-profile results are estimates based on the information you provide and do not guarantee any outcome.
+
+**4. Your information.** You agree to provide accurate information and to keep your contact details current. Your email is used to sign in.
+
+**5. Electronic communications.** You consent to receive communications and disclosures electronically.
+
+**6. Privacy.** Your information is handled as described in the Privacy Policy.
+
+**7. Limitation of liability.** To the fullest extent permitted by law, MRB Capital Group is not liable for indirect or consequential damages arising from use of this portal. _[Confirm with counsel.]_
+
+**8. Governing law.** These Terms are governed by the laws of [STATE]. _[Confirm with counsel.]_
+
+**9. Changes.** These Terms may be updated; the version shown reflects the current terms.
+
+**10. Contact.** Questions? Reach your advisor through the Advisor tab.
+"""
+
+PRIVACY_TEXT = """
+**Placeholder — replace with your approved Privacy Policy. Not legal advice.**
+
+**What we collect.** Name, email, phone, optional address/ZIP, age, and your risk-questionnaire answers.
+
+**How we use it.** To generate your risk profile, let you sign in, and allow your advisor to follow up with you.
+
+**Sharing.** Information may be shared with the service providers that operate this platform (for example, the firm's CRM) and is not sold. _[Confirm provider list with counsel.]_
+
+**Security.** Reasonable safeguards are used to protect your information.
+
+**Your choices.** You can request to update or delete your information by contacting your advisor.
+
+**Contact.** Reach your advisor through the Advisor tab.
+"""
+
+# Overlay editable agreement text from the advisor app (legal_content.json in
+# the shared store) on top of the placeholder defaults above, so edits made in
+# the advisor portal's PDF Content tab flow through here. Falls back to the
+# placeholders if nothing is saved or the store is unavailable.
+try:
+    _legal_fs = _shared_load_json("legal_content.json", default={}) or {}
+    if (_legal_fs.get("terms")   or "").strip(): TERMS_TEXT   = _legal_fs["terms"]
+    if (_legal_fs.get("privacy") or "").strip(): PRIVACY_TEXT = _legal_fs["privacy"]
+    if (_legal_fs.get("version") or "").strip(): TOS_VERSION  = _legal_fs["version"]
+except Exception:
+    pass
+
+
+def _agreement_popup(title: str, body_md: str, close_key: str, version: str = None):
+    """Show an agreement document as a modal popup. Uses st.dialog when the
+    Streamlit version supports it (1.37+), falling back to an inline expander
+    on older versions so the app never crashes."""
+    def _render():
+        if version:
+            st.caption(f"Version {version}")
+        st.markdown(body_md)
+        if st.button("Close", key=close_key, use_container_width=True):
+            st.rerun()
+    if hasattr(st, "dialog"):
+        st.dialog(title)(_render)()
+    else:
+        with st.expander(title, expanded=True):
+            _render()
 
 def _firm_url() -> str:
     w = (ADVISOR.get("website") or "").strip()
@@ -2003,16 +2070,17 @@ def _screen_register():
             "I agree to the Terms & Conditions and Privacy Policy",
             key="fr_rg_consent",
         )
-        st.markdown(
-            f'<div style="font-size:0.8rem;color:{THEME["muted"]};'
-            f'            margin:-6px 0 4px 2px">'
-            f'  Read the <a href="{TERMS_URL}" target="_blank" rel="noopener" '
-            f'     style="color:{THEME["primary"]}">Terms &amp; Conditions</a> and the '
-            f'  <a href="{PRIVACY_URL}" target="_blank" rel="noopener" '
-            f'     style="color:{THEME["primary"]}">Privacy Policy</a>.'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+        v1, v2 = st.columns(2)
+        with v1:
+            if st.button("View Terms & Conditions", key="fr_rg_view_terms",
+                         use_container_width=True):
+                _agreement_popup("Terms & Conditions", TERMS_TEXT,
+                                 "fr_terms_close", version=TOS_VERSION)
+        with v2:
+            if st.button("View Privacy Policy", key="fr_rg_view_privacy",
+                         use_container_width=True):
+                _agreement_popup("Privacy Policy", PRIVACY_TEXT,
+                                 "fr_privacy_close")
 
         b1, b2 = st.columns([1, 2])
         with b1:

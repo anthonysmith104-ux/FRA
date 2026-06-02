@@ -954,6 +954,74 @@ def get_pdf_content() -> dict:
     return merged
 
 
+# ── CLIENT PORTAL AGREEMENT (Terms & Privacy shown at registration) ─────
+# Edited from the PDF Content tab and stored in its OWN shared file so the
+# Firm Branding / PDF Content saves never clobber it. The client portal reads
+# legal_content.json and shows the text in registration popups. Defaults below
+# mirror the portal's placeholder text — replace via the editor with your
+# CCO/counsel-approved language.
+LEGAL_CONTENT_FILE = _data_path("legal_content.json")
+
+DEFAULT_LEGAL_CONTENT = {
+    "version": "2026-06-01",
+    "terms": """**Placeholder — replace with your approved Terms & Conditions. Not legal advice.**
+
+**1. Acceptance.** By creating an account and checking the agreement box, you agree to these Terms and to the Privacy Policy.
+
+**2. Nature of the service.** This portal provides an educational risk-profile assessment and related information. It is not investment, legal, or tax advice and is not an offer to buy or sell any security. Advisory services are provided only under a separate written agreement with MRB Capital Group.
+
+**3. No guarantees.** All investing involves risk, including possible loss of principal. Risk-profile results are estimates based on the information you provide and do not guarantee any outcome.
+
+**4. Your information.** You agree to provide accurate information and to keep your contact details current. Your email is used to sign in.
+
+**5. Electronic communications.** You consent to receive communications and disclosures electronically.
+
+**6. Privacy.** Your information is handled as described in the Privacy Policy.
+
+**7. Limitation of liability.** To the fullest extent permitted by law, MRB Capital Group is not liable for indirect or consequential damages arising from use of this portal. _[Confirm with counsel.]_
+
+**8. Governing law.** These Terms are governed by the laws of [STATE]. _[Confirm with counsel.]_
+
+**9. Changes.** These Terms may be updated; the version shown reflects the current terms.
+
+**10. Contact.** Questions? Reach your advisor through the Advisor tab.""",
+    "privacy": """**Placeholder — replace with your approved Privacy Policy. Not legal advice.**
+
+**What we collect.** Name, email, phone, optional address/ZIP, age, and your risk-questionnaire answers.
+
+**How we use it.** To generate your risk profile, let you sign in, and allow your advisor to follow up with you.
+
+**Sharing.** Information may be shared with the service providers that operate this platform (for example, the firm's CRM) and is not sold. _[Confirm provider list with counsel.]_
+
+**Security.** Reasonable safeguards are used to protect your information.
+
+**Your choices.** You can request to update or delete your information by contacting your advisor.
+
+**Contact.** Reach your advisor through the Advisor tab.""",
+}
+
+def load_legal_content() -> dict:
+    """Advisor-saved client-portal Terms/Privacy text from legal_content.json.
+    Routes through data_store (shared GitHub repo) so the portal reads it."""
+    try:
+        val = _shared_load_json(LEGAL_CONTENT_FILE, default={})
+        return val if isinstance(val, dict) else {}
+    except Exception:
+        return {}
+
+def save_legal_content(content: dict) -> None:
+    _shared_save_json(LEGAL_CONTENT_FILE, content)
+
+def get_legal_content() -> dict:
+    """Effective agreement content: advisor edits layered over defaults."""
+    custom = load_legal_content()
+    merged = {}
+    for key, default in DEFAULT_LEGAL_CONTENT.items():
+        val = custom.get(key)
+        merged[key] = default if (val is None or val == "") else val
+    return merged
+
+
 def _render_pdf_prose(text, style, gap=5.76):
     """Split advisor-edited prose into ReportLab flowables.
 
@@ -16841,6 +16909,57 @@ with main_tab7:
                 "will use this wording."
             )
             st.caption(f"Saved to: `{PDF_CONTENT_FILE}`")
+
+    # ── Client portal agreement (Terms & Privacy popups) ───────────────
+    st.markdown("---")
+    st.markdown(
+        "<h4 style='color:#0E5C5E;font-weight:600;margin:10px 0 4px 0'>"
+        "Client Portal — Terms &amp; Privacy</h4>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "These show as popups on the client portal's registration screen, "
+        "where clients must agree before registering. Edit and Save — the "
+        "portal picks up changes within ~60s. Bump the version whenever the "
+        "wording changes so the record of which version each client accepted "
+        "stays accurate. Have your CCO/counsel review the language before launch."
+    )
+    _legal = get_legal_content()
+    _legal_ver = st.text_input(
+        "Agreement version", value=_legal["version"], key="legal_ver_input",
+        help="Shown in the Terms popup and recorded with each client's acceptance.",
+    )
+    with st.expander("Terms & Conditions", expanded=False):
+        st.caption("Markdown supported — e.g. **bold**, line breaks, lists.")
+        _legal_terms = st.text_area(
+            "Terms & Conditions", value=_legal["terms"], height=320,
+            key="legal_terms_input", label_visibility="collapsed",
+        )
+    with st.expander("Privacy Policy", expanded=False):
+        st.caption("Markdown supported.")
+        _legal_privacy = st.text_area(
+            "Privacy Policy", value=_legal["privacy"], height=320,
+            key="legal_privacy_input", label_visibility="collapsed",
+        )
+    if st.button("💾 Save client agreement", type="primary",
+                 key="legal_save_btn"):
+        try:
+            save_legal_content({
+                "version": (_legal_ver or "").strip() or DEFAULT_LEGAL_CONTENT["version"],
+                "terms":   (_legal_terms or "").strip(),
+                "privacy": (_legal_privacy or "").strip(),
+            })
+        except Exception as _le:
+            st.error(f"Couldn't save client agreement: {_le}")
+            with st.expander("Debug info"):
+                import traceback as _ltb
+                st.code(_ltb.format_exc())
+        else:
+            st.success(
+                "✅ Client agreement saved. The portal registration popups "
+                "will use this wording within ~60s."
+            )
+            st.caption(f"Saved to: `{LEGAL_CONTENT_FILE}`")
 
 
 # ═══════════════════════════════════════════════════════════════
