@@ -988,10 +988,25 @@ PROFILE_QUESTIONS = [
     {"id": "growth_vs_safety", "section": "Tolerance",
      "text": "Of these portfolios, which best matches your preference?",
      "type": "select", "options": [
-        ("Best year +6%  / worst year -2%",    20),
-        ("Best year +12% / worst year -8%",    45),
-        ("Best year +20% / worst year -18%",   65),
-        ("Best year +30% / worst year -30%",   85),
+        ("Avg +4% · best year +6%  / worst year -2%",    20),
+        ("Avg +6% · best year +12% / worst year -8%",    45),
+        ("Avg +8% · best year +20% / worst year -18%",   65),
+        ("Avg +9% · best year +30% / worst year -30%",   85),
+    ]},
+    # drawdown_history (added 2026): an actual-past-behavior question.
+    # Revealed behavior predicts future behavior better than the
+    # hypothetical drawdown_reaction removed in the 2026-04-30 trim. The
+    # "haven't been through one" option maps to None, so the scoring loop
+    # skips it (no penalty/reward for inexperience) and tolerance falls
+    # back to loss_floor + growth_vs_safety for that client.
+    {"id": "drawdown_history", "section": "Tolerance",
+     "text": "In a past market downturn (2022, 2020, or 2008), what did you actually do?",
+     "type": "select", "options": [
+        ("Sold most or all of my investments",        20),
+        ("Sold some or shifted to safer holdings",     40),
+        ("Did nothing — stayed the course",            70),
+        ("Bought more while prices were down",         90),
+        ("I haven't invested through a downturn yet", None),
     ]},
     # market_view, inflation_concern, and recession_concern were removed
     # in the 2026-04-30 follow-up trim. These were "outlook" questions
@@ -1042,7 +1057,7 @@ def score_profile(answers: dict) -> dict:
     # Tolerance = the client's emotional/behavioral capacity for
     # volatility. After 2026-04-30 trim: dropped drawdown_reaction
     # (hypothetical-behavior bias) and experience (subjective signal).
-    tolerance_qs = {"loss_floor","growth_vs_safety"}
+    tolerance_qs = {"loss_floor","growth_vs_safety","drawdown_history"}
     # Outlook = client's macro view. After 2026-04-30 follow-up trim:
     # dropped market_view, inflation_concern, recession_concern. The
     # set is empty for now — esg_preference and priorities don't fit
@@ -1087,24 +1102,41 @@ def score_profile(answers: dict) -> dict:
     # restore the third term — old formula was 0.50*cap + 0.35*tol +
     # 0.15*out. The outlook_score field is still returned in the
     # result dict (defaults to 50) so any UI reading it still works.
-    overall = int(round(min(99, max(1, 0.60*cap + 0.40*tol))))
+    # Capacity is a hard ceiling: the 60/40 blend governs while tolerance
+    # is at or below capacity, but tolerance can never lift the score above
+    # what the client can financially afford. (cap < tol -> pinned at cap;
+    # tol < cap -> blend, which already sits below cap.)
+    blended = 0.60*cap + 0.40*tol
+    overall = int(round(max(1, min(99, min(blended, cap)))))
+    cap_i, tol_i = int(round(cap)), int(round(tol))
     return {
         "overall_score":   overall,
-        "capacity_score":  int(round(cap)),
-        "tolerance_score": int(round(tol)),
+        "capacity_score":  cap_i,
+        "tolerance_score": tol_i,
         "outlook_score":   int(round(out)),
+        "band":            score_band(cap_i, tol_i)[0],
     }
 
 
-def score_band(score: int) -> tuple[str, str, str]:
-    """(label, hex, soft_bg) — neutral risk-profile bands.
+def score_band(capacity: int, tolerance: int) -> tuple[str, str, str]:
+    """(label, hex, soft_bg) — risk profile from a capacity × tolerance matrix.
 
-    Three buckets only — Conservative, Moderate, Aggressive. No diagnostic
-    or evaluative language ("at risk", "watch", "strong", etc.); these
-    describe an *investing posture*, not a judgment about the client."""
-    if score >= 70: return "Aggressive",   THEME["primary"], THEME["primary_soft"]
-    if score >= 45: return "Moderate",     THEME["primary"], THEME["primary_soft"]
-    return            "Conservative", THEME["primary"], THEME["primary_soft"]
+    Five Schwab-aligned tiers. Capacity is the ceiling: tolerance positions
+    the client within what their capacity can support but can never lift the
+    band above it. When tolerance sits at or below capacity the two tiers are
+    blended (half-up); when tolerance exceeds capacity the band is pinned to
+    the capacity tier. Banding on the two axes jointly (rather than on the
+    single blended score) avoids the central-clustering that a 14-item
+    average produces, so clients actually separate. No diagnostic or
+    evaluative language; these describe an *investing posture*, not a
+    judgment about the client."""
+    bands = ("Conservative", "Moderately Conservative", "Moderate",
+             "Moderately Aggressive", "Aggressive")
+    def _tier(s: int) -> int:
+        return 0 if s < 38 else 1 if s < 50 else 2 if s < 62 else 3 if s < 74 else 4
+    ct, tt = _tier(capacity), _tier(tolerance)
+    idx = ct if ct < tt else min(ct, (ct + tt + 1) // 2)
+    return bands[idx], THEME["primary"], THEME["primary_soft"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1158,7 +1190,7 @@ def pulse_line(color: str = None, width: int = 56, height: int = 14,
     )
 
 
-def make_risk_ring(score: int, height: int = 320) -> str:
+def make_risk_ring(score: int, band: str, height: int = 320) -> str:
     """Profile-style risk badge — circular, EXACT port of the proportions
     used by app.py's risk_badge() function (the same function that
     generates the PROFILE badge on page 1 of the advisor PDF).
@@ -1195,7 +1227,7 @@ def make_risk_ring(score: int, height: int = 320) -> str:
         x = cx + r·sin(θ), y = cy ± r·cos(θ)) is identical in both;
         only the y-sign flips for SVG.
     """
-    label, _, _ = score_band(score)
+    label = band
     navy  = resolve_color_key("brand.primary.navy",  SETTINGS)
     gold  = resolve_color_key("brand.accent.gold",   SETTINGS)
     cream = resolve_color_key("brand.surface.cream", SETTINGS)
@@ -1985,8 +2017,9 @@ def _screen_register():
                         if hubspot_sync.is_configured():
                             scores = st.session_state.fr_scores or {}
                             overall = int(scores.get("overall_score", 0))
-                            label, _, _ = (score_band(overall) if overall
-                                           else ("", "", ""))
+                            label, _, _ = (score_band(scores.get("capacity_score", 0),
+                                                       scores.get("tolerance_score", 0))
+                                           if overall else ("", "", ""))
                             hs_status = hubspot_sync.sync_contact(
                                 first      = st.session_state.fr_first,
                                 last       = st.session_state.fr_last,
@@ -2128,34 +2161,44 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             # Renders as inline SVG/HTML via st.markdown rather than
             # st.plotly_chart, so it scales cleanly on mobile and doesn't
             # need staticPlot config to disable accidental gesture capture.
-            st.markdown(make_risk_ring(overall, height=300),
+            st.markdown(make_risk_ring(overall, profile.get("band", "Moderate"), height=300),
                         unsafe_allow_html=True)
         with h2:
             cap = int(profile.get("capacity_score", 50))
             tol = int(profile.get("tolerance_score", 50))
-            label, _, _ = score_band(overall)
+            label, _, _ = score_band(cap, tol)
 
             # Neutral summary — describes the posture, not a verdict on the
             # client. Three buckets matching score_band: Conservative,
             # Moderate, Aggressive.
-            if label == "Aggressive":
-                summary = (
+            summaries = {
+                "Aggressive": (
                     "Your answers point to an aggressive posture — a higher "
                     "tolerance for short-term swings in exchange for greater "
                     "long-term growth potential."
-                )
-            elif label == "Moderate":
-                summary = (
+                ),
+                "Moderately Aggressive": (
+                    "Your answers point to a moderately aggressive posture — "
+                    "a tilt toward long-term growth, with some ballast to "
+                    "soften the sharpest swings."
+                ),
+                "Moderate": (
                     "Your answers point to a moderate posture — a balance "
                     "between growth and stability that most long-term "
                     "investors land on."
-                )
-            else:
-                summary = (
+                ),
+                "Moderately Conservative": (
+                    "Your answers point to a moderately conservative posture "
+                    "— a lean toward stability, with a modest allocation aimed "
+                    "at long-term growth."
+                ),
+                "Conservative": (
                     "Your answers point to a conservative posture — a "
                     "preference for stability and capital preservation over "
                     "maximum growth."
-                )
+                ),
+            }
+            summary = summaries.get(label, summaries["Moderate"])
 
             st.markdown(
                 f'<div style="padding-top:18px">'
@@ -3358,7 +3401,7 @@ def render_edit_profile():
         if st.button("Save profile", type="primary",
                      key="fr_profile_save", use_container_width=True):
             scores = score_profile(answers)
-            label, _, _ = score_band(scores["overall_score"])
+            label, _, _ = score_band(scores["capacity_score"], scores["tolerance_score"])
             patch = {
                 "client_name":  f'{st.session_state.fr_user.get("first_name","")} '
                                 f'{st.session_state.fr_user.get("last_name","")}'.strip(),
