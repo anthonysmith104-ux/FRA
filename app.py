@@ -41,6 +41,7 @@ from data_store import (
     save_json   as _shared_save_json,
     update_json as _shared_update_json,
 )
+import data_store as _ds   # module handle for is_remote()/clear_cache() diagnostics
 
 # Schwab model portfolios (loaded from schwab_portfolios.json next to app.py).
 # Powers the Broad-ETF Alternate tier in the proposal flow. Imported with a
@@ -739,6 +740,73 @@ def save_firm_settings(settings: dict) -> None:
     """Routes through data_store so firm_settings.json is written to the
     shared GitHub repo (where the portal can read it)."""
     _shared_save_json(FIRM_SETTINGS_FILE, settings)
+
+
+# ── Brand image sync ──────────────────────────────────────────────
+# The logo and advisor photo used to live ONLY as local PNGs (firm_logo.png
+# / advisor_photo.png), so an upload here never reached the client portal
+# and didn't survive a Cloud restart. These helpers also carry the images
+# through the shared store: the uploaded bytes are downscaled and base64
+# data-URI'd into firm_settings.json (firm.logo_data_uri /
+# advisor.photo_data_uri) — the same shared file the text identity already
+# syncs through. The portal reads those fields directly; this app keeps
+# using the local PNG paths, re-materialized from the data URI on boot.
+def _img_bytes_to_data_uri(raw, max_px: int = 400) -> str:
+    """Downscale to <= max_px on the long edge and return a base64 PNG data
+    URI, kept small so it doesn't bloat every firm_settings.json commit."""
+    import base64 as _b64
+    try:
+        from PIL import Image as _Img
+        im = _Img.open(BytesIO(raw))
+        im = im.convert("RGBA") if im.mode in ("P", "LA", "RGBA") else im.convert("RGB")
+        im.thumbnail((max_px, max_px))
+        buf = BytesIO()
+        im.save(buf, format="PNG")
+        raw = buf.getvalue()
+    except Exception:
+        pass  # fall back to original bytes if PIL/resize is unavailable
+    return "data:image/png;base64," + _b64.b64encode(raw).decode("ascii")
+
+
+def _set_brand_image(kind: str, data_uri) -> None:
+    """Write (data_uri set) or clear (data_uri falsy) a brand image in the
+    shared firm_settings.json so it syncs to the portal."""
+    section, field = (("firm", "logo_data_uri") if kind == "logo"
+                      else ("advisor", "photo_data_uri"))
+    def _mut(s):
+        s.setdefault(section, {})
+        if data_uri:
+            s[section][field] = data_uri
+        else:
+            s[section].pop(field, None)
+    _shared_update_json(FIRM_SETTINGS_FILE, _mut)
+
+
+def _hydrate_brand_images() -> None:
+    """On boot, if a local logo/photo PNG is missing but its data URI is in
+    the shared firm_settings.json, decode it back to disk — so every existing
+    local-path reader (PDF builder, previews, _circular_photo) keeps working
+    unchanged after a fresh container start."""
+    import base64 as _b64
+    try:
+        fs = load_firm_settings() or {}
+    except Exception:
+        return
+    for path, sect, field in ((FIRM_LOGO_PATH, "firm", "logo_data_uri"),
+                              (ADVISOR_PHOTO_PATH, "advisor", "photo_data_uri")):
+        if os.path.exists(path):
+            continue
+        uri = (fs.get(sect, {}) or {}).get(field)
+        if not uri or "," not in uri:
+            continue
+        try:
+            with open(path, "wb") as _f:
+                _f.write(_b64.b64decode(uri.split(",", 1)[1]))
+        except Exception:
+            pass
+
+
+_hydrate_brand_images()
 
 
 # ── PDF CONTENT (advisor-customizable closing sections) ───────────
@@ -16893,9 +16961,13 @@ with main_tab5:
             if st.button("Remove logo", key="fb_logo_remove"):
                 try:
                     os.remove(FIRM_LOGO_PATH)
-                    st.rerun()
-                except OSError as _e:
-                    st.error(f"Couldn't remove: {_e}")
+                except OSError:
+                    pass
+                try:
+                    _set_brand_image("logo", None)
+                except Exception:
+                    pass
+                st.rerun()
         else:
             st.caption("_No logo uploaded._")
         _logo_up = st.file_uploader(
@@ -16905,8 +16977,13 @@ with main_tab5:
             label_visibility="collapsed",
         )
         if _logo_up is not None:
+            _raw = _logo_up.getvalue()
             with open(FIRM_LOGO_PATH, "wb") as _f:
-                _f.write(_logo_up.getbuffer())
+                _f.write(_raw)
+            try:
+                _set_brand_image("logo", _img_bytes_to_data_uri(_raw))
+            except Exception as _e:
+                st.warning(f"Saved locally, but couldn't sync to the portal: {_e}")
             st.success("Logo saved.")
             st.rerun()
 
@@ -16917,9 +16994,13 @@ with main_tab5:
             if st.button("Remove photo", key="fb_photo_remove"):
                 try:
                     os.remove(ADVISOR_PHOTO_PATH)
-                    st.rerun()
-                except OSError as _e:
-                    st.error(f"Couldn't remove: {_e}")
+                except OSError:
+                    pass
+                try:
+                    _set_brand_image("photo", None)
+                except Exception:
+                    pass
+                st.rerun()
         else:
             st.caption("_No photo uploaded._")
         _photo_up = st.file_uploader(
@@ -16929,8 +17010,13 @@ with main_tab5:
             label_visibility="collapsed",
         )
         if _photo_up is not None:
+            _raw = _photo_up.getvalue()
             with open(ADVISOR_PHOTO_PATH, "wb") as _f:
-                _f.write(_photo_up.getbuffer())
+                _f.write(_raw)
+            try:
+                _set_brand_image("photo", _img_bytes_to_data_uri(_raw))
+            except Exception as _e:
+                st.warning(f"Saved locally, but couldn't sync to the portal: {_e}")
             st.success("Photo saved.")
             st.rerun()
 
@@ -16981,7 +17067,10 @@ with main_tab5:
                     f"**App directory:** `{_APP_DIR}`"
                 )
         else:
-            # Verify by re-reading the nested blocks.
+            # Verify against the ACTUAL store, not the write cache (which would
+            # mask a local-only write). clear_cache() forces a fresh read, so a
+            # green check genuinely means it persisted where the portal reads.
+            _ds.clear_cache()
             _verify = load_firm_settings()
             _vadv   = _verify.get("advisor", {}) or {}
             _vfrm   = _verify.get("firm", {}) or {}
@@ -17006,12 +17095,19 @@ with main_tab5:
                     "least one field (firm name, advisor name, etc.) and retry."
                 )
             elif _populated == _total_filled:
-                st.success(
-                    f"\u2705 Firm branding saved \u2014 {_populated} field(s) written. "
-                    "The portal reads settings at startup and caches ~60s, so "
-                    "reboot the portal app to see the change."
-                )
-                st.caption(f"Saved to: `{FIRM_SETTINGS_FILE}` (firm.* / advisor.*)")
+                if _ds.is_remote():
+                    st.success(
+                        f"\u2705 Saved {_populated} field(s) to the shared repo. "
+                        "Refresh or reboot the portal to see the change."
+                    )
+                else:
+                    st.error(
+                        f"Saved {_populated} field(s), but to LOCAL disk only \u2014 "
+                        "this app has no [github] secret, so the client portal will "
+                        "NOT see these changes. Add the [github] token + data_repo "
+                        "to this app's Streamlit secrets (same values as the portal)."
+                    )
+                st.caption(f"Wrote to: `{FIRM_SETTINGS_FILE}` (firm.* / advisor.*)")
             else:
                 st.warning(
                     f"Save partially verified: {_populated} of {_total_filled} "
@@ -17020,6 +17116,42 @@ with main_tab5:
                     "mrb_design.load_settings() reads via data_store."
                 )
                 st.caption(f"Wrote to: `{FIRM_SETTINGS_FILE}`")
+
+    # ── Sync diagnostics ──────────────────────────────────────────
+    # #1 reason branding doesn't reach the portal: this app is in
+    # data_store LOCAL-FALLBACK mode (no [github] secret), so saves stay on
+    # this container and never reach the shared repo the portal reads.
+    with st.expander("Sync diagnostics — is branding reaching the portal?"):
+        if _ds.is_remote():
+            try:
+                _repo = _ds._config()[1]
+            except Exception:
+                _repo = "?"
+            st.success(
+                f"Data store: remote (GitHub) -> `{_repo}`. Saves here reach "
+                "the shared repo the portal reads."
+            )
+        else:
+            st.error(
+                "Data store: LOCAL fallback - no [github] secret on this app. "
+                "Saves stay on this container and never reach the shared repo, "
+                "so the client portal can't see them. Add the [github] token + "
+                "data_repo to THIS app's Streamlit secrets (same values the "
+                "portal uses)."
+            )
+        if st.button("Check what's actually in the shared store", key="fb_diag"):
+            _ds.clear_cache()
+            _live = load_firm_settings()
+            _ladv = _live.get("advisor", {}) or {}
+            _lfrm = _live.get("firm", {}) or {}
+            st.json({
+                "mode": "remote" if _ds.is_remote() else "local",
+                "firm.name": _lfrm.get("name", "(none)"),
+                "advisor.name": _ladv.get("name", "(none)"),
+                "advisor.bio_chars": len(str(_ladv.get("bio", "") or "")),
+                "legacy_flat_advisor_bio_chars": len(str(_live.get("advisor_bio", "") or "")),
+                "top_level_keys": sorted(_live.keys()),
+            })
 
     st.markdown("---")
     st.markdown(

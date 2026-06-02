@@ -252,6 +252,30 @@ def _load_image_as_data_uri(filename: str, mime: str = "image/png") -> Optional[
 FIRM_LOGO_DATA_URI    = _load_image_as_data_uri("firm_logo.png")
 ADVISOR_PHOTO_DATA_URI = _load_image_as_data_uri("advisor_photo.png")
 
+# Overlay images uploaded in the advisor app's Firm Branding panel. That
+# panel base64-encodes the logo/photo into firm_settings.json (the same
+# shared store that already carries the text identity), so an uploaded image
+# flows through to the portal exactly like the name/bio do. The committed
+# firm_logo.png / advisor_photo.png remain as fallback seeds when nothing
+# has been uploaded.
+try:
+    _brand_fs   = _shared_load_json("firm_settings.json", default={}) or {}
+    _brand_firm = _brand_fs.get("firm", {}) or {}
+    _brand_adv  = _brand_fs.get("advisor", {}) or {}
+    if _brand_firm.get("logo_data_uri"):
+        FIRM_LOGO_DATA_URI = _brand_firm["logo_data_uri"]
+        # Drop it to disk too, so the favicon (set_page_config below needs a
+        # file path) reflects the uploaded logo rather than the seed.
+        try:
+            with open(_data_path("firm_logo.png"), "wb") as _lf:
+                _lf.write(_b64.b64decode(FIRM_LOGO_DATA_URI.split(",", 1)[1]))
+        except Exception:
+            pass
+    if _brand_adv.get("photo_data_uri"):
+        ADVISOR_PHOTO_DATA_URI = _brand_adv["photo_data_uri"]
+except Exception:
+    pass
+
 # Build the default advisor photo SVG using brand colors. This used to
 # hardcode the teal Clinical palette (#0E5C5E → #0E7C86); now it pulls
 # navy + cream from settings so the placeholder doesn't fight the brand
@@ -1667,9 +1691,11 @@ def _screen_quiz():
         f'                transition:width 0.3s ease"></div>'
         f'  </div>'
         f'  <div class="fr-eyebrow">{q["section"]}</div>'
-        f'  <h2 class="fr-question">'
+        f'  <div class="fr-question" style="font-size:2.1rem;font-weight:600;'
+        f'       line-height:1.3;letter-spacing:-0.015em;color:{THEME["ink"]};'
+        f'       margin:6px 0 22px">'
         f'    {q["text"]}'
-        f'  </h2>'
+        f'  </div>'
         f'</div>',
         unsafe_allow_html=True,
     )
