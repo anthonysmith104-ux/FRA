@@ -38,6 +38,7 @@ from datetime import datetime, date
 from typing import Optional
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import plotly.graph_objects as go
 
@@ -430,6 +431,11 @@ st.markdown(
             display: flex; flex-direction: column; gap: 8px;
             margin-bottom: 10px;
         }}
+        /* Tiles tagged .fr-tablink navigate to another tab on click — see the
+           _render_tab_link_bridge() JS helper. Give them a pointer cursor and
+           a subtle hover lift so they read as tappable. */
+        .fr-tablink {{ cursor: pointer; transition: box-shadow .15s ease; }}
+        .fr-tablink:hover {{ box-shadow: 0 0 0 3px {THEME['primary_soft']}; }}
         .fr-vital-label {{
             font-size: 0.65rem; font-weight: 600;
             color: {THEME['muted']};
@@ -1550,6 +1556,7 @@ def _init_state():
         "fr_user":      None,
         "fr_view":      "dashboard",   # post-login view name
         "fr_flash":     None,
+        "fr_perf_period": "3M",        # Portfolio Performance window: 1M | 3M | 1Y
         # Pre-login flow state
         "fr_step":      "welcome",     # welcome | prequiz | quiz | results | register
         "fr_first":     "",
@@ -2298,6 +2305,52 @@ def render_dashboard():
         _render_my_info_tab()
         _render_sign_out("myinfo")
 
+    # Wire the snapshot tiles (.fr-go-holdings / .fr-go-goals) to their tabs.
+    _render_tab_link_bridge()
+
+
+def _render_tab_link_bridge():
+    """Make snapshot tiles tagged .fr-go-* act as links to the matching tab.
+
+    Streamlit's st.tabs can't be switched from Python, so a tiny same-origin
+    component iframe reaches into the parent document and clicks the real tab
+    button when a tagged tile is clicked. st.tabs renders every tab's content
+    up front (just hidden), so the Home tiles are always in the DOM regardless
+    of which tab is active. If the selectors ever drift in a future Streamlit
+    release this degrades gracefully — the tiles simply stop navigating, the
+    app is otherwise unaffected."""
+    components.html(
+        """
+        <script>
+        (function(){
+          const doc = window.parent.document;
+          const MAP = {"fr-go-holdings": "Holdings", "fr-go-goals": "Financial Goals"};
+          function clickTab(name){
+            const tabs = doc.querySelectorAll('button[data-baseweb="tab"]');
+            for (const t of tabs){
+              if ((t.innerText || "").trim() === name){ t.click(); return; }
+            }
+          }
+          function wire(){
+            doc.querySelectorAll('.fr-tablink').forEach(function(el){
+              if (el.dataset.frWired) return;
+              for (const cls in MAP){
+                if (el.classList.contains(cls)){
+                  el.dataset.frWired = "1";
+                  el.addEventListener('click', function(){ clickTab(MAP[cls]); });
+                  break;
+                }
+              }
+            });
+          }
+          wire();
+          new MutationObserver(wire).observe(doc.body, {childList:true, subtree:true});
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
 
 def _render_home_tab(profile: dict, holdings: dict, ck: str):
     """Original dashboard body — score hero, vitals snapshot, trend, holdings.
@@ -2441,10 +2494,14 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
     tol = int(profile.get("tolerance_score", 0)) if profile else 0
 
     def _tile(label: str, value: str, detail: str, status: str,
-              delta: str = "", gauge: Optional[int] = None) -> str:
+              delta: str = "", gauge: Optional[int] = None,
+              link: Optional[str] = None) -> str:
         """If `gauge` is a 0-100 integer, render a thin horizontal bar
         underneath the value — used for Risk Capacity and Risk Tolerance so
-        the score has a visual reference, not just a bare number."""
+        the score has a visual reference, not just a bare number.
+
+        If `link` is set (e.g. "holdings" or "goals"), tag the tile so the
+        tab-link bridge wires a click-through to the matching tab."""
         chip = status_chip(status) if status else ""
         delta_color = (THEME["healthy"] if not str(delta).startswith("-")
                        else THEME["risk"])
@@ -2469,8 +2526,11 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
                 f'  </div>'
                 f'</div>'
             )
+        tile_cls = "fr-vital"
+        if link:
+            tile_cls += f" fr-tablink fr-go-{link}"
         return (
-            f'<div class="fr-vital">'
+            f'<div class="{tile_cls}">'
             f'  <div style="display:flex;align-items:center;justify-content:space-between">'
             f'    <span class="fr-vital-label">{label}</span>{chip}'
             f'  </div>'
@@ -2575,7 +2635,7 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             "Net Worth",
             fmt_money(vitals["net_worth"]) if holdings else "—",
             f"{len(holdings)} positions" if holdings else "no positions yet",
-            "", delta=nw_delta,
+            "", delta=nw_delta, link="holdings",
         ), unsafe_allow_html=True)
     with g4:
         st.markdown(_tile(
@@ -2583,7 +2643,7 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             fmt_money(vitals["cash"]) if holdings else "—",
             f"{cash_pct:.1f}% of portfolio" if vitals["net_worth"]
                 else "no positions yet",
-            "",
+            "", link="holdings",
         ), unsafe_allow_html=True)
 
     # ── Row 3: Financial Goals (full width, with progress meter) ────────────
@@ -2609,7 +2669,7 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
         pct = min(100, (total_saved / total_target * 100)
                        if total_target else 0)
         st.markdown(
-            f'<div class="fr-vital" style="margin-top:8px">'
+            f'<div class="fr-vital fr-tablink fr-go-goals" style="margin-top:8px">'
             f'  <div style="display:flex;align-items:center;'
             f'              justify-content:space-between">'
             f'    <span class="fr-vital-label">Financial Goals</span>'
@@ -2650,7 +2710,7 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
         )
     else:
         st.markdown(
-            f'<div class="fr-vital" style="margin-top:8px;text-align:center;'
+            f'<div class="fr-vital fr-tablink fr-go-goals" style="margin-top:8px;text-align:center;'
             f'                              border-style:dashed">'
             f'  <div class="fr-vital-label" style="margin-bottom:6px">'
             f'    Financial Goals'
@@ -2670,39 +2730,58 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
     # users are looking at: how their portfolio has been performing.
     if holdings and vitals["net_worth"] > 0:
         import numpy as np
-        # Stable per-user random shape so the sparkline doesn't jitter on rerun
-        np.random.seed(hash(ck) & 0xFFFFFFFF)
         base = max(vitals["cost_basis"], 1)
         end  = vitals["net_worth"]
-        n = 12
-        steps = np.cumsum(np.random.randn(n) * (end - base) * 0.04)
-        steps = steps - steps[0]
-        scale = (end - base) / (steps[-1] - steps[0]) if steps[-1] != steps[0] else 1
-        series = (base + steps * scale).tolist()
-        series[-1] = end
 
+        # Window selection. The sparkline is an illustrative per-user shape
+        # (we don't store real historical net worth), so each window just
+        # shows a different slice: 1M = a small recent move, 1Y = the full
+        # run from cost basis. (points, fraction-of-total-move, wiggle).
+        period = st.session_state.fr_perf_period
+        period_cfg = {
+            "1M": (22, 0.16, 0.05),
+            "3M": (13, 0.45, 0.07),
+            "1Y": (12, 1.00, 0.09),
+        }
+        n, frac, wig_scale = period_cfg.get(period, period_cfg["3M"])
+        start = end - (end - base) * frac
+        # Seed includes the period so each window has its own stable shape.
+        np.random.seed((hash(ck) ^ (hash(period) << 1)) & 0xFFFFFFFF)
+        ramp = np.linspace(start, end, n)
+        wig  = np.cumsum(np.random.randn(n))
+        wig  = wig - np.linspace(wig[0], wig[-1], n)   # de-trend: endpoints unmoved
+        series = (ramp + wig * (end - start) * wig_scale).tolist()
+        series[0], series[-1] = start, end
+
+        # Thin separator so this section reads as its own block. (Native
+        # buttons can't nest inside a raw-HTML .fr-card div, so the period
+        # toggle lives in real Streamlit columns rather than the old card.)
         st.markdown(
-            f'<div class="fr-card" style="margin-bottom:0">'
-            f'  <div style="display:flex;align-items:flex-end;justify-content:space-between">'
-            f'    <div>'
-            f'      <div class="fr-eyebrow">Portfolio Performance</div>'
-            f'      <div class="fr-mono" style="font-size:1.35rem;color:{THEME["ink"]};'
-            f'                                    margin-top:2px">'
-            f'        {fmt_money(end)}'
-            f'      </div>'
-            f'    </div>'
-            f'    <div style="display:flex;gap:6px">'
-            f'      <span style="font-size:0.7rem;padding:4px 9px;border-radius:999px;'
-            f'                   color:{THEME["muted"]};font-weight:600">1M</span>'
-            f'      <span style="font-size:0.7rem;padding:4px 9px;border-radius:999px;'
-            f'                   background:{THEME["chip"]};color:{THEME["ink"]};font-weight:600">3M</span>'
-            f'      <span style="font-size:0.7rem;padding:4px 9px;border-radius:999px;'
-            f'                   color:{THEME["muted"]};font-weight:600">1Y</span>'
-            f'    </div>'
-            f'  </div>'
-            f'</div>',
+            f'<div style="height:1px;background:{THEME["line"]};'
+            f'            margin:18px 0 14px"></div>',
             unsafe_allow_html=True,
         )
+        pv_l, pv_r = st.columns([1, 1.15])
+        with pv_l:
+            st.markdown(
+                f'<div class="fr-eyebrow">Portfolio Performance</div>'
+                f'<div class="fr-mono" style="font-size:1.35rem;'
+                f'     color:{THEME["ink"]};margin-top:2px">{fmt_money(end)}</div>',
+                unsafe_allow_html=True,
+            )
+        with pv_r:
+            pb1, pb2, pb3 = st.columns(3)
+            for col, lab in ((pb1, "1M"), (pb2, "3M"), (pb3, "1Y")):
+                with col:
+                    if st.button(
+                        lab,
+                        key=f"fr_perf_{lab}",
+                        use_container_width=True,
+                        type="primary" if period == lab else "secondary",
+                    ):
+                        st.session_state.fr_perf_period = lab
+                        st.rerun()
+
         # See risk ring above — staticPlot stops the chart from eating
         # touch scroll events.
         st.plotly_chart(make_sparkline(series, height=120),
