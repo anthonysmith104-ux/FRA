@@ -2342,7 +2342,24 @@ def _render_tab_link_bridge():
           function clickTab(name){
             const tabs = doc.querySelectorAll('button[data-baseweb="tab"]');
             for (const t of tabs){
-              if ((t.innerText || "").trim() === name){ t.click(); return; }
+              if ((t.innerText || "").trim() === name){
+                t.click();
+                // Land at the top of the freshly shown tab — clicking a tab
+                // doesn't reset scroll, so without this you stay at whatever
+                // offset you were at on the Home page (mid-tab).
+                const toTop = function(){
+                  try { window.parent.scrollTo(0, 0); } catch(e){}
+                  const sels = ['section.main', '[data-testid="stMain"]',
+                                '[data-testid="stAppViewContainer"] section', '.main'];
+                  for (const s of sels){
+                    const el = doc.querySelector(s);
+                    if (el){ try { el.scrollTo(0, 0); } catch(e){ el.scrollTop = 0; } }
+                  }
+                };
+                toTop();
+                setTimeout(toTop, 60);
+                return;
+              }
             }
           }
           function clickPerf(keyCls){
