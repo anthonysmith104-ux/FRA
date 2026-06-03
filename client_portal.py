@@ -1230,6 +1230,11 @@ FIRM_WEBSITE_URL = "https://www.mrb-capital-group.com/"
 # event to the connected Google Calendar. Change the slug here if it moves.
 SCHEDULE_URL = "https://meetings-na2.hubspot.com/anthony-smith"
 
+# Advisor's dot.cards digital business card. The "Save my contact" button in
+# the Advisor tab opens this; the client lands on the dot.cards profile and
+# can tap to save the contact (no app needed). Change the slug if it moves.
+DOT_CARD_URL = "https://dot.cards/anthony_smith_795"
+
 # Client agreement shown at registration as an in-app popup. Replace the
 # placeholder body text below with your CCO/counsel-approved language before
 # launch — this code provides the popup and records acceptance (version +
@@ -3563,6 +3568,33 @@ def _render_advisor_tab():
         f'  {_row(_icon_globe, "Website", a["website"], a["website"])}'
         f'  {_row(_icon_pin,   "Office",  a["address"])}'
         f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Digital business card (dot.cards). Outlined so it reads as a secondary
+    # action next to the filled "Schedule my review" CTA below. Opens the
+    # advisor's dot.cards profile in a new tab, where the client can tap once
+    # to save the contact to their phone — no app required.
+    _icon_card = (
+        f'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" '
+        f'stroke="{THEME["primary"]}" stroke-width="1.8" stroke-linecap="round" '
+        f'stroke-linejoin="round" style="flex-shrink:0;vertical-align:-4px;'
+        f'margin-right:8px">'
+        f'<rect x="2" y="4" width="20" height="16" rx="2.5"/>'
+        f'<circle cx="8" cy="11" r="2.2"/>'
+        f'<path d="M4.5 17c.6-1.8 2-2.6 3.5-2.6s2.9.8 3.5 2.6"/>'
+        f'<path d="M15 9h4M15 12.5h4M15 16h2.5"/></svg>'
+    )
+    st.markdown(
+        f'<a href="{DOT_CARD_URL}" target="_blank" rel="noopener" '
+        f'   style="display:flex;align-items:center;justify-content:center;'
+        f'          width:100%;box-sizing:border-box;text-align:center;'
+        f'          background:{THEME["surface"]};color:{THEME["primary"]};'
+        f'          border:1.5px solid {THEME["primary"]};padding:11px 16px;'
+        f'          border-radius:10px;text-decoration:none;font-weight:600;'
+        f'          font-size:0.95rem;margin:10px 0 18px">'
+        f'  {_icon_card}Save my contact card'
+        f'</a>',
         unsafe_allow_html=True,
     )
 
