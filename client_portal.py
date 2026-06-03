@@ -480,6 +480,9 @@ st.markdown(
             letter-spacing: -0.015em;
             line-height: 1.3;
             margin: 6px 0 22px;
+            overflow-wrap: break-word;
+            word-break: normal;
+            hyphens: none;
         }}
 
         /* Inputs — blue outline on the whole box. Text and date fields are a
@@ -543,6 +546,12 @@ st.markdown(
         .stSelectbox div, .stMultiSelect div {{
             font-variant-numeric: tabular-nums;
             font-feature-settings: "tnum" 1, "lnum" 1;
+        }}
+
+        /* Larger answer-option text — easier to read and tap on mobile. */
+        .stRadio [data-baseweb="radio"] div {{
+            font-size: 1.25rem !important;
+            line-height: 1.45 !important;
         }}
 
         .stTabs [data-baseweb="tab-list"] {{
@@ -961,7 +970,7 @@ PROFILE_QUESTIONS = [
     ]},
 
     {"id": "withdrawal_horizon", "section": "Horizon",
-     "text": "When will you need access to funds within your investment/retirement portfolio?",
+     "text": "When will you need access to funds within your investment / retirement portfolio?",
      "type": "select", "options": [
         ("Less than 2 years",    20),
         ("2 – 5 years",          35),
@@ -980,7 +989,7 @@ PROFILE_QUESTIONS = [
         ("Not sure yet",       55),
     ]},
     {"id": "emergency_fund", "section": "Horizon",
-     "text": "How many months of expenses do you have in cash outside your investment/retirement portfolio?",
+     "text": "How many months of expenses do you have in cash outside your investment / retirement portfolio?",
      "type": "select", "options": [
         ("Less than 1 month",  20),
         ("1 – 3 months",       40),
@@ -2246,7 +2255,7 @@ def render_dashboard():
     )
 
     if st.session_state.fr_flash:
-        st.success(st.session_state.fr_flash)
+        st.toast(st.session_state.fr_flash, icon="✅")
         st.session_state.fr_flash = None
 
     # ── Greeting ────────────────────────────────────────────────────────────
