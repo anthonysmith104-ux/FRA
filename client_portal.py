@@ -440,6 +440,10 @@ st.markdown(
            pills are styled HTML spans; these do the real period switch when
            the JS bridge clicks them. */
         .st-key-fr_perf_btns {{ display: none !important; }}
+        /* Advisor bio — real spacing between paragraphs (the source text's
+           line breaks are otherwise collapsed by HTML). */
+        .fr-bio p {{ margin: 0 0 0.7em; }}
+        .fr-bio p:last-child {{ margin-bottom: 0; }}
         .fr-vital-label {{
             font-size: 0.65rem; font-weight: 600;
             color: {THEME['muted']};
@@ -3481,6 +3485,16 @@ def _render_my_info_tab():
                 st.rerun()
 
 
+def _bio_html(text: str) -> str:
+    """Render an advisor bio as separate <p> paragraphs so the line breaks
+    from the source (pasted-in site copy) show as real spacing. Raw HTML
+    collapses newlines, so we split on them and wrap each paragraph; the
+    .fr-bio container supplies the inter-paragraph margin (see CSS)."""
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    paras = [p.strip() for p in text.split("\n") if p.strip()]
+    return "".join(f"<p>{p}</p>" for p in paras)
+
+
 def _render_advisor_tab():
     """Full advisor profile card. Replaces the old single-line "Book your
     follow-up" CTA — now the client can see who their advisor actually is,
@@ -3501,10 +3515,10 @@ def _render_advisor_tab():
         f'      </div>'
         f'    </div>'
         f'  </div>'
-        f'  <div style="margin-top:16px;padding-top:14px;'
+        f'  <div class="fr-bio" style="margin-top:16px;padding-top:14px;'
         f'              border-top:1px solid {THEME["line"]};'
         f'              font-size:0.92rem;color:{THEME["ink2"]};line-height:1.55">'
-        f'    {a["bio"]}'
+        f'    {_bio_html(a["bio"])}'
         f'  </div>'
         f'</div>',
         unsafe_allow_html=True,
