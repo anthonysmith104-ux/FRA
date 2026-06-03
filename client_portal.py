@@ -1547,6 +1547,7 @@ def _init_state():
         "fr_last":      "",
         "fr_age":       0,
         "fr_q_idx":     0,             # current question index in quiz
+        "fr_q_max":     0,             # furthest question reached (frontier)
         "fr_answers":   {},            # qid -> answer
         "fr_scores":    None,          # set after quiz scoring
         "fr_show_signin": False,       # toggles sign-in field on welcome
@@ -1571,6 +1572,7 @@ def _logout():
     st.session_state.fr_last    = ""
     st.session_state.fr_age     = 0
     st.session_state.fr_q_idx   = 0
+    st.session_state.fr_q_max   = 0
     st.session_state.fr_answers = {}
     st.session_state.fr_scores  = None
     st.session_state.fr_show_signin = False
@@ -1756,6 +1758,7 @@ def _screen_prequiz():
                     st.session_state.fr_age     = int(age)
                     st.session_state.fr_step    = "quiz"
                     st.session_state.fr_q_idx   = 0
+                    st.session_state.fr_q_max   = 0
                     st.session_state.fr_answers = {}
                     st.rerun()
 
@@ -1773,6 +1776,15 @@ def _screen_quiz():
     total = len(visible_qs)
     idx = max(0, min(st.session_state.fr_q_idx, total - 1))
     q = visible_qs[idx]
+
+    # Frontier = furthest question the user has reached. The forward button is
+    # hidden while progressing into new territory (select questions auto-
+    # advance on answer, so no button is needed) and reappears only when the
+    # user has gone BACK to an already-answered question — letting them move
+    # forward again without re-picking. Number/multi questions never auto-
+    # advance, so they always keep a forward button.
+    st.session_state.fr_q_max = max(st.session_state.get("fr_q_max", 0), idx)
+    frontier = st.session_state.fr_q_max
 
     progress = (idx + 1) / total
 
@@ -1896,9 +1908,15 @@ def _screen_quiz():
                     st.session_state.fr_q_idx = idx - 1
                 st.rerun()
         with b2:
+            # Auto-advancing select questions at the frontier need no button;
+            # number/multi (no auto-advance) and any revisited question (behind
+            # the frontier) still show it.
+            auto_advances = (q["type"] == "select")
+            show_forward = (not auto_advances) or (idx < frontier)
             label = "Finish →" if idx == total - 1 else "Next →"
-            if st.button(label, type="primary", key=f"fr_qz_next_{idx}",
-                         use_container_width=True, disabled=not answered):
+            if show_forward and st.button(
+                    label, type="primary", key=f"fr_qz_next_{idx}",
+                    use_container_width=True, disabled=not answered):
                 # For multi-select questions with a max_pick, store only the
                 # first max_pick selections — keeps scoring deterministic
                 # whether or not the user respected the soft-cap warning.
@@ -2015,6 +2033,7 @@ def _screen_results():
                      use_container_width=True):
             st.session_state.fr_step    = "prequiz"
             st.session_state.fr_q_idx   = 0
+            st.session_state.fr_q_max   = 0
             st.session_state.fr_answers = {}
             st.session_state.fr_scores  = None
             st.rerun()
