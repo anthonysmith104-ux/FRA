@@ -436,6 +436,10 @@ st.markdown(
            a subtle hover lift so they read as tappable. */
         .fr-tablink {{ cursor: pointer; transition: box-shadow .15s ease; }}
         .fr-tablink:hover {{ box-shadow: 0 0 0 3px {THEME['primary_soft']}; }}
+        /* Hidden helper buttons behind the Portfolio Performance pills — the
+           pills are styled HTML spans; these do the real period switch when
+           the JS bridge clicks them. */
+        .st-key-fr_perf_btns {{ display: none !important; }}
         .fr-vital-label {{
             font-size: 0.65rem; font-weight: 600;
             color: {THEME['muted']};
@@ -2324,12 +2328,17 @@ def _render_tab_link_bridge():
         <script>
         (function(){
           const doc = window.parent.document;
-          const MAP = {"fr-go-holdings": "Holdings", "fr-go-goals": "Financial Goals"};
+          const MAP = {"fr-go-holdings": "Holdings", "fr-go-goals": "Financial Goals", "fr-go-advisor": "Advisor"};
+          const PERF = {"fr-perf-1m": "fr_perf_1M", "fr-perf-3m": "fr_perf_3M", "fr-perf-1y": "fr_perf_1Y"};
           function clickTab(name){
             const tabs = doc.querySelectorAll('button[data-baseweb="tab"]');
             for (const t of tabs){
               if ((t.innerText || "").trim() === name){ t.click(); return; }
             }
+          }
+          function clickPerf(keyCls){
+            const b = doc.querySelector('.st-key-' + keyCls + ' button');
+            if (b){ b.click(); }
           }
           function wire(){
             doc.querySelectorAll('.fr-tablink').forEach(function(el){
@@ -2337,7 +2346,20 @@ def _render_tab_link_bridge():
               for (const cls in MAP){
                 if (el.classList.contains(cls)){
                   el.dataset.frWired = "1";
-                  el.addEventListener('click', function(){ clickTab(MAP[cls]); });
+                  el.addEventListener('click', function(ev){
+                    if (ev.target.closest('a')) return;  // let email/phone links work
+                    clickTab(MAP[cls]);
+                  });
+                  break;
+                }
+              }
+            });
+            doc.querySelectorAll('.fr-perf-chip').forEach(function(el){
+              if (el.dataset.frWired) return;
+              for (const cls in PERF){
+                if (el.classList.contains(cls)){
+                  el.dataset.frWired = "1";
+                  el.addEventListener('click', function(){ clickPerf(PERF[cls]); });
                   break;
                 }
               }
@@ -2554,7 +2576,8 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
     # as the previous teal-square icon.
     company_logo_svg = logo_mark(THEME["primary"], 22)
     st.markdown(
-        f'<div style="background:{THEME["surface2"]};'
+        f'<div class="fr-tablink fr-go-advisor" '
+        f'     style="background:{THEME["surface2"]};'
         f'            border:1.5px solid {THEME["primary"]};'
         f'            border-radius:10px;padding:14px 16px;margin-top:18px;'
         f'            display:flex;align-items:center;gap:14px">'
@@ -2753,34 +2776,47 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
         series = (ramp + wig * (end - start) * wig_scale).tolist()
         series[0], series[-1] = start, end
 
-        # Thin separator so this section reads as its own block. (Native
-        # buttons can't nest inside a raw-HTML .fr-card div, so the period
-        # toggle lives in real Streamlit columns rather than the old card.)
+        # Period pills. These are styled HTML spans (so they keep the exact
+        # original look inside the card); the click-through is handled by the
+        # hidden buttons rendered just below + the JS bridge, which clicks the
+        # matching hidden button when a pill is tapped. The active pill gets
+        # the chip background; the rest are muted.
+        def _perf_chip(lab: str) -> str:
+            on = (period == lab)
+            tone = (f'background:{THEME["chip"]};color:{THEME["ink"]}' if on
+                    else f'color:{THEME["muted"]}')
+            return (
+                f'<span class="fr-perf-chip fr-perf-{lab.lower()}" '
+                f'      style="font-size:0.7rem;padding:4px 9px;border-radius:999px;'
+                f'             font-weight:600;cursor:pointer;{tone}">{lab}</span>'
+            )
+
         st.markdown(
-            f'<div style="height:1px;background:{THEME["line"]};'
-            f'            margin:18px 0 14px"></div>',
+            f'<div class="fr-card" style="margin-bottom:0">'
+            f'  <div style="display:flex;align-items:flex-end;justify-content:space-between">'
+            f'    <div>'
+            f'      <div class="fr-eyebrow">Portfolio Performance</div>'
+            f'      <div class="fr-mono" style="font-size:1.35rem;color:{THEME["ink"]};'
+            f'                                    margin-top:2px">'
+            f'        {fmt_money(end)}'
+            f'      </div>'
+            f'    </div>'
+            f'    <div style="display:flex;gap:6px">'
+            f'      {_perf_chip("1M")}{_perf_chip("3M")}{_perf_chip("1Y")}'
+            f'    </div>'
+            f'  </div>'
+            f'</div>',
             unsafe_allow_html=True,
         )
-        pv_l, pv_r = st.columns([1, 1.15])
-        with pv_l:
-            st.markdown(
-                f'<div class="fr-eyebrow">Portfolio Performance</div>'
-                f'<div class="fr-mono" style="font-size:1.35rem;'
-                f'     color:{THEME["ink"]};margin-top:2px">{fmt_money(end)}</div>',
-                unsafe_allow_html=True,
-            )
-        with pv_r:
-            pb1, pb2, pb3 = st.columns(3)
-            for col, lab in ((pb1, "1M"), (pb2, "3M"), (pb3, "1Y")):
-                with col:
-                    if st.button(
-                        lab,
-                        key=f"fr_perf_{lab}",
-                        use_container_width=True,
-                        type="primary" if period == lab else "secondary",
-                    ):
-                        st.session_state.fr_perf_period = lab
-                        st.rerun()
+
+        # Hidden buttons that do the actual period switch. The container is
+        # display:none (see .st-key-fr_perf_btns in the CSS), but a programmatic
+        # .click() from the JS bridge still fires the Streamlit handler.
+        with st.container(key="fr_perf_btns"):
+            for lab in ("1M", "3M", "1Y"):
+                if st.button(lab, key=f"fr_perf_{lab}"):
+                    st.session_state.fr_perf_period = lab
+                    st.rerun()
 
         # See risk ring above — staticPlot stops the chart from eating
         # touch scroll events.
