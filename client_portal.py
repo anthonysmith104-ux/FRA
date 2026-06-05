@@ -858,27 +858,82 @@ def save_budget_for(client_key: str, budget: dict) -> None:
 @st.cache_data(ttl=60, show_spinner=False)
 def _get_live_quotes_cached(tickers_tuple: tuple) -> dict:
     """60s cache. Wrap each ticker in try/except so one bad symbol can't take
-    down the whole panel."""
+    down the whole panel.
+
+    yfinance occasionally hands back the most-recent daily bar with a NaN
+    Close — an incomplete/holiday bar, or thin-volume ETFs like SGOV/AVUV —
+    which used to surface in the UI as "$nan" and "nan%". We now:
+      • drop NaN closes before indexing, so price = last *valid* close;
+      • if history yields nothing usable, fall back to previousClose via
+        fast_info / info;
+      • guard the final values so NaN can never reach the panel.
+    Net effect: a holding without a fresh live print defaults to its previous
+    close instead of showing nothing.
+    """
+    import math as _math
     import yfinance as yf
+
+    def _clean(x: float) -> float:
+        try:
+            x = float(x)
+        except (TypeError, ValueError):
+            return 0.0
+        return 0.0 if _math.isnan(x) else x
+
     out = {}
     for tk in tickers_tuple:
         try:
             t = yf.Ticker(tk)
             hist = t.history(period="5d")
-            if len(hist) >= 2:
-                prev  = float(hist["Close"].iloc[-2])
-                price = float(hist["Close"].iloc[-1])
-            elif len(hist) == 1:
-                price = prev = float(hist["Close"].iloc[-1])
-            else:
-                price = prev = 0.0
+            closes = (
+                [c for c in hist["Close"].dropna().tolist()]
+                if hist is not None and not hist.empty and "Close" in hist
+                else []
+            )
+
+            price = prev = 0.0
+            if len(closes) >= 2:
+                prev, price = _clean(closes[-2]), _clean(closes[-1])
+            elif len(closes) == 1:
+                price = prev = _clean(closes[-1])
+
+            # Fallback: no usable history → pull previous close from
+            # fast_info, then info. Covers tickers whose 5d history comes
+            # back empty or all-NaN.
+            if not price:
+                pc = 0.0
+                try:
+                    fi = getattr(t, "fast_info", None)
+                    if fi is not None:
+                        pc = _clean(fi.get("last_price")
+                                    or fi.get("previous_close") or 0)
+                except Exception:
+                    pc = 0.0
+                if not pc:
+                    try:
+                        info = t.info or {}
+                        pc = _clean(info.get("regularMarketPrice")
+                                    or info.get("previousClose") or 0)
+                    except Exception:
+                        pc = 0.0
+                price = prev = pc
+
+            # Final guard: never let a zero/NaN price ride alongside a good
+            # prev (or vice-versa); a missing price defaults to prev close.
+            if not price:
+                price = prev
+            if not prev:
+                prev = price
+
             chg = price - prev
-            pct = (chg / prev * 100) if prev else 0
+            pct = (chg / prev * 100) if prev else 0.0
+
             try:
                 info = t.info or {}
                 name = info.get("shortName") or info.get("longName") or tk
             except Exception:
                 name = tk
+
             out[tk] = {"name": name, "price": price, "prev_close": prev,
                        "change": chg, "change_pct": pct}
         except Exception:
@@ -889,6 +944,76 @@ def _get_live_quotes_cached(tickers_tuple: tuple) -> dict:
 def get_live_quotes(tickers) -> dict:
     if not tickers: return {}
     return _get_live_quotes_cached(tuple(sorted(set(tickers))))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RISK-FREE RATE  (default assumed return for goal projections)
+# ─────────────────────────────────────────────────────────────────────────────
+# The Financial Goals tab can grow the already-saved balance and future
+# monthly contributions at an assumed rate of return when working out how much
+# a client needs to set aside each month. That rate defaults to the risk-free
+# rate: ^IRX, the 13-week US T-bill yield, the conventional risk-free proxy.
+# It's quoted in percent, so divide by 100. RISK_FREE_FALLBACK covers cold
+# starts / fetch failures (Streamlit Cloud spins containers down) — keep it
+# roughly current.
+RISK_FREE_FALLBACK = 0.043  # ~4.3%
+
+@st.cache_data(ttl=60 * 60 * 6, show_spinner=False)
+def get_risk_free_rate(ticker: str = "^IRX") -> float:
+    """Current risk-free rate as a decimal (0.043 == 4.3%). For long-horizon
+    goals you may prefer to horizon-match with ^FVX (5y) or ^TNX (10y)."""
+    import math as _math
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(ticker).history(period="5d")
+        closes = (hist["Close"].dropna().tolist()
+                  if hist is not None and not hist.empty and "Close" in hist
+                  else [])
+        if closes:
+            rate = float(closes[-1]) / 100.0
+            if not _math.isnan(rate) and 0 < rate < 0.25:  # sanity guard
+                return rate
+    except Exception:
+        pass
+    return RISK_FREE_FALLBACK
+
+def risk_free_pct() -> float:
+    """Risk-free rate as a percent (e.g. 4.3), for prefilling rate inputs."""
+    return round(get_risk_free_rate() * 100, 2)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GOAL PROJECTION MATH
+# ─────────────────────────────────────────────────────────────────────────────
+# Monthly compounding, monthly contributions, end-of-period (ordinary annuity).
+# annual_rate is a decimal (0.043 == 4.3%); 0.0 reproduces the old straight-
+# line "remaining / months" behaviour.
+def goal_future_value(saved: float, monthly: float, months: int,
+                      annual_rate: float) -> float:
+    """Projected value of the current balance + future monthly contributions
+    at the target date, both grown at annual_rate."""
+    n = max(0, int(months))
+    r = (annual_rate or 0.0) / 12.0
+    if n == 0:
+        return float(saved)
+    if r == 0:
+        return float(saved) + float(monthly) * n
+    growth = (1 + r) ** n
+    return float(saved) * growth + float(monthly) * ((growth - 1) / r)
+
+def goal_required_monthly(target: float, saved: float, months: int,
+                          annual_rate: float) -> float:
+    """Monthly contribution needed to reach `target`, growing both the
+    already-saved balance and future contributions at annual_rate. Returns 0
+    when the balance alone already grows past the target."""
+    n = max(1, int(months))
+    r = (annual_rate or 0.0) / 12.0
+    if r == 0:
+        return max(0.0, (float(target) - float(saved)) / n)
+    growth = (1 + r) ** n
+    annuity_factor = (growth - 1) / r
+    pmt = (float(target) - float(saved) * growth) / annuity_factor
+    return max(0.0, pmt)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2955,6 +3080,10 @@ def _render_plan_tab(ck: str):
     today = date.today()
     default_target = today.replace(year=today.year + 5)
 
+    # Default assumed rate of return for goal projections = the risk-free rate
+    # (13-week T-bill). Computed once per render; cached for 6h underneath.
+    _rf_pct = risk_free_pct()
+
     # Mobile-first goals UI: each goal is a stacked card (no wide scrolling
     # grid), with an inline Edit/Remove panel. New goals are added through the
     # form at the bottom. This replaced st.data_editor, whose 4-column grid
@@ -2972,8 +3101,17 @@ def _render_plan_tab(ck: str):
             except Exception:
                 _tdt, _mleft, _tdt_str = default_target, 12, "\u2014"
             _rem   = max(0.0, _amt - _saved)
-            _permo = _rem / _mleft
+            # Rate of return on the saved balance + future contributions.
+            # Defaults ON at the risk-free rate; per-goal toggle/override is
+            # in the Edit panel below. Backward-compatible with older goals
+            # that predate these keys.
+            _use_growth = bool(_g.get("use_growth", True))
+            _rate_pct   = float(_g.get("rate_pct", _rf_pct) or 0.0)
+            _rate       = (_rate_pct / 100.0) if _use_growth else 0.0
+            _permo = goal_required_monthly(_amt, _saved, _mleft, _rate)
             _pct   = min(100, (_saved / _amt * 100) if _amt else 0)
+            _rate_note = (f" \u00b7 {_rate_pct:.1f}% return"
+                          if _use_growth and _rate_pct else "")
 
             st.markdown(
                 f'<div style="margin-top:12px;background:{THEME["surface2"]};'
@@ -2995,7 +3133,7 @@ def _render_plan_tab(ck: str):
                 f'  <div style="display:flex;justify-content:space-between;'
                 f'              font-size:0.78rem;color:{THEME["muted"]};'
                 f'              margin-top:8px">'
-                f'    <span>Target {_tdt_str}</span>'
+                f'    <span>Target {_tdt_str}{_rate_note}</span>'
                 f'    <span class="fr-mono">{fmt_money(_permo)}/mo</span>'
                 f'  </div>'
                 f'</div>',
@@ -3016,6 +3154,17 @@ def _render_plan_tab(ck: str):
                         "Target date",
                         value=(_tdt if _tdt >= today else today),
                         min_value=today, key=f"fr_goal_date_{_i}")
+                    _e_growth = st.checkbox(
+                        "Grow savings at an assumed rate of return",
+                        value=_use_growth, key=f"fr_goal_growth_{_i}")
+                    _e_rate = st.number_input(
+                        "Assumed annual return (%)",
+                        min_value=0.0, max_value=25.0,
+                        value=float(_rate_pct), step=0.25, format="%.2f",
+                        key=f"fr_goal_rate_{_i}",
+                        help="Applied to both your current balance and your "
+                             "future monthly contributions. Defaults to the "
+                             f"risk-free rate (currently ~{_rf_pct:.2f}%).")
                     _ce1, _ce2 = st.columns(2)
                     _save_clicked = _ce1.form_submit_button(
                         "Save", type="primary", use_container_width=True)
@@ -3027,6 +3176,8 @@ def _render_plan_tab(ck: str):
                         "amount":      round(float(_e_amt), 2),
                         "saved":       round(float(_e_saved), 2),
                         "target_date": _e_date.isoformat(),
+                        "use_growth":  bool(_e_growth),
+                        "rate_pct":    round(float(_e_rate), 2),
                         "added_at":    _g.get("added_at")
                                        or datetime.now().isoformat(timespec="minutes"),
                     }
@@ -3051,9 +3202,12 @@ def _render_plan_tab(ck: str):
                               + (tdt.month - today.month))
             except Exception:
                 mleft = 12
-            rem = max(0.0, float(g.get("amount") or 0)
-                          - float(g.get("saved")  or 0))
-            total_monthly += rem / mleft
+            g_rate = ((float(g.get("rate_pct", _rf_pct) or 0.0) / 100.0)
+                      if bool(g.get("use_growth", True)) else 0.0)
+            total_monthly += goal_required_monthly(
+                float(g.get("amount") or 0),
+                float(g.get("saved")  or 0),
+                mleft, g_rate)
         pct = min(100, (total_saved / total_target * 100)
                        if total_target else 0)
         st.markdown(
@@ -3104,6 +3258,17 @@ def _render_plan_tab(ck: str):
             _a_date = st.date_input(
                 "Target date", value=default_target, min_value=today,
                 key="fr_goal_add_date")
+            _a_growth = st.checkbox(
+                "Grow savings at an assumed rate of return",
+                value=True, key="fr_goal_add_growth")
+            _a_rate = st.number_input(
+                "Assumed annual return (%)",
+                min_value=0.0, max_value=25.0,
+                value=float(_rf_pct), step=0.25, format="%.2f",
+                key="fr_goal_add_rate",
+                help="Applied to both your current balance and your future "
+                     "monthly contributions. Defaults to the risk-free rate "
+                     f"(currently ~{_rf_pct:.2f}%).")
             _a_submit = st.form_submit_button(
                 "Add goal", type="primary", use_container_width=True)
         if _a_submit:
@@ -3118,6 +3283,8 @@ def _render_plan_tab(ck: str):
                     "amount":      round(float(_a_amt), 2),
                     "saved":       round(float(_a_saved), 2),
                     "target_date": _a_date.isoformat(),
+                    "use_growth":  bool(_a_growth),
+                    "rate_pct":    round(float(_a_rate), 2),
                     "added_at":    datetime.now().isoformat(timespec="minutes"),
                 })
                 save_goals_for(ck, goals)
