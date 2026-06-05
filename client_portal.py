@@ -2830,6 +2830,7 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
         total_target  = sum(float(g.get("amount") or 0) for g in goals)
         total_saved   = sum(float(g.get("saved")  or 0) for g in goals)
         total_monthly = 0.0
+        _rf_pct = risk_free_pct()
         for g in goals:
             try:
                 tdt = date.fromisoformat(g.get("target_date", ""))
@@ -2837,9 +2838,12 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
                               + (tdt.month - _today.month))
             except Exception:
                 mleft = 12
-            rem = max(0.0, float(g.get("amount") or 0)
-                          - float(g.get("saved")  or 0))
-            total_monthly += rem / mleft
+            g_rate = ((float(g.get("rate_pct", _rf_pct) or 0.0) / 100.0)
+                      if bool(g.get("use_growth", True)) else 0.0)
+            total_monthly += goal_required_monthly(
+                float(g.get("amount") or 0),
+                float(g.get("saved")  or 0),
+                mleft, g_rate)
         pct = min(100, (total_saved / total_target * 100)
                        if total_target else 0)
         st.markdown(
@@ -3359,8 +3363,12 @@ def _render_plan_tab(ck: str):
                           + (tdt.month - today.month))
         except Exception:
             mleft = 12
-        rem = max(0.0, float(g.get("amount") or 0) - float(g.get("saved") or 0))
-        total_monthly_need += rem / mleft
+        g_rate = ((float(g.get("rate_pct", _rf_pct) or 0.0) / 100.0)
+                  if bool(g.get("use_growth", True)) else 0.0)
+        total_monthly_need += goal_required_monthly(
+            float(g.get("amount") or 0),
+            float(g.get("saved")  or 0),
+            mleft, g_rate)
 
     gap = available - total_monthly_need
     gap_color = THEME["primary"] if gap >= 0 else THEME["risk"]
