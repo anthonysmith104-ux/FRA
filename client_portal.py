@@ -1364,6 +1364,13 @@ SCHEDULE_URL = "https://meetings-na2.hubspot.com/anthony-smith"
 # can tap to save the contact (no app needed). Change the slug if it moves.
 DOT_CARD_URL = "https://dot.cards/anthony_smith_795"
 
+# Public URL of THIS portal — the page someone lands on to register and take
+# the assessment. Used by the "Share / Invite" card so a client can text or
+# email a link to someone else. Leave as "" to auto-detect the live URL in the
+# browser (origin + path); set it to the deployed Streamlit Cloud URL for a
+# stable, canonical invite link that won't carry along any session query string.
+PORTAL_URL = ""
+
 # Client agreement shown at registration as an in-app popup. Replace the
 # placeholder body text below with your CCO/counsel-approved language before
 # launch — this code provides the popup and records acceptance (version +
@@ -2426,8 +2433,8 @@ def render_dashboard():
     # far right (rightmost = "settings-like" convention; Advisor sits to
     # its left as "their info to my info").
     (tab_home, tab_goals, tab_holdings,
-     tab_advisor, tab_my_info) = st.tabs(
-        ["Home", "Financial Goals", "Holdings", "Advisor", "My Info"]
+     tab_advisor, tab_refer, tab_my_info) = st.tabs(
+        ["Home", "Financial Goals", "Holdings", "Advisor", "Refer", "My Info"]
     )
 
     with tab_home:
@@ -2439,6 +2446,8 @@ def render_dashboard():
         _render_holdings_tab(holdings, ck)
     with tab_advisor:
         _render_advisor_tab()
+    with tab_refer:
+        _render_referral_tab(profile)
     with tab_my_info:
         _render_my_info_tab()
         _render_sign_out("myinfo")
@@ -2523,6 +2532,186 @@ def _render_tab_link_bridge():
         """,
         height=0,
     )
+
+
+def _render_share_card(profile: dict, *, show_header: bool = True):
+    """Share / refer card — lets a client share their (qualitative) risk
+    result and invite others to take the assessment.
+
+    show_header=True (default, used inline on Home) renders the card's own
+    eyebrow/heading/subtext. The Refer tab passes show_header=False because it
+    supplies its own hero above the card, so the card there is just the action
+    buttons — avoids two stacked headings saying the same thing.
+
+    Rendered as a self-contained components.html iframe because the buttons
+    need to run JS. The primary "Share" button uses the Web Share API (the
+    native share sheet → Messages, Mail, etc.) where available; there are
+    explicit Text (sms:), Email (mailto:) and Copy-link fallbacks underneath so
+    "share via text" works on a phone even when the Web Share API is missing or
+    blocked inside the component iframe (desktop, some embedded webviews).
+
+    Only the qualitative band label is shared — never the numeric score. A
+    precise personal risk number is more sensitive than most clients would
+    want to drop into a text to a friend.
+
+    Invite-link resolution order: PORTAL_URL (if configured) → the live parent
+    page URL read in the browser (origin + path) → FIRM_WEBSITE_URL as a last
+    resort. The iframe body background is set to the page cream so any unused
+    height below the card blends into the page rather than showing a gap.
+    """
+    firm = (ADVISOR.get("firm") or "our firm").strip()
+    has_result = bool(profile and "overall_score" in profile)
+    label = ""
+    if has_result:
+        cap = int(profile.get("capacity_score", 50))
+        tol = int(profile.get("tolerance_score", 50))
+        label, _, _ = score_band(cap, tol)
+
+    cfg_json = json.dumps({
+        "firm":        firm,
+        "label":       label,
+        "hasResult":   has_result,
+        "portalUrl":   PORTAL_URL,
+        "fallbackUrl": FIRM_WEBSITE_URL,
+    })
+
+    c_bg    = THEME["bg"]          # page cream — iframe body, hides extra height
+    c_card  = THEME["surface2"]    # card fill (cream_warm), matches .fr-card
+    c_navy  = THEME["primary"]
+    c_ink   = THEME["ink"]
+    c_ink2  = THEME["ink2"]
+    c_muted = THEME["muted"]
+    c_white = "#FFFFFF"
+
+    heading = "Share your results" if has_result else "Invite a friend"
+    sub = ("Know someone weighing how much risk is right for them? Send them "
+           "your result plus the 4-minute checkup."
+           if has_result else
+           "Know someone who'd find a quick risk-profile checkup useful? "
+           "It's free and takes about 4 minutes.")
+    header_html = ("" if not show_header else
+                   f'<div class="eyebrow">Spread the word</div>'
+                   f'<div class="head">{heading}</div>'
+                   f'<div class="sub">{sub}</div>')
+
+    _ic_share = (f'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" '
+                 f'stroke="{c_white}" stroke-width="1.8" stroke-linecap="round" '
+                 f'stroke-linejoin="round"><circle cx="18" cy="5" r="3"/>'
+                 f'<circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>'
+                 f'<path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>')
+    _ic_sms = (f'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" '
+               f'stroke="{c_navy}" stroke-width="1.8" stroke-linecap="round" '
+               f'stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 '
+               f'8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7A8.38 8.38 0 0 1 4 11.5 '
+               f'8.5 8.5 0 0 1 12.5 3 8.38 8.38 0 0 1 21 11.5z"/></svg>')
+    _ic_mail = (f'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" '
+                f'stroke="{c_navy}" stroke-width="1.8" stroke-linecap="round" '
+                f'stroke-linejoin="round"><rect x="3" y="5" width="18" '
+                f'height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>')
+    _ic_copy = (f'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" '
+                f'stroke="{c_navy}" stroke-width="1.8" stroke-linecap="round" '
+                f'stroke-linejoin="round"><rect x="9" y="9" width="12" '
+                f'height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 '
+                f'1 2-2h9a2 2 0 0 1 2 2v1"/></svg>')
+
+    html = f"""<!doctype html><html><head><meta charset="utf-8">
+<style>
+  * {{ box-sizing:border-box; }}
+  body {{ margin:0; background:{c_bg};
+          font-family:'Inter',system-ui,-apple-system,sans-serif; }}
+  .card {{ background:{c_card}; border:1.5px solid {c_navy}; border-radius:18px;
+           padding:22px; }}
+  .eyebrow {{ font-size:0.69rem; font-weight:600; color:{c_muted};
+              letter-spacing:0.14em; text-transform:uppercase; }}
+  .head {{ font-size:1.12rem; font-weight:700; color:{c_ink}; margin-top:6px;
+           letter-spacing:-0.01em; }}
+  .sub {{ font-size:0.88rem; color:{c_ink2}; line-height:1.5; margin-top:6px; }}
+  .primary {{ display:flex; align-items:center; justify-content:center; gap:8px;
+              width:100%; margin-top:16px; padding:12px 16px; border:none;
+              background:{c_navy}; color:{c_white}; font-weight:600;
+              font-size:0.95rem; border-radius:10px; cursor:pointer;
+              font-family:inherit; }}
+  .row {{ display:flex; gap:8px; margin-top:10px; }}
+  .pill {{ flex:1; display:flex; align-items:center; justify-content:center;
+           gap:6px; padding:10px 6px; background:transparent; color:{c_navy};
+           border:1.5px solid {c_navy}; border-radius:10px; font-weight:600;
+           font-size:0.82rem; cursor:pointer; text-decoration:none;
+           font-family:inherit; line-height:1; }}
+  .pill svg {{ flex-shrink:0; }}
+  .pill.copied {{ background:{c_navy}; color:{c_white}; }}
+</style></head>
+<body>
+  <div class="card">
+    {header_html}
+    <button class="primary" id="shareBtn">{_ic_share}<span>Share</span></button>
+    <div class="row">
+      <a class="pill" id="smsBtn" href="#">{_ic_sms}<span>Text</span></a>
+      <a class="pill" id="mailBtn" href="#">{_ic_mail}<span>Email</span></a>
+      <button class="pill" id="copyBtn">{_ic_copy}<span>Copy link</span></button>
+    </div>
+  </div>
+<script>
+  const CFG = {cfg_json};
+  function inviteLink() {{
+    if (CFG.portalUrl) return CFG.portalUrl;
+    try {{ const p = window.parent.location; return p.origin + p.pathname; }}
+    catch (e) {{ return CFG.fallbackUrl || ""; }}
+  }}
+  function message() {{
+    const link = inviteLink();
+    if (CFG.hasResult) {{
+      return `I just did ${{CFG.firm}}'s quick risk-profile checkup — mine came back "${{CFG.label}}". It's free and takes about 4 minutes. Try it: ${{link}}`;
+    }}
+    return `I'm using ${{CFG.firm}}'s client portal — there's a free 4-minute risk-profile checkup. Thought you might find it useful: ${{link}}`;
+  }}
+  const subject = CFG.firm + " \\u2014 free risk-profile checkup";
+
+  function legacyCopy(text, done) {{
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    try {{ document.execCommand('copy'); done(); }} catch (e) {{}}
+    document.body.removeChild(ta);
+  }}
+  function flash(btn, lbl) {{
+    const old = btn.innerHTML;
+    btn.classList.add('copied');
+    btn.innerHTML = '<span>' + lbl + '</span>';
+    setTimeout(() => {{ btn.innerHTML = old; btn.classList.remove('copied'); }}, 1600);
+  }}
+  function copyText(btn, text, lbl) {{
+    const done = () => flash(btn, lbl);
+    if (navigator.clipboard && navigator.clipboard.writeText) {{
+      navigator.clipboard.writeText(text).then(done).catch(() => legacyCopy(text, done));
+    }} else {{ legacyCopy(text, done); }}
+  }}
+
+  (function wire() {{
+    const msg = message();
+    const link = inviteLink();
+    // SMS — the guaranteed "via text" path on a phone. `?&body=` is the form
+    // that opens the composer (no recipient) on both iOS and most Android.
+    document.getElementById('smsBtn').href =
+      'sms:?&body=' + encodeURIComponent(msg);
+    document.getElementById('mailBtn').href =
+      'mailto:?subject=' + encodeURIComponent(subject) +
+      '&body=' + encodeURIComponent(msg);
+    // Native share sheet (includes Messages) where supported; otherwise copy.
+    document.getElementById('shareBtn').addEventListener('click', async (ev) => {{
+      const btn = ev.currentTarget;
+      if (navigator.share) {{
+        try {{ await navigator.share({{ title: subject, text: msg }}); return; }}
+        catch (e) {{ if (e && e.name === 'AbortError') return; }}
+      }}
+      copyText(btn, msg, 'Copied \\u2014 paste anywhere');
+    }});
+    document.getElementById('copyBtn').addEventListener('click', (ev) => {{
+      copyText(ev.currentTarget, link, 'Copied!');
+    }});
+  }})();
+</script>
+</body></html>"""
+    components.html(html, height=(272 if show_header else 164), scrolling=False)
 
 
 def _render_home_tab(profile: dict, holdings: dict, ck: str):
@@ -2653,6 +2842,12 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
                 f'</div>',
                 unsafe_allow_html=True,
             )
+
+    # ── Share / invite ──────────────────────────────────────────────────────
+    # Sits right under the result so "share your results" is in context. Adapts
+    # its copy to whether the client has a score yet (share result vs. plain
+    # invite); see _render_share_card for the via-text / share-sheet handling.
+    _render_share_card(profile)
 
     # ── Vitals grid ─────────────────────────────────────────────────────────
     if holdings:
@@ -3856,6 +4051,13 @@ def _render_advisor_tab():
         unsafe_allow_html=True,
     )
 
+
+
+def _render_referral_tab(profile: dict):
+    """Referral tab — just the share / invite card (Share / Text / Email /
+    Copy). Kept intentionally minimal: the card carries its own small heading
+    and the via-text handling lives in _render_share_card."""
+    _render_share_card(profile)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
