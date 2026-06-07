@@ -2594,16 +2594,23 @@ def _render_invite_button():
     if (!btn) return false;
     if (btn.dataset.invWired) return true;
     btn.dataset.invWired = "1";
-    // Share icon after the label. Append as a flex sibling so it sits to the
-    // right of the centered label group.
+    // Put the share icon INSIDE the label element so it flows right after the
+    // text and centers together with it. Appending it to the button itself
+    // lands it at the far right edge, because Streamlit's label container is
+    // full-width (flex:1) and centers the text within that full width.
     if (!btn.querySelector('.inv-share-ic')) {{
+      const lblEl = btn.querySelector('[data-testid="stMarkdownContainer"] p')
+                 || btn.querySelector('p')
+                 || btn.querySelector('[data-testid="stMarkdownContainer"]')
+                 || btn;
       const ic = doc.createElement('span');
       ic.className = 'inv-share-ic';
       ic.style.display = 'inline-flex';
       ic.style.alignItems = 'center';
+      ic.style.verticalAlign = 'middle';
       ic.style.marginLeft = '8px';
       ic.innerHTML = SHARE_SVG;
-      btn.appendChild(ic);
+      lblEl.appendChild(ic);
     }}
     btn.addEventListener('click', function(ev) {{
       ev.preventDefault();
