@@ -2564,6 +2564,7 @@ def _render_invite_button():
 
     html = f"""<!doctype html><html><head><meta charset="utf-8">
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
   * {{ box-sizing:border-box; }}
   body {{ margin:0; background:transparent;
           font-family:'Inter',system-ui,-apple-system,sans-serif; }}
@@ -2571,8 +2572,10 @@ def _render_invite_button():
              width:100%; padding:0.55rem 1rem; min-height:40px;
              background:{c_surface}; color:{c_ink};
              border:1.5px solid {c_navy}; border-radius:12px;
-             font-weight:600; font-size:1rem; cursor:pointer;
-             font-family:inherit; transition:all 0.15s ease; }}
+             font-family:'Inter',system-ui,-apple-system,sans-serif;
+             font-weight:600; font-size:1rem; line-height:1.6;
+             letter-spacing:normal; cursor:pointer;
+             transition:all 0.15s ease; }}
   .invite:hover {{ background:{c_surface2}; color:{c_navy}; }}
   .invite svg {{ flex-shrink:0; }}
 </style></head>
