@@ -2532,19 +2532,18 @@ def _render_tab_link_bridge():
     )
 
 
-def _render_invite_options():
-    """Invite actions (Share / Text / Email / Copy) shown inside the invite
-    popup. Self-contained components.html iframe so the buttons can run JS:
-    the primary Share button uses the Web Share API (native share sheet →
-    Messages, Mail, etc.) where available, and Text (sms:), Email (mailto:) and
-    Copy are explicit fallbacks so "invite via text" works on a phone even when
-    the Web Share API is missing or blocked in the iframe (desktop, webviews).
+def _render_invite_button():
+    """Single "Invite someone" button (share icon) that fires the native share
+    sheet directly — no popup, no channel picker; the OS share sheet is the
+    picker. Rendered as an HTML button inside a components.html iframe because
+    navigator.share must run from a real in-browser click, not a Streamlit
+    rerun. Styled to match the app's outlined st.button so it reads as a
+    sibling of "View / update profile" right above it.
 
-    No results are involved — this only sends a link to the assessment. The
-    iframe background is transparent so it sits flush inside the white dialog.
-
-    Invite-link order: PORTAL_URL (if configured) → the live parent page URL
-    read in the browser (origin + path) → FIRM_WEBSITE_URL as a last resort.
+    Shares a link to the assessment (PORTAL_URL -> live parent URL -> firm
+    site). Where the Web Share API is unavailable or blocked (most desktop
+    browsers, some embedded webviews) it falls back to copying the link and
+    flashing "Link copied" — useful without surfacing a choice UI.
     """
     firm = (ADVISOR.get("firm") or "our firm").strip()
     cfg_json = json.dumps({
@@ -2552,55 +2551,33 @@ def _render_invite_options():
         "portalUrl":   PORTAL_URL,
         "fallbackUrl": FIRM_WEBSITE_URL,
     })
+    c_navy     = THEME["primary"]
+    c_ink      = THEME["ink"]
+    c_surface  = THEME["surface"]
+    c_surface2 = THEME["surface2"]
 
-    c_navy  = THEME["primary"]
-    c_white = "#FFFFFF"
-
-    _ic_share = (f'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" '
-                 f'stroke="{c_white}" stroke-width="1.8" stroke-linecap="round" '
-                 f'stroke-linejoin="round"><circle cx="18" cy="5" r="3"/>'
-                 f'<circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>'
-                 f'<path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>')
-    _ic_sms = (f'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" '
-               f'stroke="{c_navy}" stroke-width="1.8" stroke-linecap="round" '
-               f'stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 '
-               f'8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7A8.38 8.38 0 0 1 4 11.5 '
-               f'8.5 8.5 0 0 1 12.5 3 8.38 8.38 0 0 1 21 11.5z"/></svg>')
-    _ic_mail = (f'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" '
-                f'stroke="{c_navy}" stroke-width="1.8" stroke-linecap="round" '
-                f'stroke-linejoin="round"><rect x="3" y="5" width="18" '
-                f'height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>')
-    _ic_copy = (f'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" '
-                f'stroke="{c_navy}" stroke-width="1.8" stroke-linecap="round" '
-                f'stroke-linejoin="round"><rect x="9" y="9" width="12" '
-                f'height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 '
-                f'1 2-2h9a2 2 0 0 1 2 2v1"/></svg>')
+    _ic_share = ('<svg width="17" height="17" viewBox="0 0 24 24" fill="none" '
+                 'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" '
+                 'stroke-linejoin="round"><circle cx="18" cy="5" r="3"/>'
+                 '<circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>'
+                 '<path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>')
 
     html = f"""<!doctype html><html><head><meta charset="utf-8">
 <style>
   * {{ box-sizing:border-box; }}
   body {{ margin:0; background:transparent;
           font-family:'Inter',system-ui,-apple-system,sans-serif; }}
-  .primary {{ display:flex; align-items:center; justify-content:center; gap:8px;
-              width:100%; padding:12px 16px; border:none; background:{c_navy};
-              color:{c_white}; font-weight:600; font-size:0.95rem;
-              border-radius:10px; cursor:pointer; font-family:inherit; }}
-  .row {{ display:flex; gap:8px; margin-top:10px; }}
-  .pill {{ flex:1; display:flex; align-items:center; justify-content:center;
-           gap:6px; padding:10px 6px; background:transparent; color:{c_navy};
-           border:1.5px solid {c_navy}; border-radius:10px; font-weight:600;
-           font-size:0.82rem; cursor:pointer; text-decoration:none;
-           font-family:inherit; line-height:1; }}
-  .pill svg {{ flex-shrink:0; }}
-  .pill.copied {{ background:{c_navy}; color:{c_white}; }}
+  .invite {{ display:flex; align-items:center; justify-content:center; gap:8px;
+             width:100%; padding:0.55rem 1rem; min-height:40px;
+             background:{c_surface}; color:{c_ink};
+             border:1.5px solid {c_navy}; border-radius:12px;
+             font-weight:600; font-size:1rem; cursor:pointer;
+             font-family:inherit; transition:all 0.15s ease; }}
+  .invite:hover {{ background:{c_surface2}; color:{c_navy}; }}
+  .invite svg {{ flex-shrink:0; }}
 </style></head>
 <body>
-  <button class="primary" id="shareBtn">{_ic_share}<span>Share</span></button>
-  <div class="row">
-    <a class="pill" id="smsBtn" href="#">{_ic_sms}<span>Text</span></a>
-    <a class="pill" id="mailBtn" href="#">{_ic_mail}<span>Email</span></a>
-    <button class="pill" id="copyBtn">{_ic_copy}<span>Copy link</span></button>
-  </div>
+  <button class="invite" id="inviteBtn"><span id="lbl">Invite someone</span>{_ic_share}</button>
 <script>
   const CFG = {cfg_json};
   function inviteLink() {{
@@ -2608,82 +2585,39 @@ def _render_invite_options():
     try {{ const p = window.parent.location; return p.origin + p.pathname; }}
     catch (e) {{ return CFG.fallbackUrl || ""; }}
   }}
-  function message() {{
-    const link = inviteLink();
-    return `Take this quick risk-profile checkup from ${{CFG.firm}} — it's free and takes about 4 minutes: ${{link}}`;
-  }}
-  const subject = CFG.firm + " \\u2014 free risk-profile checkup";
+  const link = inviteLink();
+  const text = `Take this quick risk-profile checkup from ${{CFG.firm}} \\u2014 it's free and takes about 4 minutes:`;
+  const title = CFG.firm + " \\u2014 free risk-profile checkup";
 
-  function legacyCopy(text, done) {{
+  function flash(msg) {{
+    const lbl = document.getElementById('lbl');
+    const old = lbl.textContent;
+    lbl.textContent = msg;
+    setTimeout(() => {{ lbl.textContent = old; }}, 1600);
+  }}
+  function legacyCopy() {{
     const ta = document.createElement('textarea');
-    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    ta.value = link; ta.style.position = 'fixed'; ta.style.opacity = '0';
     document.body.appendChild(ta); ta.focus(); ta.select();
-    try {{ document.execCommand('copy'); done(); }} catch (e) {{}}
+    try {{ document.execCommand('copy'); flash('Link copied'); }} catch (e) {{}}
     document.body.removeChild(ta);
   }}
-  function flash(btn, lbl) {{
-    const old = btn.innerHTML;
-    btn.classList.add('copied');
-    btn.innerHTML = '<span>' + lbl + '</span>';
-    setTimeout(() => {{ btn.innerHTML = old; btn.classList.remove('copied'); }}, 1600);
-  }}
-  function copyText(btn, text, lbl) {{
-    const done = () => flash(btn, lbl);
+  function copyFallback() {{
     if (navigator.clipboard && navigator.clipboard.writeText) {{
-      navigator.clipboard.writeText(text).then(done).catch(() => legacyCopy(text, done));
-    }} else {{ legacyCopy(text, done); }}
+      navigator.clipboard.writeText(link).then(() => flash('Link copied')).catch(legacyCopy);
+    }} else {{ legacyCopy(); }}
   }}
 
-  (function wire() {{
-    const msg = message();
-    const link = inviteLink();
-    // SMS — the guaranteed "via text" path on a phone. `?&body=` is the form
-    // that opens the composer (no recipient) on both iOS and most Android.
-    document.getElementById('smsBtn').href =
-      'sms:?&body=' + encodeURIComponent(msg);
-    document.getElementById('mailBtn').href =
-      'mailto:?subject=' + encodeURIComponent(subject) +
-      '&body=' + encodeURIComponent(msg);
-    // Native share sheet (includes Messages) where supported; otherwise copy.
-    document.getElementById('shareBtn').addEventListener('click', async (ev) => {{
-      const btn = ev.currentTarget;
-      if (navigator.share) {{
-        try {{ await navigator.share({{ title: subject, text: msg }}); return; }}
-        catch (e) {{ if (e && e.name === 'AbortError') return; }}
-      }}
-      copyText(btn, msg, 'Copied \\u2014 paste anywhere');
-    }});
-    document.getElementById('copyBtn').addEventListener('click', (ev) => {{
-      copyText(ev.currentTarget, link, 'Copied!');
-    }});
-  }})();
+  document.getElementById('inviteBtn').addEventListener('click', async () => {{
+    if (navigator.share) {{
+      try {{ await navigator.share({{ title: title, text: text, url: link }}); return; }}
+      catch (e) {{ if (e && e.name === 'AbortError') return; }}
+    }}
+    copyFallback();
+  }});
 </script>
 </body></html>"""
-    components.html(html, height=120, scrolling=False)
-
-
-def _invite_popup():
-    """Popup that opens from the "Invite someone" button. Shows a one-line
-    intro and the Share / Text / Email / Copy actions. Mirrors the
-    _agreement_popup pattern: st.dialog where supported (1.37+), expander
-    fallback otherwise so the app never crashes."""
-    def _render():
-        st.markdown(
-            f'<div style="color:{THEME["ink2"]};font-size:0.92rem;'
-            f'            line-height:1.5;margin-bottom:6px">'
-            f'  Send a link to the free 4-minute risk-profile checkup — '
-            f'  no account needed to start.'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-        _render_invite_options()
-        if st.button("Done", key="fr_invite_done", use_container_width=True):
-            st.rerun()
-    if hasattr(st, "dialog"):
-        st.dialog("Invite someone")(_render)()
-    else:
-        with st.expander("Invite someone", expanded=True):
-            _render()
+    components.html(html, height=48, scrolling=False)
 
 
 def _render_home_tab(profile: dict, holdings: dict, ck: str):
@@ -2777,11 +2711,10 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
                 st.session_state.fr_view = "edit_profile"
                 st.rerun()
             # Invite button — same width as the profile button, nested right
-            # below it. Opens a popup with the Text / Email / Copy / Share
-            # options (see _invite_popup); sends only a link to the assessment.
-            if st.button("Invite someone →", key="fr_invite_btn",
-                         use_container_width=True):
-                _invite_popup()
+            # below it. A share-icon button that fires the OS share sheet
+            # directly (no popup / channel picker); shares a link to the
+            # assessment. See _render_invite_button.
+            _render_invite_button()
             # Last checkup indicator — placed under the button so the
             # primary action stays visually dominant. Color matches the
             # secondary "ink2" theme tone (used by .fr-greeting and other
