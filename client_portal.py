@@ -2533,94 +2533,103 @@ def _render_tab_link_bridge():
 
 
 def _render_invite_button():
-    """Single "Invite someone" button (share icon) that fires the native share
-    sheet directly — no popup, no channel picker; the OS share sheet is the
-    picker. Rendered as an HTML button inside a components.html iframe because
-    navigator.share must run from a real in-browser click, not a Streamlit
-    rerun. Styled to match the app's outlined st.button so it reads as a
-    sibling of "View / update profile" right above it.
+    """"Invite someone" action. Rendered as a real st.button so it matches the
+    "View / update profile" button exactly — same component, same CSS, same
+    Inter font. Getting an iframe-rendered button to match the native one
+    proved unreliable (font load timing + separate document), so instead a
+    hidden bridge (components.html, height 0) reaches into the parent document
+    the same way _render_tab_link_bridge does: it appends the share-icon SVG
+    after the label and wires the click to the native share sheet in the PARENT
+    window — where the Web Share API is permitted, unlike the sandboxed
+    component iframe.
 
     Shares a link to the assessment (PORTAL_URL -> live parent URL -> firm
-    site). Where the Web Share API is unavailable or blocked (most desktop
-    browsers, some embedded webviews) it falls back to copying the link and
-    flashing "Link copied" — useful without surfacing a choice UI.
+    site). Where Web Share is unavailable (most desktop browsers) it copies the
+    link instead. The click handler runs in the capture phase and stops
+    propagation so Streamlit's own click handler never fires — the button is a
+    pure share trigger with no server rerun. The Python return is ignored.
     """
+    st.button("Invite someone", key="fr_invite_btn", use_container_width=True)
+
     firm = (ADVISOR.get("firm") or "our firm").strip()
     cfg_json = json.dumps({
         "firm":        firm,
         "portalUrl":   PORTAL_URL,
         "fallbackUrl": FIRM_WEBSITE_URL,
     })
-    c_navy     = THEME["primary"]
-    c_ink      = THEME["ink"]
-    c_surface  = THEME["surface"]
-    c_surface2 = THEME["surface2"]
 
-    _ic_share = ('<svg width="17" height="17" viewBox="0 0 24 24" fill="none" '
-                 'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" '
-                 'stroke-linejoin="round"><circle cx="18" cy="5" r="3"/>'
-                 '<circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>'
-                 '<path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>')
-
-    html = f"""<!doctype html><html><head><meta charset="utf-8">
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-  * {{ box-sizing:border-box; }}
-  body {{ margin:0; background:transparent;
-          font-family:'Inter',system-ui,-apple-system,sans-serif; }}
-  .invite {{ display:flex; align-items:center; justify-content:center; gap:8px;
-             width:100%; padding:0.55rem 1rem; min-height:40px;
-             background:{c_surface}; color:{c_ink};
-             border:1.5px solid {c_navy}; border-radius:12px;
-             font-family:'Inter',system-ui,-apple-system,sans-serif;
-             font-weight:600; font-size:1rem; line-height:1.6;
-             letter-spacing:normal; cursor:pointer;
-             transition:all 0.15s ease; }}
-  .invite:hover {{ background:{c_surface2}; color:{c_navy}; }}
-  .invite svg {{ flex-shrink:0; }}
-</style></head>
-<body>
-  <button class="invite" id="inviteBtn"><span id="lbl">Invite someone</span>{_ic_share}</button>
+    components.html(
+        f"""
 <script>
+(function() {{
+  const doc = window.parent.document;
   const CFG = {cfg_json};
+  const SHARE_SVG =
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" '
+    + 'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" '
+    + 'stroke-linejoin="round"><circle cx="18" cy="5" r="3"/>'
+    + '<circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>'
+    + '<path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>';
+
   function inviteLink() {{
     if (CFG.portalUrl) return CFG.portalUrl;
     try {{ const p = window.parent.location; return p.origin + p.pathname; }}
     catch (e) {{ return CFG.fallbackUrl || ""; }}
   }}
-  const link = inviteLink();
-  const text = `Take this quick risk-profile checkup from ${{CFG.firm}} \\u2014 it's free and takes about 4 minutes:`;
-  const title = CFG.firm + " \\u2014 free risk-profile checkup";
-
-  function flash(msg) {{
-    const lbl = document.getElementById('lbl');
-    const old = lbl.textContent;
-    lbl.textContent = msg;
-    setTimeout(() => {{ lbl.textContent = old; }}, 1600);
-  }}
-  function legacyCopy() {{
-    const ta = document.createElement('textarea');
-    ta.value = link; ta.style.position = 'fixed'; ta.style.opacity = '0';
-    document.body.appendChild(ta); ta.focus(); ta.select();
-    try {{ document.execCommand('copy'); flash('Link copied'); }} catch (e) {{}}
-    document.body.removeChild(ta);
-  }}
-  function copyFallback() {{
-    if (navigator.clipboard && navigator.clipboard.writeText) {{
-      navigator.clipboard.writeText(link).then(() => flash('Link copied')).catch(legacyCopy);
-    }} else {{ legacyCopy(); }}
-  }}
-
-  document.getElementById('inviteBtn').addEventListener('click', async () => {{
-    if (navigator.share) {{
-      try {{ await navigator.share({{ title: title, text: text, url: link }}); return; }}
-      catch (e) {{ if (e && e.name === 'AbortError') return; }}
+  function findBtn() {{
+    const btns = doc.querySelectorAll('.stButton button');
+    for (const b of btns) {{
+      if ((b.innerText || "").trim() === "Invite someone") return b;
     }}
-    copyFallback();
-  }});
+    return null;
+  }}
+  function copyLink() {{
+    try {{
+      const nav = window.parent.navigator;
+      if (nav.clipboard && nav.clipboard.writeText) nav.clipboard.writeText(inviteLink());
+    }} catch (e) {{}}
+  }}
+  function wire() {{
+    const btn = findBtn();
+    if (!btn) return false;
+    if (btn.dataset.invWired) return true;
+    btn.dataset.invWired = "1";
+    // Share icon after the label. Append as a flex sibling so it sits to the
+    // right of the centered label group.
+    if (!btn.querySelector('.inv-share-ic')) {{
+      const ic = doc.createElement('span');
+      ic.className = 'inv-share-ic';
+      ic.style.display = 'inline-flex';
+      ic.style.alignItems = 'center';
+      ic.style.marginLeft = '8px';
+      ic.innerHTML = SHARE_SVG;
+      btn.appendChild(ic);
+    }}
+    btn.addEventListener('click', function(ev) {{
+      ev.preventDefault();
+      ev.stopImmediatePropagation();   // block Streamlit's rerun handler
+      const link  = inviteLink();
+      const text  = "Take this quick risk-profile checkup from " + CFG.firm
+                  + " \\u2014 it's free and takes about 4 minutes:";
+      const title = CFG.firm + " \\u2014 free risk-profile checkup";
+      const nav   = window.parent.navigator;
+      if (nav.share) {{
+        try {{ nav.share({{ title: title, text: text, url: link }}); return; }}
+        catch (e) {{ if (e && e.name === 'AbortError') return; }}
+      }}
+      copyLink();
+    }}, true);  // capture phase
+    return true;
+  }}
+  if (!wire()) {{
+    let n = 0;
+    const t = setInterval(function() {{ if (wire() || ++n > 20) clearInterval(t); }}, 100);
+  }}
+}})();
 </script>
-</body></html>"""
-    components.html(html, height=48, scrolling=False)
+""",
+        height=0,
+    )
 
 
 def _render_home_tab(profile: dict, holdings: dict, ck: str):
