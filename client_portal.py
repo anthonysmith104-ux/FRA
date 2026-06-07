@@ -2565,7 +2565,7 @@ def _render_invite_button():
   const doc = window.parent.document;
   const CFG = {cfg_json};
   const SHARE_SVG =
-      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" '
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" '
     + 'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" '
     + 'stroke-linejoin="round"><circle cx="18" cy="5" r="3"/>'
     + '<circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>'
@@ -2583,6 +2583,42 @@ def _render_invite_button():
     }}
     return null;
   }}
+  function findViewBtn() {{
+    const btns = doc.querySelectorAll('.stButton button');
+    for (const b of btns) {{
+      if ((b.innerText || "").trim().indexOf("View / update profile") === 0) return b;
+    }}
+    return null;
+  }}
+  function labelEl(btn) {{
+    return btn.querySelector('[data-testid="stMarkdownContainer"] p')
+        || btn.querySelector('p')
+        || btn.querySelector('[data-testid="stMarkdownContainer"]')
+        || btn;
+  }}
+  function bumpText(btn) {{
+    // Label 20% larger, button the same size: lock the current height first,
+    // then scale the font so the flex-centered label grows within the box.
+    // Guard with a class on the label element (not a one-time flag): a
+    // Streamlit rerun can rebuild the button and wipe our inline style, and a
+    // class marker resets with it, so this re-applies from the base size
+    // instead of getting stuck or compounding.
+    const p = labelEl(btn);
+    if (!p || p.classList.contains('inv-fs')) return;
+    p.classList.add('inv-fs');
+    const h = Math.round(btn.getBoundingClientRect().height);
+    if (h > 0) btn.style.height = h + "px";
+    const cur = parseFloat(window.parent.getComputedStyle(p).fontSize) || 16;
+    p.style.fontSize = (cur * 1.2).toFixed(1) + "px";
+  }}
+  function sizeArrow(btn) {{
+    // Wrap the trailing arrow so it can be a bit larger than the text.
+    const p = labelEl(btn);
+    if (!p || p.querySelector('.inv-arrow')) return;
+    p.innerHTML = p.innerHTML.replace(
+      /(\\u2192)\\s*$/,
+      '<span class="inv-arrow" style="font-size:1.3em;line-height:1">$1</span>');
+  }}
   function copyLink() {{
     try {{
       const nav = window.parent.navigator;
@@ -2592,17 +2628,10 @@ def _render_invite_button():
   function wire() {{
     const btn = findBtn();
     if (!btn) return false;
-    if (btn.dataset.invWired) return true;
-    btn.dataset.invWired = "1";
-    // Put the share icon INSIDE the label element so it flows right after the
-    // text and centers together with it. Appending it to the button itself
-    // lands it at the far right edge, because Streamlit's label container is
-    // full-width (flex:1) and centers the text within that full width.
+    // Share icon inside the label so it flows right after the text (appending
+    // to the button itself lands it at the far-right edge, since Streamlit's
+    // label fills the button width). Re-added if a rerun wiped it.
     if (!btn.querySelector('.inv-share-ic')) {{
-      const lblEl = btn.querySelector('[data-testid="stMarkdownContainer"] p')
-                 || btn.querySelector('p')
-                 || btn.querySelector('[data-testid="stMarkdownContainer"]')
-                 || btn;
       const ic = doc.createElement('span');
       ic.className = 'inv-share-ic';
       ic.style.display = 'inline-flex';
@@ -2610,22 +2639,33 @@ def _render_invite_button():
       ic.style.verticalAlign = 'middle';
       ic.style.marginLeft = '8px';
       ic.innerHTML = SHARE_SVG;
-      lblEl.appendChild(ic);
+      labelEl(btn).appendChild(ic);
     }}
-    btn.addEventListener('click', function(ev) {{
-      ev.preventDefault();
-      ev.stopImmediatePropagation();   // block Streamlit's rerun handler
-      const link  = inviteLink();
-      const text  = "Take this quick risk-profile checkup from " + CFG.firm
-                  + " \\u2014 it's free and takes about 4 minutes:";
-      const title = CFG.firm + " \\u2014 free risk-profile checkup";
-      const nav   = window.parent.navigator;
-      if (nav.share) {{
-        try {{ nav.share({{ title: title, text: text, url: link }}); return; }}
-        catch (e) {{ if (e && e.name === 'AbortError') return; }}
-      }}
-      copyLink();
-    }}, true);  // capture phase
+    bumpText(btn);
+    // Attach the share handler once per button node. The flag is a JS expando
+    // (not an attribute) so React won't strip it on reconciliation; a brand-new
+    // node from a rerun won't have it, so it re-wires without double-binding.
+    if (!btn.__invWired) {{
+      btn.__invWired = true;
+      btn.addEventListener('click', function(ev) {{
+        ev.preventDefault();
+        ev.stopImmediatePropagation();   // block Streamlit's rerun handler
+        const link  = inviteLink();
+        const text  = "Take this quick risk-profile checkup from " + CFG.firm
+                    + " \\u2014 it's free and takes about 4 minutes:";
+        const title = CFG.firm + " \\u2014 free risk-profile checkup";
+        const nav   = window.parent.navigator;
+        if (nav.share) {{
+          try {{ nav.share({{ title: title, text: text, url: link }}); return; }}
+          catch (e) {{ if (e && e.name === 'AbortError') return; }}
+        }}
+        copyLink();
+      }}, true);  // capture phase
+    }}
+    // Same 20% text bump on "View / update profile", plus a slightly larger
+    // trailing arrow so the two buttons read in balance.
+    const vbtn = findViewBtn();
+    if (vbtn) {{ bumpText(vbtn); sizeArrow(vbtn); }}
     return true;
   }}
   if (!wire()) {{
