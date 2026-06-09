@@ -34,6 +34,7 @@ from __future__ import annotations
 import os
 import json
 import math
+import secrets
 from datetime import datetime, date
 from typing import Optional
 
@@ -809,6 +810,103 @@ def update_user(email: str, patch: dict) -> tuple[bool, str]:
     if not found["yes"]:
         return False, "User not found."
     return True, ""
+
+
+# ── REFERRALS ────────────────────────────────────────────────────────────────
+# Each client gets a short, opaque referral_code (NOT their email — the email
+# is PII and must never travel in a shareable URL). The invite link carries
+# ?ref=<code>; at signup we resolve the code back to the referring client and
+# record the relationship on BOTH records, in a single atomic write to
+# ra_users.json (so it's consistent and visible to the advisor app, which
+# reads the same shared file):
+#   • on the NEW client:      referred_by (referrer's email key), referred_by_name, referred_at
+#   • on the REFERRING client: referrals (list of {email,name,at}) + referrals_sent (count)
+# referrals_sent is denormalized for easy advisor-side display; it can drift if
+# a referred client is later deleted, in which case it can be recomputed by
+# scanning ra_users.json for referred_by == that client.
+
+def get_or_create_referral_code() -> str:
+    """Return the current client's referral code, generating + persisting one
+    on first use. Reads from the session record when present to avoid a store
+    round-trip on every render; only hits the store when a code must be made
+    (or backfilled for clients created before this feature existed)."""
+    u = st.session_state.fr_user or {}
+    code = (u.get("referral_code") or "").strip()
+    if code:
+        return code
+    key = (u.get("email") or "").lower()
+    if not key:
+        return ""
+    made = {"code": ""}
+    def _mutate(users):
+        rec = users.get(key)
+        if not rec:
+            return
+        existing = (rec.get("referral_code") or "").strip()
+        if existing:
+            made["code"] = existing
+            return
+        used = {(v.get("referral_code") or "") for v in users.values()
+                if isinstance(v, dict)}
+        c = secrets.token_hex(4)        # 8 hex chars, URL-safe, non-PII
+        while c in used:
+            c = secrets.token_hex(4)
+        rec["referral_code"] = c
+        made["code"] = c
+    _shared_update_json(USERS_FILE, _mutate)
+    if made["code"] and st.session_state.fr_user is not None:
+        st.session_state.fr_user["referral_code"] = made["code"]
+    return made["code"]
+
+
+def record_referral(new_user_key: str, ref_code: str) -> None:
+    """At signup: attribute the new client to whoever owns ref_code. Single
+    atomic mutate over ra_users.json updating both records. Idempotent (won't
+    double-count), and ignores unknown codes and self-referrals."""
+    ref_code = (ref_code or "").strip()
+    new_user_key = (new_user_key or "").lower()
+    if not ref_code or not new_user_key:
+        return
+
+    def _mutate(users):
+        referrer_key = None
+        for k, v in users.items():
+            if isinstance(v, dict) and (v.get("referral_code") or "") == ref_code:
+                referrer_key = k
+                break
+        if not referrer_key or referrer_key == new_user_key:
+            return  # unknown code, or someone using their own link
+        nu = users.get(new_user_key)
+        if not nu or nu.get("referred_by"):
+            return  # missing, or already attributed
+        ref = users.get(referrer_key) or {}
+        ref_name = f'{ref.get("first_name","")} {ref.get("last_name","")}'.strip()
+        nu_name  = f'{nu.get("first_name","")} {nu.get("last_name","")}'.strip()
+        now = datetime.now().isoformat(timespec="minutes")
+        nu["referred_by"]      = referrer_key
+        nu["referred_by_name"] = ref_name
+        nu["referred_at"]      = now
+        lst = ref.get("referrals") or []
+        if not any(isinstance(x, dict) and x.get("email") == new_user_key for x in lst):
+            lst.append({"email": new_user_key, "name": nu_name, "at": now})
+        ref["referrals"]      = lst
+        ref["referrals_sent"] = len(lst)
+        users[referrer_key]   = ref
+    _shared_update_json(USERS_FILE, _mutate)
+
+
+def referrals_sent_count(client_key: str) -> int:
+    """How many people this client has referred who went on to sign up.
+    Reads the denormalized count, falling back to the length of the list."""
+    key = (client_key or "").lower()
+    if not key:
+        return 0
+    rec = load_users().get(key) or {}
+    n = rec.get("referrals_sent")
+    if isinstance(n, int):
+        return n
+    lst = rec.get("referrals")
+    return len(lst) if isinstance(lst, list) else 0
 
 
 def save_holdings_for(client_key: str, holdings: dict) -> None:
@@ -1765,6 +1863,13 @@ def render_login():
         results  → score reveal (no gate yet — show first, ask second)
         register → email + phone (req'd) + address + zip (optional) → save
     """
+    # Capture a referral code from the invite link (?ref=<code>) once, into the
+    # session, so it survives the multi-step onboarding flow (the query param
+    # can get dropped on later reruns). Resolved to the referrer at signup.
+    _ref = st.query_params.get("ref")
+    if _ref and not st.session_state.get("fr_ref_code"):
+        st.session_state.fr_ref_code = str(_ref).strip()[:32]
+
     step = st.session_state.fr_step
     if   step == "welcome":  _screen_welcome()
     elif step == "prequiz":  _screen_prequiz()
@@ -2322,6 +2427,13 @@ def _screen_register():
                         lambda d, k=user["email"], u=user: d.update({k: u}),
                     )
 
+                    # Referral attribution — if they arrived via an invite link
+                    # (?ref=<code>), credit the referring client. No-op for
+                    # unknown codes or self-referrals; safe to call always.
+                    _ref_code = (st.session_state.get("fr_ref_code") or "").strip()
+                    if _ref_code:
+                        record_referral(user["email"], _ref_code)
+
                 # Persist the risk profile (so dashboard can read it)
                 ck = (email or "").strip().lower()
                 save_profile_for(ck, {
@@ -2556,6 +2668,7 @@ def _render_invite_button():
         "firm":        firm,
         "portalUrl":   PORTAL_URL,
         "fallbackUrl": FIRM_WEBSITE_URL,
+        "refCode":     get_or_create_referral_code(),
     })
 
     components.html(
@@ -2572,9 +2685,16 @@ def _render_invite_button():
     + '<path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>';
 
   function inviteLink() {{
-    if (CFG.portalUrl) return CFG.portalUrl;
-    try {{ const p = window.parent.location; return p.origin + p.pathname; }}
-    catch (e) {{ return CFG.fallbackUrl || ""; }}
+    let base;
+    if (CFG.portalUrl) base = CFG.portalUrl;
+    else {{
+      try {{ const p = window.parent.location; base = p.origin + p.pathname; }}
+      catch (e) {{ base = CFG.fallbackUrl || ""; }}
+    }}
+    if (CFG.refCode) {{
+      base += (base.indexOf("?") >= 0 ? "&" : "?") + "ref=" + encodeURIComponent(CFG.refCode);
+    }}
+    return base;
   }}
   function findBtn() {{
     const btns = doc.querySelectorAll('.stButton button');
@@ -2774,6 +2894,19 @@ def _render_home_tab(profile: dict, holdings: dict, ck: str):
             # directly (no popup / channel picker); shares a link to the
             # assessment. See _render_invite_button.
             _render_invite_button()
+            # Client-facing referral count — count only, no names (the people
+            # they referred are other clients; the advisor sees the detail).
+            # Shown only once they've referred someone.
+            _ref_n = referrals_sent_count(ck)
+            if _ref_n > 0:
+                st.markdown(
+                    f'<div style="text-align:center;color:{THEME["ink2"]};'
+                    f'            font-size:0.8rem;margin-top:6px">'
+                    f'  You\'ve referred {_ref_n} '
+                    f'{"person" if _ref_n == 1 else "people"}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
             # Last checkup indicator — placed under the button so the
             # primary action stays visually dominant. Color matches the
             # secondary "ink2" theme tone (used by .fr-greeting and other
@@ -3937,8 +4070,8 @@ def _render_advisor_tab():
     )
 
     # Digital business card (dot.cards). Outlined so it reads as a secondary
-    # action next to the filled "Schedule my review" CTA below. Opens the
-    # advisor's dot.cards profile in a new tab, where the client can tap once
+    # action next to the filled "Book a free 15-minute review" CTA below. Opens
+    # the advisor's dot.cards profile in a new tab, where the client can tap once
     # to save the contact to their phone — no app required.
     _icon_card = (
         f'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" '
@@ -3963,40 +4096,24 @@ def _render_advisor_tab():
         unsafe_allow_html=True,
     )
 
-    # Schedule-a-call CTA. Replaces the old "dark banner + Schedule call
-    # button" combo, which was doing the same job twice. Now it's a single
-    # block: dark card with a clear primary action button right below the
-    # description, properly emphasizing that the call is free and with a
-    # licensed advisor.
+    # Schedule-a-call CTA — a single clickable button that opens the advisor's
+    # HubSpot meetings page in a new tab, pre-filled with the client's
+    # name/email from their session. HubSpot writes the booking to the CRM
+    # (associated to the contact the portal already created) and to the
+    # connected Google Calendar. (Previously this was a dark info card stacked
+    # on top of a separate "Schedule my review" button — collapsed to one
+    # button per design so there's a single, unambiguous action.)
     _icon_calendar = (
-        '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" '
+        '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" '
         'stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" '
-        'stroke-linejoin="round" aria-hidden="true">'
+        'stroke-linejoin="round" aria-hidden="true" '
+        'style="flex-shrink:0;margin-right:10px">'
         '<rect x="3" y="5" width="18" height="16" rx="2.5"/>'
         '<path d="M3 10h18"/>'
         '<path d="M8 3v4"/>'
         '<path d="M16 3v4"/>'
         '</svg>'
     )
-    st.markdown(
-        f'<div class="fr-cta-dark" style="margin-bottom:0">'
-        f'  <div class="fr-cta-icon">{_icon_calendar}</div>'
-        f'  <div style="flex:1">'
-        f'    <div style="font-size:0.95rem;font-weight:600;line-height:1.3">'
-        f'      Book a free 15-minute review'
-        f'    </div>'
-        f'    <div style="font-size:0.8rem;opacity:0.78;margin-top:3px;'
-        f'                line-height:1.45">'
-        f'      With a licensed financial advisor — no obligation.'
-        f'    </div>'
-        f'  </div>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-    # Schedule link — opens the advisor's HubSpot meetings page in a new tab,
-    # pre-filled with the client's name/email from their session. HubSpot
-    # writes the booking to the CRM (associated to the contact the portal
-    # already created) and to the connected Google Calendar.
     from urllib.parse import urlencode as _urlencode
     _su = st.session_state.get("fr_user") or {}
     _sp = {}
@@ -4006,11 +4123,12 @@ def _render_advisor_tab():
     _schedule_url = SCHEDULE_URL + (("?" + _urlencode(_sp)) if _sp else "")
     st.markdown(
         f'<a href="{_schedule_url}" target="_blank" rel="noopener" '
-        f'   style="display:block;width:100%;box-sizing:border-box;text-align:center;'
-        f'          background:{THEME["primary"]};color:#fff;padding:12px 16px;'
+        f'   style="display:flex;align-items:center;justify-content:center;'
+        f'          width:100%;box-sizing:border-box;text-align:center;'
+        f'          background:{THEME["primary"]};color:#fff;padding:14px 16px;'
         f'          border-radius:10px;text-decoration:none;font-weight:600;'
-        f'          font-size:0.95rem;margin-top:4px">'
-        f'  Schedule my review →'
+        f'          font-size:0.95rem;margin:0 0 18px">'
+        f'  {_icon_calendar}Book a free 15-minute review →'
         f'</a>',
         unsafe_allow_html=True,
     )
