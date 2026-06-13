@@ -2380,11 +2380,19 @@ def _screen_register():
                 st.session_state.fr_step = "results"
                 st.rerun()
         with b2:
+            # Button stays enabled even when the agreement box is unchecked,
+            # so clicking it surfaces a clear reason rather than silently
+            # doing nothing (a disabled button gave no feedback about WHY
+            # sign-up wouldn't proceed). The agreement is validated below.
             if st.button("Save & view dashboard →", type="primary",
-                         key="fr_rg_submit", use_container_width=True,
-                         disabled=not agreed):
+                         key="fr_rg_submit", use_container_width=True):
                 # Validation
                 errors = []
+                if not agreed:
+                    errors.append(
+                        "Please check the box agreeing to the Terms & "
+                        "Conditions and Privacy Policy to continue."
+                    )
                 if not is_valid_email(email):
                     errors.append("Please enter a valid email address.")
                 phone_digits = "".join(ch for ch in (phone or "") if ch.isdigit())

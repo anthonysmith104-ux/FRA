@@ -874,6 +874,10 @@ DEFAULT_PDF_CONTENT = {
         ["Equity / Bond / Cash",
          "High-level split across growth, stability, and liquidity "
          "objectives."],
+        ["CAGR",
+         "Compound annual growth rate \u2014 the constant yearly rate "
+         "that would grow the starting value to the ending value over "
+         "the measurement window."],
         ["Sharpe Ratio",
          "Return per unit of total volatility. Values above 1.0 "
          "indicate strong risk-adjusted performance."],
@@ -1147,6 +1151,243 @@ POPULAR_PORTFOLIOS = {
 # Tony's call — Schwab-only going forward). If the Schwab module fails to
 # load, this is a no-op and the dropdown shows just Custom + Saved.
 POPULAR_PORTFOLIOS.update(_build_schwab_preset_entries())
+
+# ── Zacks Investment Management SMA strategies (Q4 2025 GIPS factsheets) ──
+# Built from each strategy's disclosed Top-10 holdings, equal-weighted. The
+# factsheets publish only the top 10 of ~50–100 positions and give no
+# individual weights, so these are a TOP-HOLDINGS PROXY of the strategy, not
+# the full composite — the app's backtest/risk on these reflects the 10
+# names shown, not Zacks' published composite returns. Adjust the holdings
+# or weights in the Portfolio Manager once the full sleeve is known.
+# Standard management fees per the sheets: 1.75%/yr for All-Cap Core,
+# Dividend, Focus Growth, and Mid-Cap Core; 0.75%/yr for Small-Cap Equity.
+_ZACKS_PORTFOLIOS = {
+    "── Zacks Strategies ──": None,
+    "Zacks All-Cap Core": {
+        "tickers": ["NVDA", "AAPL", "GOOGL", "MSFT", "META",
+                    "AMZN", "CAT", "JPM", "AXP", "WMT"],
+        "weights": [10.0] * 10,
+    },
+    "Zacks Dividend": {
+        "tickers": ["JPM", "PH", "XOM", "CAT", "CSCO",
+                    "PM", "WMT", "JNJ", "BLK", "MSFT"],
+        "weights": [10.0] * 10,
+    },
+    "Zacks Focus Growth": {
+        "tickers": ["NVDA", "AAPL", "MSFT", "GOOGL", "AMZN",
+                    "META", "AVGO", "TSLA", "LLY", "APH"],
+        "weights": [10.0] * 10,
+    },
+    "Zacks Mid-Cap Core": {
+        "tickers": ["NTRS", "EXPE", "MCK", "GLW", "APH",
+                    "HHH", "SOFI", "NFG", "APP", "EME"],
+        "weights": [10.0] * 10,
+    },
+    "Zacks Small-Cap Equity": {
+        "tickers": ["FN", "ALNT", "FIX", "SSRM", "RIGL",
+                    "NXT", "CRDO", "TCBI", "AEIS", "KLIC"],
+        "weights": [10.0] * 10,
+    },
+}
+POPULAR_PORTFOLIOS.update(_ZACKS_PORTFOLIOS)
+
+# ── WisdomTree model portfolios (trade notifications, May 2026) ──
+# The full WisdomTree model lineup — 36 models across 12 delivery files,
+# each with complete ETF holdings and target weights summing to 100%, so
+# they load as faithful models (not proxies). Families: Strategic
+# Allocations, Building Blocks, U.S. Growth, Endowment, Global Multi-Asset
+# Income, Efficient Core, Multi-Factor, Select (PIMCO), Liquid Alternatives,
+# Geopolitically Risk Aware, Global Dividend, and Siegel-WisdomTree.
+_WISDOMTREE_PORTFOLIOS = {
+    "── WisdomTree Models ──": None,
+    'WisdomTree Efficient Core Moderate': {
+        "tickers": ["BTAL", "DBMF", "GTR", "WTMF", "DDWM", "EES", "GDE", "NTSE", "NTSI", "NTSX", "QGRW", "VYM", "HYZD", "MTGP"],
+        "weights": [4, 4, 4, 6, 3, 4, 7, 6, 14, 27, 7, 4, 2, 8],
+    },
+    'WisdomTree Efficient Core Aggressive': {
+        "tickers": ["BTAL", "GTR", "WTMF", "DDWM", "DGRW", "DGS", "DLS", "DON", "EES", "GDE", "NTSE", "NTSI", "NTSX", "QGRW", "VYM"],
+        "weights": [5, 3, 4, 5, 6, 4, 2.5, 4.5, 4, 10, 4, 12, 15, 15, 6],
+    },
+    'WisdomTree Endowment Conservative': {
+        "tickers": ["BTAL", "EMLP", "GCC", "PPI", "WTMF", "WTPI", "DGRS", "DXJ", "EPS", "NTSX", "QGRW", "SPDW", "XSOE", "AGGY", "ELD", "MTGP", "QHY", "STOT"],
+        "weights": [0.75, 0.5, 1, 1, 1, 0.75, 1.5, 0.75, 6, 3, 2.25, 2, 1.5, 48, 4, 14.4, 5.6, 6],
+    },
+    'WisdomTree Endowment Moderately Conservative': {
+        "tickers": ["BTAL", "EMLP", "GCC", "PPI", "WTMF", "WTPI", "DGRS", "DXJ", "EPS", "NTSX", "QGRW", "SPDW", "XSOE", "AGGY", "ELD", "MTGP", "QHY", "STOT"],
+        "weights": [1.5, 1, 2, 2, 2, 1.5, 2.5, 1.25, 8, 5, 3.75, 4, 2.5, 39.25, 3, 11.7, 4.55, 4.5],
+    },
+    'WisdomTree Endowment Moderate': {
+        "tickers": ["BTAL", "EMLP", "GCC", "PPI", "WTMF", "WTPI", "DGRS", "DXJ", "EPS", "NTSX", "QGRW", "SPDW", "XSOE", "AGGY", "ELD", "MTGP", "QHY", "STOT"],
+        "weights": [2.25, 1.5, 3, 3, 3, 2.25, 4.5, 2.25, 13.5, 9, 6.75, 7.5, 4.5, 24, 2, 7.2, 2.8, 1],
+    },
+    'WisdomTree Endowment Moderately Aggressive': {
+        "tickers": ["BTAL", "EMLP", "GCC", "PPI", "WTMF", "WTPI", "DGRS", "DXJ", "EPS", "NTSX", "QGRW", "SPDW", "XSOE", "AGGY", "MTGP", "QHY"],
+        "weights": [3, 2, 4, 4, 4, 3, 5, 2.5, 15, 10, 7.5, 8, 5, 19.5, 5.4, 2.1],
+    },
+    'WisdomTree Endowment Aggressive': {
+        "tickers": ["BTAL", "EMLP", "GCC", "PPI", "WTMF", "WTPI", "DGRS", "DXJ", "EPS", "NTSX", "QGRW", "SPDW", "XSOE", "AGGY", "MTGP", "QHY"],
+        "weights": [4.5, 3, 6, 6, 6, 4.5, 5, 2.5, 15, 10, 7.5, 8, 5, 12, 3.6, 1.4],
+    },
+    'WisdomTree Geopolitically Risk Aware': {
+        "tickers": ["BTCW", "DGRW", "DXJ", "EPI", "EPOL", "EWW", "GCC", "HEDJ", "OPPJ", "SHAG", "USDU", "WCBR", "WCLD", "XSOE"],
+        "weights": [3, 28.5, 7.5, 6, 3, 7, 5, 5, 5, 15, 2.5, 2.5, 5, 5],
+    },
+    'WisdomTree Global Dividend': {
+        "tickers": ["DDWM", "DEM", "DES", "DGRW", "DGS", "DHS", "DON", "DTD", "VYM", "VYMI"],
+        "weights": [10, 5, 5, 15, 5, 10, 7, 16, 17, 10],
+    },
+    'WisdomTree Global Multi-Asset Income Conservative': {
+        "tickers": ["DDWM", "DEM", "DHS", "DON", "DTD", "EMLP", "QYLD", "VYM", "AGGY", "ELD", "MTGP", "QHY", "SHAG", "TLH", "VCIT"],
+        "weights": [4.4, 2, 2, 3, 4.1, 1, 1, 4.5, 20, 8, 12, 20, 6, 4, 8],
+    },
+    'WisdomTree Global Multi-Asset Income Moderately Conservative': {
+        "tickers": ["DDWM", "DEM", "DHS", "DON", "DTD", "EMLP", "IQDG", "QYLD", "VYM", "AGGY", "ELD", "MTGP", "QHY", "SHAG", "TLH", "VCIT"],
+        "weights": [5.1, 3, 3, 4, 6.4, 1.5, 1, 1.5, 6.5, 17.5, 7, 10.5, 17.5, 5, 3.5, 7],
+    },
+    'WisdomTree Global Multi-Asset Income Moderate': {
+        "tickers": ["DDWM", "DEM", "DES", "DHS", "DON", "DTD", "DXJ", "EMLP", "IQDG", "QYLD", "VYM", "AGGY", "ELD", "MTGP", "QHY", "SHAG", "TLH", "VCIT"],
+        "weights": [7.2, 6, 3, 6, 5, 11.5, 3, 3, 3.6, 3, 11.7, 10, 4, 6, 10, 2, 1, 4],
+    },
+    'WisdomTree Global Multi-Asset Income Moderately Aggressive': {
+        "tickers": ["DDWM", "DEM", "DES", "DHS", "DON", "DTD", "DXJ", "EMLP", "IQDG", "QYLD", "VYM", "AGGY", "ELD", "MTGP", "QHY", "SHAG", "VCIT"],
+        "weights": [8.4, 7, 3.5, 7, 5.5, 13.6, 3.5, 3.5, 5, 3.5, 13.5, 6.25, 3, 4.5, 7.5, 1.75, 3],
+    },
+    'WisdomTree Global Multi-Asset Income Aggressive': {
+        "tickers": ["DDWM", "DEM", "DES", "DHS", "DON", "DTD", "DXJ", "EMLP", "IQDG", "QYLD", "VYM", "AGGY", "ELD", "MTGP", "QHY", "VCIT"],
+        "weights": [9.6, 8, 4, 8, 6, 16.4, 4, 4, 4.8, 4, 15.2, 4, 2, 3, 5, 2],
+    },
+    'WisdomTree Liquid Alternatives': {
+        "tickers": ["BTAL", "DBMF", "USDU", "WTMF", "WTPI"],
+        "weights": [15, 25, 10, 30, 20],
+    },
+    'WisdomTree US Factor': {
+        "tickers": ["DGRS", "DGRW", "DON", "EPS", "MTUM", "SCHG", "USMF", "WTV"],
+        "weights": [5, 20, 5, 20, 5, 30, 5, 10],
+    },
+    'WisdomTree Developed International Factor': {
+        "tickers": ["DDWM", "DLS", "IMTM", "IQDG"],
+        "weights": [50, 10, 25, 15],
+    },
+    'WisdomTree EM Factor': {
+        "tickers": ["CXSE", "DGRE", "DGS", "EPI", "FNDE", "XSOE"],
+        "weights": [10, 15, 10, 10, 15, 40],
+    },
+    'WisdomTree Select Conservative (PIMCO)': {
+        "tickers": ["DDWM", "DON", "EPS", "QGRW", "XSOE", "BOND", "CORP", "HYS", "LDUR", "MINT", "ZROZ"],
+        "weights": [5, 3, 8, 4, 2, 44, 8, 4, 12, 6, 4],
+    },
+    'WisdomTree Select Moderate (PIMCO)': {
+        "tickers": ["DDWM", "DGRW", "DON", "EPI", "EPS", "QGRW", "USMF", "WTV", "XSOE", "BOND", "CORP", "HYS", "LDUR", "MINT", "ZROZ"],
+        "weights": [15, 9, 6.8, 1.8, 6, 10, 6, 4.8, 3.6, 22, 4, 2, 6, 1, 2],
+    },
+    'WisdomTree Select Aggressive (PIMCO)': {
+        "tickers": ["DDWM", "DGRW", "DON", "EPI", "EPS", "QGRW", "USMF", "WTV", "XSOE", "BOND", "CORP", "HYS", "LDUR", "ZROZ"],
+        "weights": [20, 13, 8.4, 2.4, 8, 13, 8, 6.4, 4.8, 11, 2, 1, 1, 1],
+    },
+    'Siegel-WisdomTree Global Equity': {
+        "tickers": ["BBEU", "DEM", "DGRS", "DGRW", "DTD", "DXJ", "IQDG", "IVV", "SPMD", "VYM", "VYMI"],
+        "weights": [4, 8, 5, 20, 15, 4, 4, 15, 7, 8, 10],
+    },
+    'Siegel-WisdomTree Longevity': {
+        "tickers": ["AGGY", "BBEU", "DEM", "DGRS", "DGRW", "DTD", "DXJ", "IQDG", "IVV", "QHY", "SPMD", "VYM", "VYMI", "WTMF"],
+        "weights": [15, 4, 7, 4, 8, 13.5, 3, 4, 8, 8, 6.5, 6, 8, 5],
+    },
+    'Siegel-WisdomTree Moderate': {
+        "tickers": ["BBEU", "DEM", "DGRS", "DGRW", "DTD", "DXJ", "IQDG", "IVV", "SPMD", "VYM", "VYMI", "AGGY", "ELD", "MTGP", "QHY", "TLH", "USFR"],
+        "weights": [3, 4.8, 2.8, 14.5, 9, 2.4, 3, 8.1, 4, 4.8, 6.6, 16.3, 2, 9.2, 2.5, 5.6, 1.4],
+    },
+    'Siegel-WisdomTree Moderately Conservative': {
+        "tickers": ["DEM", "DGRS", "DGRW", "DTD", "IQDG", "IVV", "VYM", "VYMI", "AGGY", "BIV", "ELD", "MTGP", "QHY", "TLH", "USFR", "VCSH"],
+        "weights": [4, 4, 11, 7, 5, 7, 5, 5, 12, 6, 3, 12, 4, 6, 5, 4],
+    },
+    'Siegel-WisdomTree Conservative': {
+        "tickers": ["DEM", "DGRW", "DTD", "IVV", "VYM", "VYMI", "AGGY", "BIV", "ELD", "MTGP", "QHY", "TLH", "USFR", "VCSH"],
+        "weights": [3, 8, 6, 5, 4, 6, 14, 8, 4, 15, 5, 6, 10, 6],
+    },
+    'WisdomTree Conservative': {
+        "tickers": ["DGRW", "DON", "EES", "QGRW", "SPDW", "XSOE", "AGGY", "BIV", "ELD", "MTGP", "QHY", "QSIG", "TLH", "USFR"],
+        "weights": [6, 2, 2, 6, 4, 2, 24.8, 4, 4, 17.6, 4.8, 7.2, 11.2, 4.4],
+    },
+    'WisdomTree Moderate': {
+        "tickers": ["DDWM", "DGRW", "EES", "EPI", "IJH", "JVAL", "QGRW", "SPDW", "WTV", "XSOE", "AGGY", "ELD", "MTGP", "QHY", "TLH", "USFR"],
+        "weights": [7.8, 8.5, 2.8, 1.8, 3.4, 4.8, 16.5, 5.4, 9, 3, 16.3, 2, 9.2, 2.5, 5.6, 1.4],
+    },
+    'WisdomTree Aggressive': {
+        "tickers": ["DDWM", "DGRW", "EES", "EPI", "IJH", "JVAL", "QGRW", "SPDW", "WTV", "XSOE", "AGGY", "MTGP", "QHY", "TLH"],
+        "weights": [10, 11.3, 3.4, 2.5, 4.2, 6.4, 25, 6.8, 10.4, 4, 7.6, 4, 1.4, 3],
+    },
+    'WisdomTree Core Equity': {
+        "tickers": ["DDWM", "DGRW", "EES", "EPI", "IJH", "JVAL", "QGRW", "SPDW", "WTV", "XSOE"],
+        "weights": [13, 12, 5, 3, 5, 5, 28, 9, 15, 5],
+    },
+    'WisdomTree Fixed Income': {
+        "tickers": ["AGGY", "BIV", "BLV", "ELD", "MTGP", "QHY", "QSIG", "TLH", "USFR"],
+        "weights": [30, 5, 4, 5, 24, 6, 9, 9, 8],
+    },
+    'WisdomTree Short Duration Fixed Income': {
+        "tickers": ["ELD", "HYZD", "MTGP", "QSIG", "SHAG", "USFR"],
+        "weights": [5, 15, 20, 20, 25, 15],
+    },
+    'WisdomTree U.S. Conservative Growth': {
+        "tickers": ["DGRS", "DGRW", "DON", "EPS", "MTUM", "SCHG", "USMF", "WTV", "AGGY", "BIV", "ELD", "MTGP", "QHY", "QSIG", "TLH", "USFR"],
+        "weights": [2, 8, 2, 10, 2, 12, 2, 5, 18.6, 3, 3, 13.2, 3.6, 5.4, 8.4, 1.8],
+    },
+    'WisdomTree U.S. Moderate Growth': {
+        "tickers": ["DGRS", "DGRW", "DON", "EPS", "MTUM", "SCHG", "USMF", "WTV", "AGGY", "BIV", "ELD", "MTGP", "QHY", "QSIG", "TLH", "USFR"],
+        "weights": [3, 12, 3, 15, 3, 18, 3, 6, 11.4, 1, 2, 8.8, 2.4, 3.6, 5.6, 2.2],
+    },
+    'WisdomTree U.S. Growth': {
+        "tickers": ["DGRS", "DGRW", "DON", "EPS", "MTUM", "SCHG", "USMF", "WTV", "AGGY", "BIV", "MTGP", "QHY", "QSIG", "TLH"],
+        "weights": [3.5, 14, 3.5, 17.5, 3.5, 20, 5, 7, 9.2, 1.5, 6.6, 1.8, 2.7, 4.2],
+    },
+    'WisdomTree U.S. Aggressive Growth': {
+        "tickers": ["DGRS", "DGRW", "DON", "EPS", "MTUM", "SCHG", "USMF", "WTV", "AGGY", "MTGP", "QHY", "QSIG", "TLH"],
+        "weights": [4, 16, 4, 20, 4, 24, 4, 8, 5.8, 4.4, 1.2, 1.8, 2.8],
+    },
+}
+POPULAR_PORTFOLIOS.update(_WISDOMTREE_PORTFOLIOS)
+
+
+# ── Institution classification for portfolio presets ─────────────────────
+# Powers the institution filter on the preset dropdowns. Provider is inferred
+# from the label prefix; section headers ("── X ──") and Custom return None.
+_INSTITUTION_ALL = "All institutions"
+
+
+def _portfolio_institution(label):
+    if not label or label.startswith("── ") or label.startswith("Custom"):
+        return None
+    low = label.lower()
+    if low.startswith("schwab"):     return "Schwab"
+    if low.startswith("zacks"):      return "Zacks"
+    if "wisdomtree" in low:          return "WisdomTree"
+    return "Other"
+
+
+def _portfolio_institutions():
+    """Ordered, de-duplicated list of institutions present in the presets."""
+    seen = []
+    for k, v in POPULAR_PORTFOLIOS.items():
+        if v is None:
+            continue
+        inst = _portfolio_institution(k)
+        if inst and inst not in seen:
+            seen.append(inst)
+    return seen
+
+
+def _preset_labels_for(institution=None):
+    """Preset labels (no separators, no Custom), optionally filtered to one
+    institution. Pass None or _INSTITUTION_ALL for everything."""
+    out = []
+    for k, v in POPULAR_PORTFOLIOS.items():
+        if v is None or k.startswith("Custom"):
+            continue
+        if institution and institution != _INSTITUTION_ALL:
+            if _portfolio_institution(k) != institution:
+                continue
+        out.append(k)
+    return out
 
 
 def _resolve_preset(label):
@@ -1493,7 +1734,7 @@ _EXPENSE_RATIO_OVERRIDES = {
     "QQQ": 0.0018, "QQQM": 0.0015, "RSP": 0.0020, "SPHD": 0.0030,
     "SPLV": 0.0025,
     # ── Cash / money market ETFs ──
-    "SGOV": 0.0007, "BIL": 0.0014, "SHV": 0.0015, "ICSH": 0.0008,
+    "SGOV": 0.0009, "BIL": 0.0014, "SHV": 0.0015, "ICSH": 0.0008,
     "JPST": 0.0018, "FLOT": 0.0015, "USFR": 0.0015, "GBIL": 0.0012,
     # ── Sector / thematic ──
     "XLK": 0.0009, "XLF": 0.0009, "XLE": 0.0009, "XLV": 0.0009,
@@ -1935,6 +2176,22 @@ def _resolve_av_key():
     return os.environ.get("ALPHA_VANTAGE_API_KEY")
 
 
+# ── AUTHORITATIVE ER OVERRIDES (beat the cache) ───────────────────────
+# A small, issuer-verified set of expense ratios for tickers where the
+# live/cached path is unreliable — typically proxy-stitched short-history
+# funds (e.g. SGOV maps to BIL for *price* history, which can bleed into a
+# wrong ER) or funds a prior run cached at a stale value. Unlike
+# _EXPENSE_RATIO_OVERRIDES (a last-resort fallback consulted only when every
+# live source fails), these are checked HIGH in the resolver — before the
+# 30-day disk cache — so a stale or wrong cached value can't win. Keep this
+# list tiny and verified against the issuer's prospectus; the date below is
+# the last verification.
+#   SGOV: iShares 0-3 Month Treasury Bond ETF — 0.09% (BlackRock, Jun 2026)
+_ER_AUTHORITATIVE = {
+    "SGOV": 0.0009,
+}
+
+
 def _expense_ratio_for_ticker(ticker):
     """Return the annual expense ratio (decimal) for a ticker.
 
@@ -1994,6 +2251,13 @@ def _expense_ratio_for_ticker(ticker):
     # once at startup, so this check is O(1).
     if _SCHWAB_ER_LOOKUP and t in _SCHWAB_ER_LOOKUP:
         sess[t] = float(_SCHWAB_ER_LOOKUP[t])
+        return sess[t]
+
+    # 2b. Authoritative issuer-verified overrides — checked before the disk
+    # cache so a stale/wrong cached value can't override a known-correct ER
+    # (e.g. SGOV, which is price-proxied to BIL and otherwise drifts).
+    if t in _ER_AUTHORITATIVE:
+        sess[t] = float(_ER_AUTHORITATIVE[t])
         return sess[t]
 
     # 3+4. Stocks/crypto via classifier → 0.0
@@ -3697,9 +3961,16 @@ st.markdown("""
         -webkit-font-smoothing: antialiased;
     }
     .main .block-container {
-        padding-top: 2rem !important;
+        padding-top: 0rem !important;
         padding-bottom: 5rem !important;
         max-width: 1360px !important;
+    }
+    /* Collapse Streamlit's top toolbar so the banner sits flush at the very
+       top (the menu/deploy controls still float in the top-right corner). */
+    header[data-testid="stHeader"] {
+        height: 0 !important;
+        min-height: 0 !important;
+        background: transparent !important;
     }
 
     /* ── SIDEBAR ─────────────────────────────────────────────── */
@@ -3839,21 +4110,33 @@ st.markdown("""
     /* Pill-style tabs were too heavy; client portal uses underline tabs.
        Underline-on-teal matches and lets the content breathe. */
     .stTabs [data-baseweb="tab-list"] {
-        background: transparent !important;
-        border-radius: 0 !important;
-        border-bottom: 1px solid #E1E8EE !important;
-        padding: 0 4px !important;
-        gap: 28px !important;
-        margin-bottom: 18px !important;
+        background: #FFFFFF !important;
+        border: 1px solid #E1E8EE !important;
+        border-top: none !important;
+        border-radius: 0 0 16px 16px !important;
+        padding: 0 14px !important;
+        gap: 4px !important;
+        margin-top: -1rem !important;
+        margin-bottom: 24px !important;
+        box-shadow: 0 1px 3px rgba(11,31,42,0.05) !important;
+        display: flex !important;
+        flex-wrap: nowrap !important;
+        overflow-x: visible !important;
+        width: 100% !important;
     }
     .stTabs [data-baseweb="tab"] {
         background: transparent !important;
         border-radius: 0 !important;
         color: #6B7E8A !important;
         font-weight: 600 !important;
-        font-size: 0.92rem !important;
-        padding: 12px 4px !important;
+        font-size: 0.82rem !important;
+        padding: 12px 6px !important;
         min-height: auto !important;
+        min-width: 0 !important;
+        flex: 1 1 0 !important;
+        justify-content: center !important;
+        text-align: center !important;
+        white-space: nowrap !important;
         letter-spacing: 0.01em !important;
         transition: color 0.15s ease !important;
     }
@@ -3903,16 +4186,28 @@ st.markdown("""
         color: #0B1F2A !important;
         font-size: 0.875rem !important;
     }
-    /* Hide the blinking text caret inside selectbox inputs. The
-       BaseWeb select widget Streamlit wraps internally renders a
-       focusable <input> for keyboard filtering, which shows a
-       caret to the right of the selected label even though the
-       widget is functionally a dropdown rather than a free-text
-       field. caret-color: transparent removes the caret without
-       disabling keyboard navigation or filtering. */
+    /* Kill the cursor that shows inside dropdowns. TWO different things
+       can appear: (1) a blinking text CARET in BaseWeb's filter <input>,
+       removed with caret-color:transparent; and (2) the I-beam MOUSE
+       pointer when hovering that input (the input defaults to
+       cursor:text), removed with cursor:pointer so the whole control
+       reads as a clickable dropdown. caret-color alone does NOT change
+       the mouse pointer — that needs cursor. Broad selectors because
+       Streamlit's class/testid names drift between versions;
+       role="combobox" is the stable hook on the BaseWeb input. */
+    [data-baseweb="select"],
+    [data-baseweb="select"] *,
     [data-baseweb="select"] input,
-    .stSelectbox input {
+    [data-baseweb="select"] input:focus,
+    .stSelectbox input,
+    .stMultiSelect input,
+    [data-testid="stSelectbox"] input,
+    [data-testid="stMultiSelect"] input,
+    [role="combobox"],
+    input[role="combobox"],
+    input[role="combobox"]:focus {
         caret-color: transparent !important;
+        cursor: pointer !important;
     }
     .stMultiSelect [data-baseweb="tag"] {
         background: #D8ECEC !important;
@@ -4090,9 +4385,10 @@ st.markdown("""
     .app-header {
         background: #FFFFFF;
         border: 1px solid #E1E8EE;
-        border-radius: 18px;
-        padding: 32px 40px;
-        margin-bottom: 32px;
+        border-bottom: none;
+        border-radius: 16px 16px 0 0;
+        padding: 16px 36px 12px 36px;
+        margin-bottom: 0;
         position: relative;
         overflow: hidden;
         box-shadow: 0 1px 3px rgba(11,31,42,0.05);
@@ -4109,7 +4405,7 @@ st.markdown("""
         font-size: 1.75rem !important;
         font-weight: 600 !important;
         color: #0E5C5E !important;
-        margin: 0 0 6px 0 !important;
+        margin: 0 !important;
         letter-spacing: -0.025em !important;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
     }
@@ -5150,6 +5446,187 @@ def _fee_impact_table_data(fee_levels: list[float] | None = None,
     return rows
 
 
+def _goal_fmt_money(v):
+    """Compact USD for goal figures: $1.92M / $200K / $2,000 / —."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    av = abs(v)
+    if av >= 1_000_000:
+        return f"${v/1_000_000:.2f}M".replace(".00M", "M")
+    if av >= 1_000:
+        return f"${v/1_000:.0f}K"
+    return f"${v:,.0f}"
+
+
+def _project_savings(starting, monthly, accum_r, years, contrib_growth=0.0):
+    """Future value at the target of a starting balance plus monthly
+    contributions that step up by `contrib_growth` each year, all compounded
+    monthly at the annual `accum_r`.
+
+    The contribution is level within a year and increases by contrib_growth
+    at each year boundary (models raising savings as income grows). The
+    closed form reduces exactly to the level-contribution annuity when
+    contrib_growth == 0, and is validated against a month-by-month build.
+    """
+    Y = int(years or 0)
+    n = Y * 12
+    if n <= 0:
+        return float(starting or 0)
+    rm = float(accum_r) / 12.0
+    g = float(contrib_growth or 0.0)
+    fv_start = float(starting or 0) * ((1.0 + rm) ** n)
+    if rm > 0:
+        af = (1.0 + rm) ** 12                 # one-year growth factor
+        per_year = monthly * (af - 1.0) / rm  # FV of 12 monthly pmts, year end
+        q = (1.0 + g) / af
+        geom = Y if abs(q - 1.0) < 1e-9 else (1.0 - q ** Y) / (1.0 - q)
+        contrib_fv = per_year * (af ** (Y - 1)) * geom
+    else:
+        # No return — just the escalating annual contribution stream.
+        contrib_fv = (12.0 * monthly * Y if abs(g) < 1e-9
+                      else 12.0 * monthly * (((1.0 + g) ** Y - 1.0) / g))
+    return fv_start + contrib_fv
+
+
+def _compute_goal_metrics(goal):
+    """Derive every figure the page-1 Investment Goal section renders.
+
+    Two modes:
+      • Retirement — income-replacement chain. Current income × replacement
+        ratio is the income need; household Social Security (today's dollars,
+        assumed to carry COLAs ≈ inflation) is subtracted; the remaining gap
+        is inflated to the retirement year and capitalized as a growing-
+        annuity present value — discounted at the IN-RETIREMENT return,
+        growing at inflation, over the retirement duration (life expectancy −
+        retirement age, floored at 10 yrs). That nest egg is the target.
+      • Other goals — the advisor's hand-entered target amount is the target.
+
+    In both modes the savings plan (starting balance + monthly contributions
+    compounded at the ACCUMULATION return over the years-to-target) is
+    projected and compared to the target. Never raises — bad inputs resolve
+    to None'd fields so callers render whatever is available.
+    """
+    g = dict(goal or {})
+
+    def _f(key, default=0.0):
+        try:
+            return float(g.get(key) or 0)
+        except (TypeError, ValueError):
+            return default
+
+    def _i(key):
+        try:
+            return int(g.get(key))
+        except (TypeError, ValueError):
+            return None
+
+    is_retirement = (g.get("type") or "").strip().lower() == "retirement"
+    target_age  = _i("target_age")
+    current_age = _i("current_age")
+    years_to_ret = None
+    if target_age is not None and current_age is not None:
+        years_to_ret = max(0, target_age - current_age)
+
+    starting  = _f("starting_amount")
+    monthly   = _f("monthly_contribution")
+    accum_r   = _f("assumed_return_pct") / 100.0
+    inflation = _f("inflation_pct") / 100.0
+    in_ret_r  = _f("in_retirement_return_pct") / 100.0
+    contrib_growth = _f("contribution_growth_pct") / 100.0
+
+    out = {
+        "is_retirement": is_retirement,
+        "years_to_ret":  years_to_ret,
+        "starting": starting, "monthly": monthly,
+        "accum_return": accum_r, "inflation": inflation,
+        "in_ret_return": in_ret_r, "contribution_growth": contrib_growth,
+        "current_income": None, "replacement_pct": None,
+        "income_need_today": None, "ss_today": None,
+        "portfolio_gap_today": None, "gap_at_ret": None,
+        "retirement_years": None, "nest_egg": None,
+        "target": None, "projected": None,
+        "funding_pct": None, "gap": None, "required_return_pct": None,
+        "gap_monthly": None,
+    }
+
+    if is_retirement:
+        income      = _f("current_income")
+        replace_pct = _f("replacement_pct")
+        ss_today    = _f("monthly_ss") * 12.0
+        life_exp    = _i("life_expectancy")
+
+        income_need_today = income * (replace_pct / 100.0)
+        gap_today = max(0.0, income_need_today - ss_today)
+
+        ret_years = None
+        if life_exp is not None and target_age is not None:
+            ret_years = max(10, life_exp - target_age)
+
+        gap_at_ret = gap_today
+        if years_to_ret:
+            gap_at_ret = gap_today * ((1.0 + inflation) ** years_to_ret)
+
+        nest_egg = None
+        if ret_years and gap_at_ret > 0:
+            r, gth = in_ret_r, inflation
+            if abs(r - gth) < 1e-9:
+                nest_egg = gap_at_ret * ret_years / (1.0 + r)
+            else:
+                nest_egg = (gap_at_ret / (r - gth)) * (
+                    1.0 - ((1.0 + gth) / (1.0 + r)) ** ret_years
+                )
+            nest_egg = max(0.0, nest_egg)
+
+        out.update({
+            "current_income": income, "replacement_pct": replace_pct,
+            "income_need_today": income_need_today, "ss_today": ss_today,
+            "portfolio_gap_today": gap_today, "gap_at_ret": gap_at_ret,
+            "retirement_years": ret_years, "nest_egg": nest_egg,
+            "target": nest_egg,
+        })
+    else:
+        out["target"] = _f("target_amount")
+
+    # Savings projection (accumulation phase, with annual contribution
+    # step-up).
+    projected = _project_savings(starting, monthly, accum_r, years_to_ret,
+                                 contrib_growth)
+    out["projected"] = projected
+
+    target = out["target"]
+    if target and target > 0:
+        out["funding_pct"] = projected / target * 100.0
+        out["gap"] = target - projected
+        if (years_to_ret or 0) > 0:
+            def _fv_at(_r):
+                return _project_savings(starting, monthly, _r, years_to_ret,
+                                        contrib_growth)
+            _lo, _hi = 0.0, 0.40
+            if _fv_at(_lo) <= target <= _fv_at(_hi):
+                for _ in range(60):
+                    _mid = (_lo + _hi) / 2.0
+                    if _fv_at(_mid) < target:
+                        _lo = _mid
+                    else:
+                        _hi = _mid
+                out["required_return_pct"] = (_lo + _hi) / 2.0 * 100.0
+
+        # Additional *level* monthly contribution (no step-up) that would
+        # close the shortfall to target, holding the assumed return fixed.
+        # FV is linear in the monthly amount, so a single $1/mo probe gives
+        # the per-dollar future-value factor; the gap divided by that factor
+        # is the extra monthly needed. None when already funded.
+        if (years_to_ret or 0) > 0:
+            _k = _project_savings(0.0, 1.0, accum_r, years_to_ret, 0.0)
+            _gap_amt = target - projected
+            if _k > 0 and _gap_amt > 0:
+                out["gap_monthly"] = _gap_amt / _k
+
+    return out
+
+
 def _render_pdf_builder(
     proposal: dict,
     client_profile: dict | None = None,
@@ -5195,6 +5672,55 @@ def _render_pdf_builder(
     with st.expander(title, expanded=False):
         st.caption("Select the sections to include, then click Download PDF.")
 
+        # Name shown on the proposal cover and page footers. Defaults to the
+        # client's name but is editable, so a couple can be addressed jointly
+        # (e.g. "Mr. & Mrs. Johnson"). The field is keyed per proposal builder,
+        # so each client/version remembers its own override within the session;
+        # it's applied at build time only and never changes the client record.
+        _default_name = (((client_profile or {}).get("client_name") or "").strip()
+                         or "Unassociated Proposal")
+        _display_name = st.text_input(
+            "Name shown on the proposal",
+            value=_default_name,
+            key=f"{key_prefix}_dispname",
+            help='How the client name appears on the cover and page footers — '
+                 'e.g. "Mr. & Mrs. Johnson" for a couple. Does not change the '
+                 'client record.',
+        )
+
+        # Client's current total balance — drives the dollar amounts and the
+        # balance shown on the Holdings pages, and seeds the RMD starting
+        # balance. Applied to a copy of the proposal at build time
+        # (portfolio_value), so the stored record is never changed. Pre-fills
+        # from whichever balance field the client record carries.
+        def _first_positive(*vals):
+            for _v in vals:
+                try:
+                    _f = float(_v)
+                    if _f > 0:
+                        return _f
+                except (TypeError, ValueError):
+                    continue
+            return 0.0
+        _pf = proposal or {}
+        _clp = client_profile or {}
+        _cur_bal_default = _first_positive(
+            _pf.get("portfolio_value"), _pf.get("account_value"),
+            _pf.get("total_value"), _pf.get("balance"),
+            _clp.get("portfolio_value"), _clp.get("account_value"),
+            _clp.get("total_value"), _clp.get("balance"),
+            _clp.get("total_assets"), _clp.get("investable_assets"),
+        )
+        _cur_balance_input = st.number_input(
+            "Client's current balance ($)", min_value=0.0,
+            value=_cur_bal_default, step=10000.0, format="%.0f",
+            key=f"{key_prefix}_curbal",
+            help="Total account value — drives the dollar amounts and the "
+                 "TOTAL PORTFOLIO BALANCE shown on the Holdings pages, and "
+                 "seeds the RMD starting balance. Required for those amounts "
+                 "to be correct. Applies to this PDF only.",
+        )
+
         rb1, rb2 = st.columns(2)
         # Always-available sections (no underlying data dependency)
         sec_cover     = rb1.checkbox("Cover page + client summary",  True, key=f"{key_prefix}_cov")
@@ -5203,9 +5729,10 @@ def _render_pdf_builder(
         sec_hist      = rb1.checkbox("Historical performance table", True, key=f"{key_prefix}_hist")
         sec_fee_comp  = rb1.checkbox(
             "Fee comparison table",  True, key=f"{key_prefix}_feecmp",
-            help="Shows the impact of different annual fee levels (0%, 0.75%, "
-                 "1%, 1.5%, 2%, 2.5%) on a $100 starting balance over 1/3/5/7/10 years. "
-                 "Useful for clients comparing your firm's fee against industry alternatives.",
+            help="Shows the impact of different annual fee levels (0%, 0.25%, "
+                 "0.5%, 0.75%, 1%, 1.5%, 2%, 2.5%) on a $100 starting balance over "
+                 "1/3/5/7/10 years. Useful for clients comparing your firm's fee "
+                 "against industry alternatives.",
         )
 
         # Notable Market Periods — replaces the prior Drawdown / Rolling
@@ -5225,6 +5752,274 @@ def _render_pdf_builder(
         sec_alloc   = rb2.checkbox("Allocation pie charts",      True, key=f"{key_prefix}_alloc")
         sec_metrics = rb2.checkbox("Risk metrics table",         True, key=f"{key_prefix}_met")
         sec_notes   = rb2.checkbox("Advisor notes + disclaimer", True, key=f"{key_prefix}_notes")
+        sec_goal    = rb2.checkbox(
+            "Investment Goal (page 1)", False, key=f"{key_prefix}_goal",
+            help="Adds a goal-focused block to page 1 — objective, a funding "
+                 "projection toward a dollar target, time horizon, and focus "
+                 "areas. Optional; especially useful for prospects with no "
+                 "current portfolio. Fields appear below when enabled.",
+        )
+        sec_rmd     = rb2.checkbox(
+            "RMD Projections", False, key=f"{key_prefix}_rmd",
+            help="Adds a page after Proposed Holdings projecting required "
+                 "minimum distributions year by year — beginning balance, IRS "
+                 "Uniform Lifetime factor, the RMD, and ending balance through "
+                 "a chosen age. Uses SECURE 2.0 start ages (73 / 75). Inputs "
+                 "appear below when enabled.",
+        )
+        _rmd_payload = None
+
+        # Goal inputs — shown only when the Investment Goal section is on.
+        # Pre-filled from the client profile (retirement age, portfolio
+        # value, age) so the advisor reviews rather than re-keys. Assembled
+        # into _goal_payload and injected onto a copy of the profile at
+        # build time as client_profile["goal"]; nothing is persisted, so
+        # this stays a pure per-PDF presentation choice.
+        _goal_payload = None
+        if sec_goal:
+            _gp = client_profile or {}
+            _g_retire_default = 65
+            for _k in ("retirement_age", "target_retirement_age",
+                       "retire_age", "retirement_target_age"):
+                if _gp.get(_k):
+                    try:
+                        _g_retire_default = int(_gp.get(_k))
+                        break
+                    except (TypeError, ValueError):
+                        pass
+            try:
+                _g_start_default = float(_gp.get("portfolio_value") or 0.0)
+            except (TypeError, ValueError):
+                _g_start_default = 0.0
+            try:
+                _g_cur_age = int(_gp.get("client_age") or _gp.get("age"))
+            except (TypeError, ValueError):
+                _g_cur_age = None
+
+            st.markdown("**Investment goal**")
+            _gcol1, _gcol2, _gcol3 = st.columns(3)
+            _g_type = _gcol1.selectbox(
+                "Goal type",
+                ["Retirement", "Home purchase", "Education",
+                 "Wealth accumulation", "Custom"],
+                key=f"{key_prefix}_goal_type",
+            )
+            _g_label = _gcol2.text_input(
+                "Goal label", value=_g_type, key=f"{key_prefix}_goal_label",
+            )
+            _g_target_age = _gcol3.number_input(
+                "Target age", min_value=1, max_value=120,
+                value=_g_retire_default, step=1, key=f"{key_prefix}_goal_age",
+            )
+            # Shared accumulation inputs (both modes).
+            _gs1, _gs2, _gs3, _gs4 = st.columns(4)
+            _g_start = _gs1.number_input(
+                "Starting amount ($)", min_value=0.0, value=_g_start_default,
+                step=10000.0, format="%.0f", key=f"{key_prefix}_goal_start",
+            )
+            _g_monthly = _gs2.number_input(
+                "Monthly contribution ($)", min_value=0.0, value=0.0,
+                step=100.0, format="%.0f", key=f"{key_prefix}_goal_monthly",
+            )
+            _g_cgrowth = _gs3.number_input(
+                "Contribution increase (%/yr)", min_value=0.0, max_value=25.0,
+                value=0.0, step=0.5, format="%.1f",
+                key=f"{key_prefix}_goal_cgrowth",
+                help="Annual step-up to the monthly contribution — models "
+                     "raising savings as income grows. 0% keeps it level.",
+            )
+            _g_return = _gs4.number_input(
+                "Assumed return (%/yr)", min_value=0.0, max_value=30.0,
+                value=7.0, step=0.1, format="%.1f",
+                key=f"{key_prefix}_goal_return",
+                help="Accumulation-phase return for the savings projection. "
+                     "Set to the proposed portfolio's expected return (see the "
+                     "Historical Backtest page) to reflect the recommendation.",
+            )
+
+            # Mode-specific inputs. Retirement derives its target from an
+            # income-replacement chain; every other goal type takes a manual
+            # dollar target.
+            _g_target = 0.0
+            _g_income = _g_replace = _g_infl = _g_ss = _g_inret = 0.0
+            _g_life_exp = 90
+            if _g_type == "Retirement":
+                st.caption(
+                    "Retirement target is computed from income replacement — "
+                    "no dollar target needed. Social Security is treated as "
+                    "today's-dollars household income carrying COLAs."
+                )
+                _gr1, _gr2, _gr3 = st.columns(3)
+                _g_income = _gr1.number_input(
+                    "Current annual income ($)", min_value=0.0, value=0.0,
+                    step=5000.0, format="%.0f", key=f"{key_prefix}_goal_income",
+                )
+                _g_replace = _gr2.number_input(
+                    "Income replacement (%)", min_value=0.0, max_value=200.0,
+                    value=80.0, step=5.0, format="%.0f",
+                    key=f"{key_prefix}_goal_replace",
+                )
+                _g_ss = _gr3.number_input(
+                    "Monthly Social Security ($)", min_value=0.0, value=0.0,
+                    step=100.0, format="%.0f", key=f"{key_prefix}_goal_ss",
+                    help="Household monthly Social Security in today's dollars. "
+                         "Subtracted from the income need; the portfolio funds "
+                         "the remaining gap.",
+                )
+                _gr4, _gr5, _gr6 = st.columns(3)
+                _g_infl = _gr4.number_input(
+                    "Inflation (%/yr)", min_value=0.0, max_value=15.0,
+                    value=3.0, step=0.1, format="%.1f",
+                    key=f"{key_prefix}_goal_infl",
+                )
+                _g_inret = _gr5.number_input(
+                    "In-retirement return (%/yr)", min_value=0.0, max_value=20.0,
+                    value=5.0, step=0.1, format="%.1f",
+                    key=f"{key_prefix}_goal_inret",
+                    help="Return assumed during the drawdown phase — sizes the "
+                         "nest egg. Usually lower than the accumulation return.",
+                )
+                _g_life_exp = _gr6.number_input(
+                    "Life expectancy (age)", min_value=1, max_value=120,
+                    value=90, step=1, key=f"{key_prefix}_goal_life",
+                    help="Retirement duration = life expectancy − target age, "
+                         "floored at 10 years.",
+                )
+            else:
+                _g_target = st.number_input(
+                    "Target amount ($)", min_value=0.0, value=0.0,
+                    step=10000.0, format="%.0f", key=f"{key_prefix}_goal_target",
+                )
+
+            _g_narr = st.text_input(
+                "Goal narrative (optional — auto-composed if left blank)",
+                value="", key=f"{key_prefix}_goal_narr",
+            )
+            _goal_payload = {
+                "type":                 _g_type,
+                "label":                (_g_label or _g_type).strip(),
+                "target_age":           int(_g_target_age),
+                "current_age":          _g_cur_age,
+                "target_amount":        float(_g_target or 0),
+                "starting_amount":      float(_g_start or 0),
+                "monthly_contribution": float(_g_monthly or 0),
+                "assumed_return_pct":   float(_g_return or 0),
+                "contribution_growth_pct": float(_g_cgrowth or 0),
+                "current_income":       float(_g_income or 0),
+                "replacement_pct":      float(_g_replace or 0),
+                "inflation_pct":        float(_g_infl or 0),
+                "monthly_ss":           float(_g_ss or 0),
+                "in_retirement_return_pct": float(_g_inret or 0),
+                "life_expectancy":      int(_g_life_exp or 0),
+                "narrative":            (_g_narr or "").strip(),
+            }
+
+            # Live preview so the advisor sees the computed target + funding
+            # before generating the PDF.
+            try:
+                _gm_prev = _compute_goal_metrics(_goal_payload)
+                _tgt_prev = (_gm_prev.get("nest_egg")
+                             if _g_type == "Retirement" else _gm_prev.get("target"))
+                if _tgt_prev:
+                    _lbl_prev = ("Nest egg target" if _g_type == "Retirement"
+                                 else "Target")
+                    _msg_prev = (f"{_lbl_prev} **{_goal_fmt_money(_tgt_prev)}** · "
+                                 f"projected **{_goal_fmt_money(_gm_prev.get('projected'))}**")
+                    if _gm_prev.get("funding_pct") is not None:
+                        _msg_prev += f" ({_gm_prev['funding_pct']:.0f}% funded)"
+                    st.info(_msg_prev)
+            except Exception:
+                pass
+
+        # ── Per-PDF overrides: advisory fee + advisor notes ──────────
+        # Both apply to a copy of the proposal at build time only (never
+        # persisted), mirroring the display-name and goal overrides above.
+        # The fee feeds _resolve_advisory_fee_pct → the Fee Comparison page
+        # (★ row) and the SEC fee-impact disclosure; the note feeds the
+        # Advisor Notes section.
+        st.markdown("**Fees & advisor notes**")
+        _fee_default = _resolve_advisory_fee_pct(
+            proposal, client_profile, load_firm_settings())
+        _adv_fee_input = st.number_input(
+            "Advisory fee shown on PDF (%/yr)",
+            min_value=0.0, max_value=10.0,
+            value=float(_fee_default), step=0.05, format="%.2f",
+            key=f"{key_prefix}_advfee",
+            help="Sets the firm fee highlighted (★) on the Fee Comparison "
+                 "page and used in the fee-impact disclosure. Applies to this "
+                 "PDF only — does not change firm settings.",
+        )
+        _cur_fee_input = st.number_input(
+            "Client's current advisory fee (%/yr · 0 = N/A)",
+            min_value=0.0, max_value=10.0,
+            value=float((proposal or {}).get("current_advisory_fee_pct") or 0.0),
+            step=0.05, format="%.2f",
+            key=f"{key_prefix}_curfee",
+            help="If the client currently pays another advisor, enter that fee "
+                 "to show it (●) alongside your proposed fee on the Fee "
+                 "Comparison page. Leave at 0 if not applicable.",
+        )
+        _notes_default = ((proposal.get("advisor_notes") or "").strip()
+                          or (get_pdf_content().get("advisor_notes") or "").strip())
+        _adv_notes_input = st.text_area(
+            "Advisor notes (this PDF)",
+            value=_notes_default, height=120,
+            key=f"{key_prefix}_advnotes",
+            help="Appears in the Advisor Notes section of the PDF. Pre-filled "
+                 "from the firm-wide default — edit it for this client. Applies "
+                 "to this PDF only.",
+        )
+
+        # RMD projection inputs — shown only when the section is enabled.
+        # Pre-filled from the client profile (tax-deferred balance defaults to
+        # portfolio value; birth year derived from age). Assembled into
+        # _rmd_payload and injected onto a copy of the profile at build time
+        # as client_profile["rmd"]; nothing is persisted.
+        if sec_rmd:
+            _rp = client_profile or {}
+            try:
+                _rmd_bal_default = float(_cur_balance_input or 0.0)
+            except (TypeError, ValueError):
+                _rmd_bal_default = 0.0
+            _this_year = date.today().year
+            try:
+                _rmd_age = int(_rp.get("client_age") or _rp.get("age"))
+            except (TypeError, ValueError):
+                _rmd_age = None
+            _rmd_birth_default = (_this_year - _rmd_age) if _rmd_age else 1953
+
+            st.markdown("**RMD projection**")
+            _rc1, _rc2, _rc3, _rc4 = st.columns(4)
+            _rmd_bal = _rc1.number_input(
+                "Tax-deferred balance ($)", min_value=0.0,
+                value=_rmd_bal_default, step=10000.0, format="%.0f",
+                key=f"{key_prefix}_rmd_bal",
+                help="Balance subject to RMDs — traditional IRA / 401(k) / SEP "
+                     "/ SIMPLE. Roth IRAs are excluded. Defaults to the "
+                     "portfolio value; override if only part is tax-deferred.",
+            )
+            _rmd_birth = _rc2.number_input(
+                "Birth year", min_value=1900, max_value=2010,
+                value=_rmd_birth_default, step=1,
+                key=f"{key_prefix}_rmd_birth",
+            )
+            _rmd_growth = _rc3.number_input(
+                "Growth assumption (%/yr)", min_value=0.0, max_value=20.0,
+                value=5.0, step=0.5, format="%.1f",
+                key=f"{key_prefix}_rmd_growth",
+                help="Assumed annual growth on the balance remaining after each "
+                     "year's withdrawal.",
+            )
+            _rmd_end_age = _rc4.number_input(
+                "Project through age", min_value=73, max_value=110,
+                value=95, step=1, key=f"{key_prefix}_rmd_end",
+            )
+            _rmd_payload = {
+                "balance":     float(_rmd_bal),
+                "birth_year":  int(_rmd_birth),
+                "growth_rate": float(_rmd_growth),
+                "end_age":     int(_rmd_end_age),
+            }
 
         if st.button("📥 Download PDF", type="primary",
                      use_container_width=True,
@@ -5236,6 +6031,8 @@ def _render_pdf_builder(
                 "allocation": sec_alloc,
                 "metrics":   sec_metrics,  "notes":     sec_notes,
                 "fee_comparison": sec_fee_comp,
+                "goal": sec_goal,
+                "rmd_projection": sec_rmd,
                 # Legacy keys kept off — the rendering paths for these
                 # were removed when Notable Market Periods replaced them.
                 # Setting False so any saved-section dicts referencing
@@ -5244,9 +6041,46 @@ def _render_pdf_builder(
             }
             try:
                 with st.spinner("Building PDF…"):
+                    # Apply the editable display name as a build-time override
+                    # on a copy of the profile, so every "client_name" the PDF
+                    # renders (cover, footers, snapshot title) picks it up
+                    # without mutating the stored client record.
+                    _cp = dict(client_profile or {"client_name": "Unassociated Proposal"})
+                    _nm = (_display_name or "").strip()
+                    if _nm:
+                        _cp["client_name"] = _nm
+                    # Thread the opt-in goal block through to the PDF on a
+                    # copy of the profile — never mutates the stored record.
+                    if _goal_payload:
+                        _cp["goal"] = _goal_payload
+                    if _rmd_payload:
+                        _cp["rmd"] = _rmd_payload
+                    # Per-PDF overrides onto a copy of the proposal so the
+                    # stored proposal record is never mutated.
+                    _prop = dict(proposal or {})
+                    # Current balance drives the Holdings dollar amounts and
+                    # the total shown on those pages (portfolio_value).
+                    try:
+                        if float(_cur_balance_input) > 0:
+                            _prop["portfolio_value"] = float(_cur_balance_input)
+                            _cp["portfolio_value"] = float(_cur_balance_input)
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        _prop["advisory_fee_pct"] = float(_adv_fee_input)
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        if float(_cur_fee_input) > 0:
+                            _prop["current_advisory_fee_pct"] = float(_cur_fee_input)
+                    except (TypeError, ValueError):
+                        pass
+                    _an = (_adv_notes_input or "").strip()
+                    if _an:
+                        _prop["advisor_notes"] = _an
                     pdf_bytes = build_client_proposal_pdf(
-                        client_profile=client_profile or {"client_name": "Unassociated Proposal"},
-                        proposal=proposal,
+                        client_profile=_cp,
+                        proposal=_prop,
                         sections=sections,
                     )
                 trigger_pdf_download(pdf_bytes, download_filename)
@@ -5259,6 +6093,76 @@ def _render_pdf_builder(
                 st.error(f"PDF generation failed: {_pe}")
                 with st.expander("Debug info"):
                     st.code(_tb.format_exc())
+
+
+# ── RMD projection engine (shared by the proposal PDF) ───────────────────────
+# IRS Uniform Lifetime Table (Publication 590-B, Table III): distribution
+# period by age. RMD = prior year-end balance ÷ factor.
+_RMD_UNIFORM_LIFETIME = {
+    72: 27.4, 73: 26.5, 74: 25.5, 75: 24.6, 76: 23.7, 77: 22.9, 78: 22.0,
+    79: 21.1, 80: 20.2, 81: 19.4, 82: 18.5, 83: 17.7, 84: 16.8, 85: 16.0,
+    86: 15.2, 87: 14.4, 88: 13.7, 89: 12.9, 90: 12.2, 91: 11.5, 92: 10.8,
+    93: 10.1, 94: 9.5, 95: 8.9, 96: 8.4, 97: 7.8, 98: 7.3, 99: 6.8, 100: 6.4,
+    101: 6.0, 102: 5.6, 103: 5.2, 104: 4.9, 105: 4.6, 106: 4.3, 107: 4.1,
+    108: 3.9, 109: 3.7, 110: 3.5, 111: 3.4, 112: 3.3, 113: 3.1, 114: 3.0,
+    115: 2.9, 116: 2.8, 117: 2.7, 118: 2.5, 119: 2.3, 120: 2.0,
+}
+
+
+def _rmd_start_age(birth_year: int) -> int:
+    """SECURE 2.0 required-beginning age by birth year: 72 for owners already
+    in RMDs (born ≤1950), 73 for 1951–1959, 75 for 1960 or later."""
+    if birth_year <= 1950:
+        return 72
+    if birth_year <= 1959:
+        return 73
+    return 75
+
+
+def _rmd_projection(balance, birth_year, growth_rate, current_year, end_age):
+    """Year-by-year RMD projection from the first required year through
+    end_age. Convention: each year's RMD comes off the beginning (prior
+    year-end) balance, then the remainder grows at growth_rate. If the first
+    RMD year is in the future, the starting balance is first grown to that year.
+
+    Returns (rows, summary). Each row is a dict with age, year, begin, factor,
+    rmd, pct, end.
+    """
+    birth_year = int(birth_year)
+    end_age = int(end_age)
+    g = float(growth_rate) / 100.0
+    start_age = _rmd_start_age(birth_year)
+    cur_age = int(current_year) - birth_year
+
+    first_year = current_year if cur_age >= start_age else birth_year + start_age
+    pre_years = max(0, first_year - int(current_year))
+
+    bal = float(balance) * ((1.0 + g) ** pre_years)  # grow to first RMD year
+    rows = []
+    cumulative = 0.0
+    end_bal = bal
+    for yr in range(first_year, birth_year + end_age + 1):
+        age = yr - birth_year
+        factor = _RMD_UNIFORM_LIFETIME.get(min(max(age, 72), 120))
+        if factor is None:
+            continue
+        begin = end_bal
+        rmd = begin / factor
+        end_bal = max(0.0, begin - rmd) * (1.0 + g)
+        cumulative += rmd
+        rows.append({"age": age, "year": yr, "begin": begin, "factor": factor,
+                     "rmd": rmd, "pct": 100.0 / factor, "end": end_bal})
+
+    summary = {
+        "first_year": first_year,
+        "first_rmd": rows[0]["rmd"] if rows else 0.0,
+        "total_rmd": cumulative,
+        "end_balance": rows[-1]["end"] if rows else bal,
+        "end_age": end_age,
+        "pre_years": pre_years,
+        "start_age": start_age,
+    }
+    return rows, summary
 
 
 def build_client_proposal_pdf(client_profile, proposal, sections):
@@ -5317,6 +6221,14 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
     from mrb_design import (load_settings, get_ticker_color,
                             lump_to_other, pick_alignment_tier)
     _SETTINGS = load_settings()
+    # Show the pie/legend rollup bucket as a ticker-style "OTHER" (all caps),
+    # not the wordy "Other holdings" that wrapped to two lines in narrow
+    # legends. Overriding the setting here propagates to the pie wedge label,
+    # _OTHER_LABEL below, and every legend's rollup-row lookup.
+    try:
+        _SETTINGS["chart_palette"]["other_bucket"]["other_label"] = "OTHER"
+    except (KeyError, TypeError):
+        pass
     _B = _SETTINGS["brand"]
     _CHART_TICKERS = _SETTINGS["chart_palette"]["tickers"]
 
@@ -5378,7 +6290,9 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         "#c5302b",  # crimson
         "#b03878",  # berry pink
         "#7a4a28",  # bronze
-        "#516172",  # slate
+        "#2b5fb0",  # blue (replaces slate #516172 — slate read as a second
+                    # grey wedge next to the gray OTHER bucket; blue is the
+                    # palette's largest open hue gap, between teal and violet)
     ]
     _FALLBACK = _CHART_TICKERS["_fallback_palette"]
     PDF_PIE_PALETTE = [colors.HexColor(h) for h in _FALLBACK]
@@ -5403,17 +6317,28 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                       _orig=_orig_lump_to_other,
                       _other_lbl=_OTHER_LABEL):
         ts, ws, has_other = _orig(tickers, weights, settings)
+        # Recognize every other-bucket label variant. The display label has
+        # changed over time ("Other", "Other holdings", "OTHER"), and the
+        # upstream lump can emit one that no longer matches _other_lbl. If
+        # such a stray slips through it gets treated as a named holding AND
+        # is independently greyed by resolve_chart_colors — which is what
+        # produced TWO adjacent grey wedges. Folding all variants into one
+        # bucket here guarantees a single grey "Other".
+        _aliases = {str(_other_lbl).strip().lower(), "other", "other holdings"}
         named = []
         other_w = 0.0
         for t, w in zip(ts, ws):
-            if t == _other_lbl:
+            if str(t).strip().lower() in _aliases:
                 other_w += float(w or 0)
             else:
                 named.append((t, float(w or 0)))
-        if len(named) <= _max_named:
-            return ts, ws, has_other
-        # Excess named holdings — keep the top 8 by weight, fold the
-        # rest into Other. Sort by weight desc, then take the first 8.
+        # ALWAYS sort named largest-first, fold everything beyond the cap
+        # into Other, and append Other LAST. This guarantees the pie draws
+        # the largest holding at 12 o'clock and descends clockwise to the
+        # smallest, with the single grey Other wedge at the end (just
+        # before 12). Previously, when named <= cap this returned the
+        # upstream order as-is, which was neither guaranteed sorted nor
+        # guaranteed to place Other last.
         named.sort(key=lambda tw: -tw[1])
         keep = named[:_max_named]
         drop = named[_max_named:]
@@ -7165,6 +8090,32 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
     _curr_snap_pg1 = (proposal or {}).get("client_current_portfolio") or {}
     _curr_snap_tks_pg1 = list(_curr_snap_pg1.get("tickers") or [])
     _curr_snap_w_pg1   = _curr_snap_pg1.get("weights") or {}
+
+    # ── CURRENT-PORTFOLIO PRESENCE FLAG ───────────────────────────
+    # Single source of truth for "does the client actually have a
+    # current portfolio to show?" Keyed on the Step 2 snapshot only
+    # (the same signal the Backtest and Notable Periods sections use):
+    # a current portfolio exists iff the advisor selected one via the
+    # "Client's current portfolio" picker AND it carries at least one
+    # positive-weight holding. When this is False the proposal reflows
+    # to a proposed-only document — every current-portfolio element is
+    # suppressed:
+    #   • page-1 "Your Current Portfolio" card (donut + holdings split)
+    #   • page-1 Risk Alignment row + cover spectrum band (alignment is
+    #     profile-vs-current; with no current there is nothing to align)
+    #   • the dedicated "Current Holdings" detail page
+    # This also gates out the legacy fall-back that silently rendered
+    # the balanced tier (i.e. PROPOSED Option 1) masquerading as the
+    # client's "current" holdings whenever Step 2 was left unset.
+    _has_current_portfolio = bool(
+        _curr_snap_tks_pg1
+        and isinstance(_curr_snap_w_pg1, dict)
+        and any(
+            float(_curr_snap_w_pg1.get(_t, 0) or 0) > 0
+            for _t in _curr_snap_tks_pg1
+        )
+    )
+
     if _curr_snap_tks_pg1 and isinstance(_curr_snap_w_pg1, dict):
         # Step 2 stores weights as a dict (ticker → percent). Convert to
         # parallel-list shape that compute_portfolio_risk_score expects.
@@ -7592,7 +8543,11 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                        textColor=CHARCOAL, fontName="Times-Roman",
                        alignment=TA_LEFT, spaceBefore=6, spaceAfter=4),
     )
-    story.append(_section_title_para_align)
+    # Suppress the Alignment Summary header too when there is no current
+    # portfolio — otherwise it strands above the (already-suppressed)
+    # alignment row and spectrum band, leaving a lone title over blank space.
+    if _has_current_portfolio:
+        story.append(_section_title_para_align)
 
     # ── Compute alignment percentage ──
     # Formula: min(portfolio, profile) / max(portfolio, profile) × 100
@@ -7846,8 +8801,12 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         ("TOPPADDING",   (0,0), (-1,-1), 2),
         ("BOTTOMPADDING",(0,0), (-1,-1), 2),
     ]))
-    story.append(_align_row)
-    story.append(Spacer(1, 0.10*inch))
+    # Alignment is a profile-vs-current comparison; suppress the whole
+    # row when there is no current portfolio (otherwise it degrades to a
+    # "—" PORTFOLIO badge and an "Alignment not available" caption).
+    if _has_current_portfolio:
+        story.append(_align_row)
+        story.append(Spacer(1, 0.10*inch))
 
     # ── COVER SPECTRUM BAND ──────────────────────────────────────
     # Wrapped in a navy-boxed Table that matches the Risk Spectrum
@@ -7855,7 +8814,7 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
     # rather than letting it float on the page. The thin separator
     # rule that previously sat between the alignment row and the
     # spectrum is no longer needed; the navy box does the separation.
-    if _cs is not None or _ps is not None:
+    if _has_current_portfolio and (_cs is not None or _ps is not None):
         _cover_band_drawing = cover_spectrum_band(
             profile=int(_cs) if _cs is not None else None,
             current_score=int(_ps) if _ps is not None else None,
@@ -7882,6 +8841,433 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         ]))
         story.append(_spec_wrapper)
         story.append(Spacer(1, 0.06*inch))
+
+    # ═══════════════════════════════════════════════════════════
+    # INVESTMENT GOAL SECTION (opt-in — sections["goal"])
+    # ═══════════════════════════════════════════════════════════
+    # Advisor-toggled block that frames the proposal around a funding
+    # goal. Sits in the page-1 "alignment slot": when there is no current
+    # portfolio it fills the space the alignment row vacated; when there
+    # is one it renders just beneath the alignment summary. Independent of
+    # _has_current_portfolio — inclusion is purely the advisor's choice.
+    # Goal data arrives via client_profile["goal"] (injected by the PDF
+    # builder UI). The whole block is wrapped in try/except so a bad input
+    # degrades to a one-line note rather than taking down the PDF.
+    if sections.get("goal") and (client_profile or {}).get("goal"):
+        try:
+            _goal = dict(client_profile.get("goal") or {})
+            _gm = _compute_goal_metrics(_goal)
+
+            _g_label    = (_goal.get("label") or _goal.get("type") or "your goal").strip()
+            _g_is_ret   = bool(_gm.get("is_retirement"))
+            _g_years    = _gm.get("years_to_ret")
+            _g_start    = _gm.get("starting") or 0.0
+            _g_monthly  = _gm.get("monthly") or 0.0
+            _g_ret      = _gm.get("accum_return") or 0.0
+            _g_target   = _gm.get("target") or 0.0
+            _g_fv       = _gm.get("projected") or 0.0
+            _g_fund_pct = _gm.get("funding_pct")
+            _g_gap      = _gm.get("gap")
+            _g_req_pct  = _gm.get("required_return_pct")
+            _g_tage     = _goal.get("target_age")
+            _g_concept3 = bool(_g_is_ret and _g_target)
+
+            # ── Section header ──
+            story.append(Paragraph(
+                "Your Retirement Goal" if _g_is_ret else "Your Investment Objective",
+                ParagraphStyle("goal_section_title", fontSize=16, leading=20,
+                               textColor=CHARCOAL, fontName="Times-Roman",
+                               alignment=TA_LEFT, spaceBefore=6, spaceAfter=4),
+            ))
+            story.append(thin_rule(BORDER, 0.6))
+            story.append(Spacer(1, 0.06*inch))
+
+            # ── Navy callout: advisor narrative or auto-composed sentence ──
+            _g_narr = (_goal.get("narrative") or "").strip()
+            if not _g_narr:
+                if _g_is_ret:
+                    _g_narr = (f"Replacing {_gm.get('replacement_pct') or 0:.0f}% of "
+                               f"{_goal_fmt_money(_gm.get('current_income'))} income")
+                    if _g_tage is not None:
+                        _g_narr += f" in retirement at {int(_g_tage)}"
+                    if _gm.get("gap_at_ret") is not None:
+                        _g_narr += (f" means about {_goal_fmt_money(_gm.get('gap_at_ret'))}/yr "
+                                    f"from the portfolio once inflation-adjusted")
+                    if _g_target:
+                        _g_narr += f" — a {_goal_fmt_money(_g_target)} nest egg"
+                        if _gm.get("retirement_years"):
+                            _g_narr += f" to fund {int(_gm['retirement_years'])} years"
+                    _g_narr += "."
+                else:
+                    _g_narr = f"Building toward {_goal_fmt_money(_g_target)} for {_g_label.lower()}"
+                    if _g_tage is not None:
+                        _g_narr += f" at age {int(_g_tage)}"
+                    if _g_years:
+                        _g_narr += f" — a {_g_years}-year horizon"
+                    _g_narr += "."
+                if _g_fund_pct is not None:
+                    _g_narr += (f" On the proposed plan, projected to reach "
+                                f"~{_goal_fmt_money(_g_fv)} ({_g_fund_pct:.0f}% of target)")
+                    _g_narr += (f", about {_goal_fmt_money(_g_gap)} short."
+                                if (_g_gap is not None and _g_gap > 0) else ".")
+            _g_callout = Table(
+                [[Paragraph(
+                    f"<font color='{WHITE.hexval()}' size='11'>{_g_narr}</font>",
+                    ParagraphStyle("goal_callout", fontSize=11, leading=15,
+                                   textColor=WHITE, fontName="Helvetica",
+                                   alignment=TA_LEFT),
+                )]],
+                colWidths=[7.4*inch],
+            )
+            _g_callout.setStyle(TableStyle([
+                ("BACKGROUND",    (0,0), (-1,-1), NAVY),
+                ("LEFTPADDING",   (0,0), (-1,-1), 12),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 12),
+                ("TOPPADDING",    (0,0), (-1,-1), 9),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 9),
+                ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+            ]))
+            if not _g_concept3:
+                story.append(_g_callout)
+                story.append(Spacer(1, 0.10*inch))
+
+            if _g_is_ret and _g_target:
+                # ═══ CONCEPT 3 — retirement "runway to goal" ═══
+                _g_surplus = (_g_gap is not None and _g_gap <= 0)
+                _RED    = colors.HexColor("#a23b2e")
+                _HATCH  = colors.HexColor("#d3c7ac")
+                _GAPTXT = colors.HexColor("#7a6a3f")
+
+                # Headline row: Projected | shortfall/% | Nest egg target.
+                def _hl_cell(_lbl, _val, _vcolor, _al, _sub=None, _vsize=20, _subsize=8):
+                    _a = {"L": TA_LEFT, "C": TA_CENTER, "R": TA_RIGHT}[_al]
+                    _stack = [
+                        Paragraph(f"<font color='{GRAY.hexval()}' size='7'>{_lbl}</font>",
+                                  ParagraphStyle("hl_l", fontSize=7, leading=10,
+                                                 fontName="Helvetica", alignment=_a)),
+                        Paragraph(f"<font color='{_vcolor.hexval()}' size='{_vsize}'><b>{_val}</b></font>",
+                                  ParagraphStyle("hl_v", fontSize=_vsize, leading=_vsize + 3,
+                                                 fontName="Helvetica", alignment=_a)),
+                    ]
+                    if _sub is not None:
+                        _stack.append(Paragraph(
+                            f"<font color='{GRAY.hexval()}' size='{_subsize}'>{_sub}</font>",
+                            ParagraphStyle("hl_s", fontSize=_subsize, leading=_subsize + 3,
+                                           fontName="Helvetica", alignment=_a)))
+                    _c = Table([[_p] for _p in _stack], colWidths=[2.46*inch])
+                    _c.setStyle(TableStyle([
+                        ("LEFTPADDING",(0,0),(-1,-1),0), ("RIGHTPADDING",(0,0),(-1,-1),0),
+                        ("TOPPADDING",(0,0),(-1,-1),0), ("BOTTOMPADDING",(0,0),(-1,-1),1),
+                    ]))
+                    return _c
+
+                _pct_txt = (f"{_g_fund_pct:.0f}%"
+                            if _g_fund_pct is not None else "\u2014")
+                _hl_row = Table([[
+                    _hl_cell("PROJECTED WITH PLAN", _goal_fmt_money(_g_fv), NAVY, "L"),
+                    _hl_cell("FUNDED", _pct_txt, NAVY, "C", _vsize=26),
+                    _hl_cell("PROJECTED TARGET", _goal_fmt_money(_g_target), ACCENT, "R"),
+                ]], colWidths=[2.46*inch, 2.48*inch, 2.46*inch])
+                _hl_row.setStyle(TableStyle([
+                    ("VALIGN",(0,0),(-1,-1),"BOTTOM"),
+                    ("LEFTPADDING",(0,0),(-1,-1),0), ("RIGHTPADDING",(0,0),(-1,-1),0),
+                    ("TOPPADDING",(0,0),(-1,-1),0), ("BOTTOMPADDING",(0,0),(-1,-1),6),
+                ]))
+                story.append(_hl_row)
+
+                # Runway bar: navy funded portion + diagonally-hatched gap.
+                _rw_w = 7.4 * inch
+                _rw_h = 22
+                _rw = Drawing(_rw_w, 28)
+                _frac = max(0.0, min(1.0, _g_fv / _g_target)) if _g_target else 0.0
+                _rw.add(Rect(0, 3, _rw_w, _rw_h, rx=6, ry=6,
+                             fillColor=BORDER_SOFT, strokeColor=None))
+                _gap_x0 = _rw_w * _frac
+                if _gap_x0 < _rw_w - 1:
+                    _hx = _gap_x0 + 6
+                    while _hx < _rw_w:
+                        _rw.add(Line(max(_gap_x0, _hx - _rw_h), 3,
+                                     min(_hx, _rw_w), 3 + _rw_h,
+                                     strokeColor=_HATCH, strokeWidth=1.2))
+                        _hx += 7
+                if _frac > 0:
+                    _rw.add(Rect(0, 3, _rw_w * _frac, _rw_h, rx=6, ry=6,
+                                 fillColor=NAVY, strokeColor=None))
+                if _frac > 0.22:
+                    _rw.add(String(12, 3 + _rw_h / 2.0 - 4, "Saved + projected",
+                                   fontName="Helvetica", fontSize=9,
+                                   fillColor=WHITE, textAnchor="start"))
+                if (not _g_surplus) and (1.0 - _frac) > 0.18:
+                    _rw.add(String(_rw_w - 12, 3 + _rw_h / 2.0 - 4, "gap to fund",
+                                   fontName="Helvetica", fontSize=8,
+                                   fillColor=_GAPTXT, textAnchor="end"))
+                story.append(_rw)
+
+                # Sub-labels under the runway.
+                def _rw_sub(_txt, _al):
+                    _a = {"L": TA_LEFT, "C": TA_CENTER, "R": TA_RIGHT}[_al]
+                    return Paragraph(f"<font color='{GRAY.hexval()}' size='11'>{_txt}</font>",
+                                     ParagraphStyle("rw_s", fontSize=11, leading=14,
+                                                    fontName="Helvetica", alignment=_a))
+                _mid_txt = ""
+                if _g_years:
+                    _mid_txt = f"{_g_years} yrs"
+                    if _g_ret > 0:
+                        _mid_txt += f" &middot; {_g_ret*100:.1f}%/yr assumed"
+                    _cg = _gm.get("contribution_growth") or 0
+                    if _cg > 0:
+                        _mid_txt += f" &middot; +{_cg*100:.1f}%/yr"
+                _right_txt = (f"Reaches target at ~{_g_req_pct:.1f}%/yr"
+                              if _g_req_pct is not None else "")
+                # Width-aware split: size the middle column to its rendered
+                # text (+pad) so it stays on one line, then give the left and
+                # right columns equal remaining width — which keeps the middle
+                # label centered under the bar.
+                from reportlab.pdfbase.pdfmetrics import stringWidth as _sw11
+                _mid_plain = (_mid_txt.replace("&middot;", "\u00b7")
+                                      .replace("&nbsp;", " ")
+                                      .replace("&minus;", "\u2212"))
+                _mid_w = min(max(_sw11(_mid_plain, "Helvetica", 11) + 14,
+                                 2.2 * inch), 3.5 * inch)
+                _side_w = (7.4 * inch - _mid_w) / 2.0
+                _rw_subs = Table([[
+                    _rw_sub(f"Today &middot; {_goal_fmt_money(_g_start)} saved", "L"),
+                    _rw_sub(_mid_txt, "C"),
+                    _rw_sub(_right_txt, "R"),
+                ]], colWidths=[_side_w, _mid_w, _side_w])
+                _rw_subs.setStyle(TableStyle([
+                    ("LEFTPADDING",(0,0),(-1,-1),0), ("RIGHTPADDING",(0,0),(-1,-1),0),
+                    ("TOPPADDING",(0,0),(-1,-1),3), ("BOTTOMPADDING",(0,0),(-1,-1),0),
+                ]))
+                story.append(_rw_subs)
+
+                # Savings-lever summary: the current plan's monthly
+                # contribution alongside the extra monthly saving that would
+                # close the shortfall to target (companion to the required-
+                # return figure at the right of the sub-labels above).
+                _g_gap_mo = _gm.get("gap_monthly")
+                _sv_parts = []
+                if _g_monthly and _g_monthly > 0:
+                    _now_mo = round(_g_monthly / 10.0) * 10
+                    _sv_parts.append(
+                        f"<font color='{GRAY.hexval()}'>Current savings</font> "
+                        f"<b>${_now_mo:,.0f}/mo</b>")
+                if _g_gap_mo and _g_gap_mo > 0:
+                    _gap_mo_amt = round(_g_gap_mo / 10.0) * 10
+                    _sv_parts.append(
+                        f"<font color='{GRAY.hexval()}'>monthly shortfall</font> "
+                        f"<b>${_gap_mo_amt:,.0f}/mo</b>")
+                if _sv_parts:
+                    story.append(Spacer(1, 0.05 * inch))
+                    story.append(Paragraph(
+                        f"<font color='{NAVY.hexval()}' size='10'>"
+                        f"{' &nbsp;&middot;&nbsp; '.join(_sv_parts)}</font>",
+                        ParagraphStyle("sv_mo", fontSize=10, leading=13,
+                                       fontName="Helvetica", textColor=NAVY,
+                                       alignment=TA_CENTER)))
+                story.append(Spacer(1, 0.12*inch))
+
+                # ── Income-need derivation table ──────────────────
+                # Shows how the retirement income need is built, in TODAY's
+                # dollars next to the same figures grown to retirement by
+                # inflation. The chain is: income need (replacement % of
+                # current income), less the Social Security estimate, leaving
+                # the gap the portfolio must fund. This replaced the old
+                # horizontal stat strip so each line reads label → amount(s)
+                # and the inflation impact is visible side by side.
+                def _full_money(_v):
+                    try:
+                        return f"${round(float(_v)/100.0)*100:,.0f}"
+                    except (TypeError, ValueError):
+                        return "\u2014"
+
+                _g_income  = _gm.get("current_income") or 0
+                _g_repl    = _gm.get("replacement_pct") or 0
+                _g_need_t  = _gm.get("income_need_today") or 0
+                _g_ss_t    = _gm.get("ss_today") or 0
+                _g_gap_t   = _gm.get("portfolio_gap_today") or 0
+                _g_gap_r   = _gm.get("gap_at_ret") or 0
+                _g_infl    = _gm.get("inflation") or 0
+                _g_yrs     = _gm.get("years_to_ret") or 0
+                _g_retyrs  = _gm.get("retirement_years")
+                _infl_fac  = (1.0 + _g_infl) ** _g_yrs if _g_yrs else 1.0
+                _g_need_r  = _g_need_t * _infl_fac
+                _g_ss_r    = _g_ss_t * _infl_fac
+
+                _IN_LBL  = ParagraphStyle("in_lbl",  fontSize=10.5, leading=13,
+                                          fontName="Helvetica", textColor=SLATE,
+                                          alignment=TA_LEFT)
+                _IN_LBLB = ParagraphStyle("in_lblb", fontSize=10.5, leading=13,
+                                          fontName="Helvetica-Bold", textColor=NAVY,
+                                          alignment=TA_LEFT)
+                _IN_COLH = ParagraphStyle("in_colh", fontSize=8, leading=10,
+                                          fontName="Helvetica", textColor=GRAY,
+                                          alignment=TA_RIGHT)
+                _IN_NUM  = ParagraphStyle("in_num",  fontSize=11.5, leading=14,
+                                          fontName="Helvetica", textColor=NAVY,
+                                          alignment=TA_RIGHT)
+                _IN_NUMB = ParagraphStyle("in_numb", fontSize=12.5, leading=15,
+                                          fontName="Helvetica-Bold", textColor=NAVY,
+                                          alignment=TA_RIGHT)
+
+                def _sub_lbl(_main, _sub):
+                    return Paragraph(
+                        f"{_main}<br/><font size='8' color='{GRAY.hexval()}'>{_sub}</font>",
+                        _IN_LBL)
+
+                _ss_t_disp = (f"\u2212{_full_money(_g_ss_t)}" if _g_ss_t > 0 else "$0")
+                _ss_r_disp = (f"\u2212{_full_money(_g_ss_r)}" if _g_ss_t > 0 else "$0")
+
+                _in_rows = [
+                    [Paragraph("", _IN_LBL),
+                     Paragraph("TODAY", _IN_COLH),
+                     Paragraph("AT RETIREMENT", _IN_COLH)],
+                    [_sub_lbl("Retirement income need",
+                              f"{_g_repl:.0f}% of {_goal_fmt_money(_g_income)} income"),
+                     Paragraph(_full_money(_g_need_t), _IN_NUM),
+                     Paragraph(_full_money(_g_need_r), _IN_NUM)],
+                    [_sub_lbl("Less: Social Security",
+                              "estimated benefit (today's $)"),
+                     Paragraph(_ss_t_disp, _IN_NUM),
+                     Paragraph(_ss_r_disp, _IN_NUM)],
+                    [Paragraph("Gap funded by portfolio", _IN_LBLB),
+                     Paragraph(_full_money(_g_gap_t), _IN_NUMB),
+                     Paragraph(_full_money(_g_gap_r), _IN_NUMB)],
+                ]
+                _in_tbl = Table(_in_rows,
+                                colWidths=[3.30 * inch, 2.05 * inch, 2.05 * inch])
+                _in_tbl.setStyle(TableStyle([
+                    ("LEFTPADDING",  (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                    ("TOPPADDING",   (0, 0), (0, 0), 0),
+                    ("BOTTOMPADDING",(0, 0), (-1, 0), 5),
+                    ("TOPPADDING",   (0, 1), (-1, -2), 7),
+                    ("BOTTOMPADDING",(0, 1), (-1, -2), 7),
+                    ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
+                    ("LINEBELOW",    (0, 0), (-1, 0), 0.5, BORDER),    # under headers
+                    ("LINEBELOW",    (0, -2), (-1, -2), 0.5, BORDER),  # above the gap
+                    ("BACKGROUND",   (0, -1), (-1, -1), BG_SOFT),      # shade gap row
+                    ("TOPPADDING",   (0, -1), (-1, -1), 8),
+                    ("BOTTOMPADDING",(0, -1), (-1, -1), 8),
+                    ("LEFTPADDING",  (0, -1), (0, -1), 8),
+                    ("RIGHTPADDING", (-1, -1), (-1, -1), 8),
+                ]))
+                story.append(_in_tbl)
+
+                # Assumption + retirement-duration caption (explains the
+                # inflation rate used and what drives the nest-egg target).
+                _cap_bits = []
+                if _g_infl > 0 and _g_yrs:
+                    _cap_bits.append(
+                        f"At-retirement figures grown at <b>{_g_infl*100:.1f}%/yr</b> "
+                        f"inflation over {int(_g_yrs)} yrs.")
+                if _g_retyrs:
+                    _cap_bits.append(
+                        f"Portfolio must cover this gap for ~<b>{int(_g_retyrs)}</b> yrs "
+                        f"in retirement &rarr; target {_goal_fmt_money(_g_target)}.")
+                if _cap_bits:
+                    story.append(Spacer(1, 0.06 * inch))
+                    story.append(Paragraph(
+                        f"<font color='{GRAY.hexval()}' size='8.5'>{' '.join(_cap_bits)}</font>",
+                        ParagraphStyle("in_cap", fontSize=8.5, leading=11,
+                                       fontName="Helvetica", textColor=GRAY,
+                                       alignment=TA_LEFT)))
+                story.append(Spacer(1, 0.12*inch))
+            else:
+                # ── Non-retirement: compact stat cells ──
+                def _g_stat_cell(_lbl, _val):
+                    return Table(
+                        [[Paragraph(
+                            f"<font color='{GRAY.hexval()}' size='7'>{_lbl.upper()}</font>",
+                            ParagraphStyle("gs_lbl", fontSize=7, leading=9,
+                                           textColor=GRAY, fontName="Helvetica",
+                                           alignment=TA_LEFT))],
+                         [Paragraph(
+                            f"<font color='{NAVY.hexval()}' size='14'><b>{_val}</b></font>",
+                            ParagraphStyle("gs_val", fontSize=14, leading=17,
+                                           textColor=NAVY, fontName="Helvetica",
+                                           alignment=TA_LEFT))]],
+                        colWidths=[1.6*inch],
+                    )
+                _g_stat_row = Table(
+                    [[
+                        _g_stat_cell("Target", _goal_fmt_money(_g_target) if _g_target else "—"),
+                        _g_stat_cell("Starting", _goal_fmt_money(_g_start)),
+                        _g_stat_cell("Contribution",
+                                     f"{_goal_fmt_money(_g_monthly)}/mo" if _g_monthly else "—"),
+                        _g_stat_cell("Projected",
+                                     _goal_fmt_money(_g_fv) if (_g_target or _g_fv) else "—"),
+                    ]],
+                    colWidths=[1.85*inch]*4, hAlign="LEFT",
+                )
+                _g_stat_row.setStyle(TableStyle([
+                    ("BACKGROUND",    (0,0), (-1,-1), BG_SOFT),
+                    ("BOX",           (0,0), (-1,-1), 0.5, BORDER),
+                    ("INNERGRID",     (0,0), (-1,-1), 0.5, BORDER),
+                    ("LEFTPADDING",   (0,0), (-1,-1), 9),
+                    ("RIGHTPADDING",  (0,0), (-1,-1), 9),
+                    ("TOPPADDING",    (0,0), (-1,-1), 7),
+                    ("BOTTOMPADDING", (0,0), (-1,-1), 7),
+                    ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+                ]))
+                story.append(_g_stat_row)
+                story.append(Spacer(1, 0.12*inch))
+
+            # ── Funding bar: today → projected → target (non-retirement) ──
+            if (not _g_concept3) and _g_target and _g_target > 0:
+                _gb_w = 7.4 * inch
+                _gb = Drawing(_gb_w, 30)
+                _bar_y, _bar_h = 14, 11
+                _gb.add(Rect(0, _bar_y, _gb_w, _bar_h, rx=5, ry=5,
+                             fillColor=BORDER_SOFT, strokeColor=None))
+                _fill_frac = max(0.0, min(1.0, _g_fv / _g_target))
+                if _fill_frac > 0:
+                    _gb.add(Rect(0, _bar_y, _gb_w * _fill_frac, _bar_h, rx=5, ry=5,
+                                 fillColor=NAVY, strokeColor=None))
+                _gb.add(String(0, 2, f"Saved today · {_goal_fmt_money(_g_start)}",
+                               fontName="Helvetica", fontSize=8,
+                               fillColor=NAVY, textAnchor="start"))
+                _g_end_lbl = "Nest egg" if _g_is_ret else "Target"
+                _gb.add(String(_gb_w, 2, f"{_g_end_lbl} · {_goal_fmt_money(_g_target)}",
+                               fontName="Helvetica", fontSize=8,
+                               fillColor=ACCENT, textAnchor="end"))
+                if _g_years:
+                    _mid_lbl = f"{_g_years} yrs"
+                    if _g_ret > 0:
+                        _mid_lbl += f" · {_g_ret*100:.1f}%/yr"
+                    _gb.add(String(_gb_w / 2.0, 2, _mid_lbl,
+                                   fontName="Helvetica", fontSize=8,
+                                   fillColor=GRAY, textAnchor="middle"))
+                story.append(_gb)
+                _cap = ""
+                if _g_fund_pct is not None:
+                    _cap = (f"Projected funding: <font color='{NAVY.hexval()}'><b>"
+                            f"{_g_fund_pct:.0f}% of target</b></font>")
+                    if _g_req_pct is not None:
+                        _cap += f" &nbsp;&middot;&nbsp; reaches target at ~{_g_req_pct:.1f}%/yr"
+                    _g_cg = _gm.get("contribution_growth") or 0
+                    if _g_cg > 0:
+                        _cap += (f" &nbsp;&middot;&nbsp; contributions step up "
+                                 f"{_g_cg*100:.1f}%/yr")
+                if _cap:
+                    story.append(Paragraph(
+                        _cap,
+                        ParagraphStyle("goal_fund_cap", fontSize=9, leading=12,
+                                       textColor=GRAY, fontName="Helvetica",
+                                       alignment=TA_LEFT, spaceBefore=2),
+                    ))
+                story.append(Spacer(1, 0.10*inch))
+
+            # ── Focus areas row removed — client priorities already
+            #    appear at the top of the page, so the duplicate strip
+            #    here was redundant. (The 0.10" spacer above provides
+            #    the trailing breathing room before the next section.)
+        except Exception as _goal_err:
+            story.append(Paragraph(
+                f"<i>Investment goal section unavailable: {_goal_err}</i>",
+                ParagraphStyle("goal_err", fontSize=9, leading=12,
+                               textColor=GRAY, fontName="Helvetica-Oblique"),
+            ))
 
     # ── Section header for the current portfolio block ──────────
     # Renamed from "How your portfolio sits today" → "Your Current
@@ -8276,7 +9662,11 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         ("BOTTOMPADDING",(0,0), (-1,-1), 4),
     ]))
     _curr_portfolio_block.append(_cur_row)
-    story.append(KeepTogether(_curr_portfolio_block))
+    # Drop the entire "Your Current Portfolio" card when the client has no
+    # current portfolio — the block above is still assembled (cheap) but
+    # never reaches the story, so page 1 reflows up cleanly.
+    if _has_current_portfolio:
+        story.append(KeepTogether(_curr_portfolio_block))
 
     # ── HOLDINGS DETAIL TABLE (dedicated page) ─────────────
     # Per-holding breakdown matching the reference design: small RISK badge,
@@ -8339,8 +9729,38 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
             import numpy as _np
             from datetime import timedelta as _td2
 
-            _holding_total_usd = float(proposal.get("portfolio_value",
-                                         client_profile.get("portfolio_value", 10000.0)))
+            # Pull the account total from the proposal copy (set by the
+            # "Client's current balance" field in the PDF builder). No
+            # phantom default — when no balance is provided the total is 0
+            # and the band/amounts simply don't render a fake figure.
+            _holding_total_usd = float(
+                proposal.get("portfolio_value")
+                or client_profile.get("portfolio_value") or 0.0)
+
+            # Total balance band — shown on the single-portfolio Holdings
+            # pages (Current / Proposed), where a dollar AMOUNT column is
+            # present. Sits just under the section header so the client sees
+            # the account total before the line-by-line breakdown.
+            if options_data is None and _holding_total_usd > 0:
+                _tot_para = Paragraph(
+                    f'<font face="Helvetica-Bold" size="7.5" color="#b8943f">'
+                    f'TOTAL PORTFOLIO BALANCE</font>&nbsp;&nbsp;&nbsp;'
+                    f'<font face="Helvetica-Bold" size="14" color="#1a2b4a">'
+                    f'${_holding_total_usd:,.0f}</font>',
+                    ParagraphStyle("hold_total", fontSize=14, leading=17,
+                                   alignment=TA_LEFT))
+                _tot_tbl = Table([[_tot_para]], colWidths=[7.4 * inch])
+                _tot_tbl.setStyle(TableStyle([
+                    ("BACKGROUND",    (0, 0), (-1, -1), BG_SOFT),
+                    ("BOX",           (0, 0), (-1, -1), 1.0, NAVY),
+                    ("LINEBELOW",     (0, 0), (-1, -1), 2.0, ACCENT),
+                    ("TOPPADDING",    (0, 0), (-1, -1), 9),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+                    ("LEFTPADDING",   (0, 0), (-1, -1), 13),
+                    ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+                ]))
+                story.append(_tot_tbl)
+                story.append(Spacer(1, 0.12 * inch))
 
             # ── Comparison-mode setup ──
             # When options_data is provided (Proposed Holdings page),
@@ -8581,17 +10001,11 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
             _axis_min = -_axis_span * 1.05
             _axis_max =  _axis_span * 1.05
 
-            # Sort by RISK SCORE descending — riskiest at the top, calmest
-            # at the bottom. Per advisor feedback, this orders the table
-            # by the same dimension the badges encode visually, so the
-            # reader's eye tracks consistently top→bottom.
-            #
-            # In comparison mode, the sort key is (group, -score) so
-            # Group A (Option #1 holdings) always sits above Group B
-            # (tickers held only by Opt #2 / #3). Inside each group the
-            # by-risk-score-descending order is preserved.
+            # Sort by WEIGHT descending — largest position at the top down
+            # to the smallest. (Comparison mode keeps its group + risk-score
+            # ordering so Option #1 holdings sit above Opt #2/#3-only rows.)
             if options_data is None:
-                _holding_meta.sort(key=lambda m: -int(m[2]))
+                _holding_meta.sort(key=lambda m: -float(m[1] or 0))
             else:
                 _holding_meta.sort(key=lambda m: (m[5], -int(m[2])))
 
@@ -8872,6 +10286,30 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                     ("LINEBELOW",     (0,2), (-1,-2), 0.25, BORDER_SOFT),
                 ]))
             story.append(holdings_tbl)
+            # Blended (allocation-weighted) fund expense ratio for this
+            # portfolio. Rendered in single-portfolio mode only, so it
+            # appears beneath both the Current Holdings and Proposed
+            # Holdings tables — the reader sees the portfolio's total fund
+            # cost, not just the per-holding figures in the column above.
+            if options_data is None:
+                try:
+                    _bw_er, _bw_cov = weighted_expense_ratio(tickers, weights)
+                    _bw_txt = (
+                        f"Blended fund expense ratio: "
+                        f"<b>{(_bw_er or 0.0) * 100:.2f}%</b> per year "
+                        f"(weighted by allocation)"
+                    )
+                    if _bw_cov is not None and _bw_cov < 99.5:
+                        _bw_txt += (f" — based on {_bw_cov:.0f}% of holdings "
+                                    f"with available expense data")
+                    story.append(Spacer(1, 0.05 * inch))
+                    story.append(KeepTogether([
+                        HRFlowable(width="100%", thickness=1.2, color=NAVY,
+                                   spaceBefore=0, spaceAfter=6),
+                        Paragraph(f"<i>{_bw_txt}</i>", caption),
+                    ]))
+                except Exception:
+                    pass
         except Exception as _he:
             # Graceful fallback: just skip the detailed table
             story.append(Paragraph(
@@ -8896,7 +10334,7 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
     # #1 directly via the same helper the rest of the proposal uses
     # makes the page always render whenever Option #1 has resolvable
     # holdings.
-    if _cur_tickers and _cur_weights:
+    if _has_current_portfolio and _cur_tickers and _cur_weights:
         _render_holdings_page(
             tickers=_cur_tickers,
             weights=_cur_weights,
@@ -9538,39 +10976,45 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
             for _t, _w in zip(tickers, weights):
                 _wmap[_t.upper()] = (float(_w or 0) / _tot_raw) * 100.0
 
+            # Decide SHOW vs ROLL-UP strictly by weight, so "+N more"
+            # always captures this portfolio's SMALLEST allocations
+            # (advisor request). Canonical order is then applied only to
+            # the kept rows, for cross-card row alignment — it no longer
+            # controls which holdings get rolled up.
+            _by_weight = sorted(_wmap.items(), key=lambda x: -x[1])
+            _rollup_count = 0
+            _hidden_sum = 0.0
+            if max_holdings is not None and len(_by_weight) > max_holdings:
+                _kept_set = _by_weight[:max_holdings - 1]
+                _hidden   = _by_weight[max_holdings - 1:]
+                _hidden_sum = sum(p for _, p in _hidden)
+                _rollup_count = len(_hidden)
+            else:
+                _kept_set = _by_weight
+            _kept_tickers = {t for t, _ in _kept_set}
+
             if canonical_order:
-                # Use canonical order for any ticker present in this pick;
-                # append unknown tickers (not in canonical_order) at end
-                # by weight desc.
+                # Order the kept rows by canonical position so the same
+                # ticker lands in the same slot across cards; kept tickers
+                # absent from canonical_order are appended by weight desc.
                 pairs = []
                 _seen = set()
                 for _tk in canonical_order:
                     _tk_u = _tk.upper()
-                    if _tk_u in _wmap:
+                    if _tk_u in _kept_tickers and _tk_u not in _seen:
                         pairs.append((_tk_u, _wmap[_tk_u]))
                         _seen.add(_tk_u)
-                # Any tickers in this pick not in canonical_order:
-                _extras = [(t, p) for t, p in _wmap.items() if t not in _seen]
-                _extras.sort(key=lambda x: -x[1])
+                _extras = sorted(
+                    [(t, p) for t, p in _kept_set if t not in _seen],
+                    key=lambda x: -x[1],
+                )
                 pairs.extend(_extras)
             else:
-                # Default: sort by weight desc
-                pairs = sorted(_wmap.items(), key=lambda x: -x[1])
+                pairs = list(_kept_set)   # already weight desc
 
-            # Length gating — truncate to top (max_holdings - 1) and add
-            # a rollup row for the remainder. The rollup row is marked
-            # with a sentinel "_rollup" ticker so _row_for knows to
-            # render it as a gray swatch + italic "+N more" caption +
-            # the summed weight of the hidden holdings.
-            _rollup_count = 0
-            if max_holdings is not None and len(pairs) > max_holdings:
-                _kept = max_holdings - 1   # reserve last slot for rollup row
-                _hidden = pairs[_kept:]
-                _hidden_sum = sum(p for _, p in _hidden)
-                _rollup_count = len(_hidden)
-                pairs = pairs[:_kept] + [
-                    (f"_rollup:{_rollup_count}", _hidden_sum),
-                ]
+            # Append the rollup row (smallest holdings) at the bottom.
+            if _rollup_count > 0:
+                pairs.append((f"_rollup:{_rollup_count}", _hidden_sum))
 
             sm_style = ParagraphStyle("legend_t", fontName="Helvetica",
                                        fontSize=font_size,
@@ -10194,21 +11638,11 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
     if _opt1_resolved and _opt1_resolved[3] and _opt1_resolved[4]:
         (_o1_lbl, _o1_sub, _o1_tk,
          _prop_tickers, _prop_weights, _prop_score) = _opt1_resolved
-        # Pack the three options' (label, tickers, weights) for the
-        # comparison view. Missing options (advisor left a slot as
-        # "— none —" or chose 📁/🧩 that didn't resolve to tickers)
-        # contribute empty lists, which produce "—" cells throughout
-        # their sub-column.
-        def _opt_data_tuple(_resolved, _i):
-            if not _resolved:
-                return (f"OPT {_i}", [], [])
-            _, _, _, _tks, _wts, _ = _resolved
-            return (f"OPT {_i}", _tks or [], _wts or [])
-        _options_compare = [
-            _opt_data_tuple(_opt1_resolved, 1),
-            _opt_data_tuple(_opt2_resolved, 2),
-            _opt_data_tuple(_opt3_resolved, 3),
-        ]
+        # Proposed Holdings shows ONLY the proposed (Option #1) portfolio —
+        # single-portfolio layout (RISK | HOLDING | AMOUNT | % OF PORTFOLIO |
+        # SEC YIELD | EXPENSE RATIO | 6-MO RANGE), no three-option comparison
+        # columns. A blended fund expense ratio is summarized beneath the
+        # table (see _render_holdings_page).
         _render_holdings_page(
             tickers=_prop_tickers,
             weights=_prop_weights,
@@ -10216,15 +11650,180 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
             eyebrow="Section 2",
             title="Proposed Holdings",
             intro_text=(
-                "The proposed allocation's full breakdown alongside the "
-                "two alternate options. Each row shows the per-option "
-                "weight in the % OF PORTFOLIO columns — the highest "
-                "weight in each row is bolded. Use this alongside the "
-                "Current Holdings section above to compare positions "
-                "across the three options."
+                "The full breakdown of the proposed allocation: each "
+                "holding's weight, recent risk profile, yield, expense "
+                "ratio, and 6-month price range."
+                + (
+                    " Use this alongside the Current Holdings section "
+                    "above to compare positions."
+                    if _has_current_portfolio else ""
+                )
             ),
-            options_data=_options_compare,
         )
+
+    # ── RMD Projections (opt-in — sections["rmd_projection"]) ─────────
+    # Renders right after Proposed Holdings, in PORTRAIT (Proposed Holdings
+    # left us in portrait). Projects required minimum distributions year by
+    # year using the IRS Uniform Lifetime Table and SECURE 2.0 start ages.
+    _rmd_cfg = (client_profile or {}).get("rmd") or {}
+    if sections.get("rmd_projection") and float(_rmd_cfg.get("balance") or 0) > 0:
+        _rmd_rows, _rmd_sum = _rmd_projection(
+            balance=float(_rmd_cfg.get("balance") or 0.0),
+            birth_year=int(_rmd_cfg.get("birth_year") or 1953),
+            growth_rate=float(_rmd_cfg.get("growth_rate") or 5.0),
+            current_year=date.today().year,
+            end_age=int(_rmd_cfg.get("end_age") or 95),
+        )
+        story.append(PageBreak())
+        story.append(section_header("Section 2", "Required Minimum Distributions"))
+
+        if not _rmd_rows:
+            story.append(Paragraph(
+                "No required minimum distributions fall within the projection "
+                "window for the values provided.", _intro_desc_style))
+        else:
+            def _usd(v): return "${:,.0f}".format(v)
+            _g_pct = float(_rmd_cfg.get("growth_rate") or 5.0)
+            _start_bal = _rmd_rows[0]["begin"]
+
+            _intro = (
+                f"Projected required minimum distributions from the tax-deferred "
+                f"balance, age {_rmd_rows[0]['age']} through {_rmd_sum['end_age']}. "
+                f"Each year's RMD is the prior year-end balance divided by the IRS "
+                f"Uniform Lifetime Table factor; the remaining balance grows "
+                f"{_g_pct:.1f}% per year."
+            )
+            if _rmd_sum["pre_years"]:
+                _intro += (
+                    f" The balance is grown {_g_pct:.1f}% per year from today to "
+                    f"the first RMD year ({_rmd_sum['first_year']})."
+                )
+            story.append(Spacer(1, 0.02 * inch))
+            story.append(Paragraph(_intro, _intro_desc_style))
+            story.append(Spacer(1, 0.12 * inch))
+
+            # ── Summary band: starting balance, return rate, outcomes ──
+            _band = ParagraphStyle("rmd_band", fontName="Helvetica",
+                                   fontSize=8, leading=16, textColor=NAVY,
+                                   alignment=TA_LEFT)
+            def _band_cell(label, value):
+                return Paragraph(
+                    f'<font size="6.6" color="#6b6b6b">{label}</font><br/>'
+                    f'<font size="12.5"><b>{value}</b></font>', _band)
+            _sum_tbl = Table([[
+                _band_cell("STARTING BALANCE", _usd(_start_bal)),
+                _band_cell("RETURN RATE", f"{_g_pct:.1f}%"),
+                _band_cell(f"FIRST RMD · {_rmd_sum['first_year']}",
+                           _usd(_rmd_sum["first_rmd"])),
+                _band_cell("TOTAL RMDs", _usd(_rmd_sum["total_rmd"])),
+                _band_cell(f"BALANCE · AGE {_rmd_sum['end_age']}",
+                           _usd(_rmd_sum["end_balance"])),
+            ]], colWidths=[1.38 * inch] * 5)
+            _sum_tbl.setStyle(TableStyle([
+                ("BACKGROUND",   (0, 0), (-1, -1), BG_SOFT),
+                ("BOX",          (0, 0), (-1, -1), 1.0, NAVY),
+                ("LINEAFTER",    (0, 0), (-2, -1), 0.5, BORDER),
+                ("TOPPADDING",   (0, 0), (-1, -1), 9),
+                ("BOTTOMPADDING",(0, 0), (-1, -1), 9),
+                ("LEFTPADDING",  (0, 0), (-1, -1), 9),
+                ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
+            ]))
+            story.append(_sum_tbl)
+            story.append(Spacer(1, 0.14 * inch))
+
+            # ── Balance trajectory (projected ending balance over time) ──
+            _cw, _chh = 6.9 * inch, 1.25 * inch
+            _d = Drawing(_cw, _chh)
+            _series = [_rmd_rows[0]["begin"]] + [r["end"] for r in _rmd_rows]
+            _vmax = max(_series) or 1.0
+            _mN = len(_series)
+            _pl, _pr, _pt, _pb = 4, 4, 12, 16
+            _pw = _cw - _pl - _pr
+            _ph = _chh - _pt - _pb
+            _d.add(Line(_pl, _pb + _ph, _pl + _pw, _pb + _ph,
+                        strokeColor=BORDER_SOFT, strokeWidth=0.4))
+            _d.add(Line(_pl, _pb, _pl + _pw, _pb,
+                        strokeColor=BORDER, strokeWidth=0.5))
+            _pts = []
+            for _i, _v in enumerate(_series):
+                _x = _pl + ((_pw * _i / (_mN - 1)) if _mN > 1 else 0)
+                _y = _pb + (_ph * (_v / _vmax))
+                _pts.extend([_x, _y])
+            _d.add(PolyLine(points=_pts, strokeColor=NAVY, strokeWidth=1.6))
+            _d.add(Circle(_pts[-2], _pts[-1], 2.4, fillColor=ACCENT,
+                          strokeColor=None))
+            _d.add(String(_pl, _pb + _ph + 3, "Projected balance",
+                          fontName="Helvetica-Bold", fontSize=7.5,
+                          fillColor=NAVY))
+            _d.add(String(_pl + _pw, _pb + _ph + 3, _usd(_vmax),
+                          fontName="Helvetica", fontSize=7, fillColor=GRAY,
+                          textAnchor="end"))
+            _d.add(String(_pl, _pb - 11, f"Age {_rmd_rows[0]['age']}",
+                          fontName="Helvetica", fontSize=7, fillColor=GRAY))
+            _d.add(String(_pl + _pw, _pb - 11, f"Age {_rmd_rows[-1]['age']}",
+                          fontName="Helvetica", fontSize=7, fillColor=GRAY,
+                          textAnchor="end"))
+            story.append(_d)
+            story.append(Spacer(1, 0.14 * inch))
+
+            # ── Year-by-year projection table (two columns side-by-side so
+            #    the full schedule fits one portrait page) ──
+            _tbl_style = TableStyle([
+                ("BACKGROUND",    (0, 0), (-1, 0), NAVY),
+                ("TEXTCOLOR",     (0, 0), (-1, 0), WHITE),
+                ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
+                ("TEXTCOLOR",     (0, 1), (-1, -1), CHARCOAL),
+                ("ALIGN",         (0, 0), (-1, -1), "RIGHT"),
+                ("ALIGN",         (0, 0), (1, -1), "CENTER"),
+                ("FONTSIZE",      (0, 0), (-1, -1), 8),
+                ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 5),
+                ("TOPPADDING",    (0, 0), (-1, -1), 3.4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3.4),
+                ("ROWBACKGROUNDS",(0, 1), (-1, -1), [WHITE, BG_SOFT]),
+                ("BOX",           (0, 0), (-1, -1), 1.0, NAVY),
+                ("LINEBELOW",     (0, 0), (-1, 0), 1.2, ACCENT),
+            ])
+            def _mk_block(rows_slice):
+                _data = [["Age", "Year", "Factor", "RMD", "Balance"]]
+                for r in rows_slice:
+                    _data.append([str(r["age"]), str(r["year"]),
+                                  f"{r['factor']:.1f}", _usd(r["rmd"]),
+                                  _usd(r["end"])])
+                _t = Table(_data, colWidths=[0.4 * inch, 0.52 * inch,
+                                             0.48 * inch, 0.9 * inch, 1.0 * inch])
+                _t.setStyle(_tbl_style)
+                _t.repeatRows = 1
+                return _t
+            _half = (len(_rmd_rows) + 1) // 2
+            _left_blk = _mk_block(_rmd_rows[:_half])
+            _right_blk = (_mk_block(_rmd_rows[_half:]) if _rmd_rows[_half:]
+                          else "")
+            _two_up = Table([[_left_blk, _right_blk]],
+                            colWidths=[3.45 * inch, 3.45 * inch])
+            _two_up.setStyle(TableStyle([
+                ("VALIGN",       (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING",  (0, 0), (0, -1), 0),
+                ("RIGHTPADDING", (0, 0), (0, -1), 10),
+                ("LEFTPADDING",  (1, 0), (1, -1), 10),
+                ("RIGHTPADDING", (1, 0), (-1, -1), 0),
+                ("TOPPADDING",   (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING",(0, 0), (-1, -1), 0),
+            ]))
+            story.append(_two_up)
+            story.append(Spacer(1, 0.12 * inch))
+
+            story.append(Paragraph(
+                "Estimates only — not tax advice. Figures use the IRS Uniform "
+                "Lifetime Table (Pub. 590-B) and SECURE 2.0 starting ages (73 if "
+                "born 1951–1959, 75 if 1960 or later). RMDs apply to traditional "
+                "IRA / SEP / SIMPLE and most employer plans; Roth IRAs have no "
+                "lifetime RMD for the original owner. The projection assumes a "
+                "constant growth rate; actual balances, returns, and tax law will "
+                "vary. The spouse-more-than-10-years-younger (Joint Life) case is "
+                "not reflected.", _intro_desc_style))
 
     # Section 4 (Notable Market Periods) is LANDSCAPE — same as
     # Section 3 (Recommendations). The wider page gives each event
@@ -10772,10 +12371,11 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
             # reference is no longer accurate.
             _bt_desc_tbl = Table(
                 [[Paragraph(
-                    "The table below compares total return, annualized "
-                    "volatility, Sharpe ratio, and maximum drawdown "
-                    "across each proposed portfolio and your current "
-                    "portfolio over 1, 3, 5, and 10 year horizons.",
+                    "The table below compares the compound annual growth "
+                    "rate (CAGR), annualized volatility, maximum drawdown, "
+                    "and Sharpe ratio across each proposed portfolio, your "
+                    "current portfolio, and the S&amp;P 500 and aggregate-bond "
+                    "benchmarks over 1, 3, 5, and 10 year horizons.",
                     _intro_desc_style)]],
                 colWidths=[7.4*inch],
                 hAlign="LEFT",
@@ -10852,6 +12452,16 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                         (_bt_label, ptks, pws)
                     )
 
+            # Fixed market benchmarks — added so the grid compares the
+            # client's portfolios against a 100% S&P 500 and a 100%
+            # aggregate-bond reference. These render as two extra rows under
+            # every metric group, alongside Current / Proposed / Conservative
+            # / Aggressive, for six comparisons in total. Tracked by name so
+            # the table builder can style them as muted "benchmark" rows.
+            _bt_benchmark_names = ("S&P 500 (SPY)", "Agg Bond (BND)")
+            bt_portfolios.append(("S&P 500 (SPY)",  ["SPY"], [100.0]))
+            bt_portfolios.append(("Agg Bond (BND)", ["BND"], [100.0]))
+
             # Fetch price data for all unique tickers across ALL portfolios
             all_tickers = set()
             for _, tks, _ in bt_portfolios:
@@ -10898,7 +12508,7 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                         return (_rets[cols] * aligned).sum(axis=1)
 
                     def _stats_over_window(r, days):
-                        """Return (total%, vol%, sharpe, maxdd%) over last N days.
+                        """Return (total, vol, sharpe, maxdd, cagr) over last N days.
 
                         Sharpe is excess-return Sharpe ((CAGR - rf) / vol) so it
                         matches the rest of the codebase's definition. Old code
@@ -10906,9 +12516,9 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                         omitting rf and using arithmetic mean instead of CAGR.
                         """
                         if r is None or len(r) < days * 0.3:
-                            return (None, None, None, None)
+                            return (None, None, None, None, None)
                         r_w = r.iloc[-days:] if len(r) > days else r
-                        if len(r_w) < 10: return (None, None, None, None)
+                        if len(r_w) < 10: return (None, None, None, None, None)
                         total = float((1 + r_w).prod() - 1)
                         vol = float(r_w.std() * _np.sqrt(252))
                         # CAGR over the actual window
@@ -10917,7 +12527,7 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                         sharpe = _shared_sharpe(ann_r, vol)
                         equity = (1 + r_w).cumprod()
                         dd = float(((equity / equity.cummax()) - 1).min())
-                        return (total, vol, sharpe, dd)
+                        return (total, vol, sharpe, dd, ann_r)
 
                     # ── Build the table: cols = periods, rows = portfolios within metric ──
                     # Per advisor feedback: periods (1Y / 3Y / 5Y / 10Y)
@@ -10965,20 +12575,26 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                     # Group label rows (full-width navy header strips)
                     # and per-portfolio rows under each.
                     _metric_groups = [
-                        ("Total Return",          0, "pct"),
+                        ("Compound Annual Growth Rate (CAGR)", 4, "pct"),
+                        ("Maximum Drawdown",      3, "pct"),
                         ("Annualized Volatility", 1, "pct_abs"),
                         ("Sharpe Ratio",          2, "ratio"),
-                        ("Maximum Drawdown",      3, "pct"),
                     ]
 
                     # Track which rows are group headers (for styling)
                     _group_header_rows = []
+                    # Track benchmark rows (S&P 500 / Agg Bond) so they can be
+                    # styled as muted reference lines, distinct from the
+                    # client's proposed/current portfolios.
+                    _benchmark_rows = []
                     for _grp_label, _stat_idx, _kind in _metric_groups:
                         # Group header row: spans all columns, just the label
                         _group_header_rows.append(len(bt_rows))
                         bt_rows.append([_grp_label] + [""] * len(_period_labels))
                         # Then one row per portfolio
                         for _pi, _pname in enumerate(_portfolio_names):
+                            if _pname in _bt_benchmark_names:
+                                _benchmark_rows.append(len(bt_rows))
                             _row = [f"   {_pname}"]
                             for _period_idx, _ in enumerate(_periods):
                                 _stat_tuple = _stats[_pi][_period_idx]
@@ -11010,8 +12626,11 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                         ("ALIGN",        (0,0), (0,-1),  "LEFT"),
                         ("LEFTPADDING",  (0,0), (-1,-1), 8),
                         ("RIGHTPADDING", (0,0), (-1,-1), 8),
-                        ("TOPPADDING",   (0,0), (-1,-1), 5),
-                        ("BOTTOMPADDING",(0,0), (-1,-1), 5),
+                        # Padding tightened 5→3.5 so six portfolios (Current,
+                        # Proposed, Conservative, Aggressive + 2 benchmarks)
+                        # still fit on one portrait page within KeepTogether.
+                        ("TOPPADDING",   (0,0), (-1,-1), 3.5),
+                        ("BOTTOMPADDING",(0,0), (-1,-1), 3.5),
                         ("BOX",          (0,0), (-1,-1), 1.0, NAVY),
                         ("LINEBELOW",    (0,0), (-1,0), 1.2, ACCENT),
                     ]
@@ -11024,8 +12643,15 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                         _tbl_style.append(("FONTSIZE",   (0,_gi), (-1,_gi), 9.5))
                         _tbl_style.append(("SPAN",       (0,_gi), (-1,_gi)))
                         _tbl_style.append(("ALIGN",      (0,_gi), (-1,_gi), "LEFT"))
-                        _tbl_style.append(("TOPPADDING", (0,_gi), (-1,_gi), 7))
-                        _tbl_style.append(("BOTTOMPADDING",(0,_gi),(-1,_gi), 4))
+                        _tbl_style.append(("TOPPADDING", (0,_gi), (-1,_gi), 5))
+                        _tbl_style.append(("BOTTOMPADDING",(0,_gi),(-1,_gi), 3))
+                    # Benchmark rows (S&P 500 / Agg Bond) render italic + muted
+                    # gray so they read as reference context, not as one of the
+                    # client's proposed portfolios — mirroring how the Notable
+                    # Market Periods charts treat the SPY/BND benchmark lines.
+                    for _br in _benchmark_rows:
+                        _tbl_style.append(("FONTNAME",  (0,_br), (-1,_br), "Helvetica-Oblique"))
+                        _tbl_style.append(("TEXTCOLOR", (0,_br), (-1,_br), GRAY))
                     bt_tbl.setStyle(TableStyle(_tbl_style))
                     # Wrap table + caption together so they never split
                     _bt_caption_centered = ParagraphStyle(
@@ -11036,8 +12662,11 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                         bt_tbl,
                         Paragraph(
                             "<i>Each row reports a single metric over 1, 3, 5, "
-                            "and 10-year windows. Sharpe ratio uses excess return "
-                            "over the risk-free rate.</i>",
+                            "and 10-year windows. CAGR is the compound annual "
+                            "growth rate over each window; Sharpe ratio is the "
+                            "annualized return in excess of the risk-free rate "
+                            "divided by volatility (standard deviation) — i.e., "
+                            "return earned per unit of risk.</i>",
                             _bt_caption_centered,
                         ),
                     ]))
@@ -11084,18 +12713,34 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
             proposal, client_profile, _firm_settings,
         )
 
+        # Client's current advisory fee (optional) — shown alongside the
+        # proposed fee so the prospect can compare what they pay now vs the
+        # proposal. None/0 means "not applicable" and nothing extra renders.
+        _cur_fee_pct = None
+        try:
+            _cfv = float((proposal or {}).get("current_advisory_fee_pct"))
+            if 0 < _cfv <= 10:
+                _cur_fee_pct = round(_cfv, 2)
+        except (TypeError, ValueError):
+            _cur_fee_pct = None
+
         # Intro paragraph styled to match pages 2/3 — small italic
         # Helvetica-Oblique sitting tight beneath the header rule.
+        _cur_clause = ""
+        if _cur_fee_pct is not None:
+            _cur_clause = (f" Your current advisory fee of "
+                           f"<b>{_cur_fee_pct:.2f}%</b> (\u25CF) is included for "
+                           f"comparison.")
         _fee_desc_tbl = Table(
             [[Paragraph(
                 f"This table illustrates how different annual advisory "
                 f"fee levels affect the growth of a hypothetical $100 "
                 f"starting balance over common time horizons. Your firm's "
-                f"fee of <b>{_adv_fee_pct_for_compare:.2f}%</b> is shown "
-                f"alongside industry benchmark levels (0%, 0.75%, 1%, "
-                f"1.5%, 2%, 2.5%) so you can compare. All figures assume "
-                f"a 7% gross annual return compounded monthly. Actual "
-                f"returns will differ.",
+                f"fee of <b>{_adv_fee_pct_for_compare:.2f}%</b> (\u2605) is shown "
+                f"alongside industry benchmark levels (0%, 0.25%, 0.5%, "
+                f"0.75%, 1%, 1.5%, 2%, 2.5%) so you can compare.{_cur_clause} "
+                f"All figures assume a 7% gross annual return compounded "
+                f"monthly. Actual returns will differ.",
                 _intro_desc_style)]],
             colWidths=[7.4*inch],
             hAlign="LEFT",
@@ -11110,21 +12755,47 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         story.append(_fee_desc_tbl)
         story.append(Spacer(1, 0.15*inch))
 
-        # Build a fee table that includes the firm's actual rate alongside
-        # the standard benchmarks. Inserts the firm rate in sorted order so
-        # the table reads as a smooth gradient. If the firm rate matches a
-        # benchmark exactly (e.g. 1.00%), no duplicate is inserted.
-        _benchmark_fees = [0.0, 0.75, 1.0, 1.5, 2.0, 2.5]
-        _all_fees = sorted(set(_benchmark_fees + [round(_adv_fee_pct_for_compare, 2)]))
+        # Build a fee table that includes the firm's actual rate (and the
+        # client's current rate, if given) alongside the standard benchmarks.
+        # Rates are inserted in sorted order so the table reads as a smooth
+        # gradient; duplicates of a benchmark are collapsed.
+        _benchmark_fees = [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5]
+        _extra_fees = [round(_adv_fee_pct_for_compare, 2)]
+        if _cur_fee_pct is not None:
+            _extra_fees.append(_cur_fee_pct)
+        _all_fees = sorted(set(_benchmark_fees + _extra_fees))
         _fee_rows_full = _fee_impact_table_data(fee_levels=_all_fees)
 
-        # Highlight the firm's row by inserting an asterisk marker into the
-        # fee column. ReportLab will pick it up via Paragraph rendering;
-        # for plain string cells we just append " ←" so the row stands out.
+        # Mark the firm's proposed fee and the client's current fee. The
+        # firm's fee is flagged with the firm logo (the uploaded Spartan
+        # mark) when one is configured, falling back to a ★ if not; the
+        # client's current fee stays a ●. If both land on one rate, that
+        # row carries both.
         _firm_fee_str = f"{_adv_fee_pct_for_compare:.2f}%"
+        _cur_fee_str = (f"{_cur_fee_pct:.2f}%" if _cur_fee_pct is not None else None)
+        _logo_ok = os.path.exists(FIRM_LOGO_PATH)
+        _fee_cell_style = ParagraphStyle(
+            "fee_cell", fontName="Helvetica", fontSize=9, leading=11,
+            textColor=CHARCOAL, alignment=TA_LEFT)
         for i, row in enumerate(_fee_rows_full):
-            if i > 0 and row[0] == _firm_fee_str:
-                row[0] = f"{_firm_fee_str}  ★"
+            if i == 0:
+                continue
+            _is_firm = (row[0] == _firm_fee_str)
+            _is_cur = (_cur_fee_str is not None and row[0] == _cur_fee_str)
+            if _is_firm and _logo_ok:
+                _cur_mark = " \u25CF" if _is_cur else ""
+                row[0] = Paragraph(
+                    f'{row[0]}&nbsp;&nbsp;<img src="{FIRM_LOGO_PATH}" '
+                    f'width="12" height="13" valign="middle"/>{_cur_mark}',
+                    _fee_cell_style)
+            else:
+                _marks = ""
+                if _is_firm:
+                    _marks += " \u2605"
+                if _is_cur:
+                    _marks += " \u25CF"
+                if _marks:
+                    row[0] = row[0] + _marks
 
         _fee_tbl_full = Table(
             _fee_rows_full,
@@ -11148,12 +12819,107 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         ]))
         story.append(_fee_tbl_full)
         story.append(Spacer(1, 0.10*inch))
-        story.append(Paragraph(
-            "<i>★ marks your firm's actual fee. Performance figures are "
-            "hypothetical and for illustration only. Past performance does "
-            "not guarantee future results.</i>",
-            caption,
-        ))
+
+        # When the client's current fee is known and differs from the
+        # proposed fee, quantify the gap at the illustrated return: how much
+        # more of every $100 is kept over 10 years at the lower fee.
+        if _cur_fee_pct is not None and abs(_cur_fee_pct - _adv_fee_pct_for_compare) >= 0.005:
+            def _fv100(_fee):
+                _nm = (0.07 - _fee / 100.0) / 12.0
+                return 100.0 * ((1.0 + _nm) ** 120)
+            _diff10 = abs(_fv100(_adv_fee_pct_for_compare) - _fv100(_cur_fee_pct))
+            _lower = ("proposed" if _adv_fee_pct_for_compare < _cur_fee_pct
+                      else "current")
+            _spread = abs(_cur_fee_pct - _adv_fee_pct_for_compare)
+            story.append(Paragraph(
+                f"At the illustrated 7% gross return, the "
+                f"<b>{_spread:.2f}%</b> difference between the current "
+                f"(<b>{_cur_fee_pct:.2f}%</b>) and proposed "
+                f"(<b>{_adv_fee_pct_for_compare:.2f}%</b>) fee is worth about "
+                f"<b>${_diff10:,.2f}</b> per $100 over 10 years — kept under "
+                f"the {_lower} fee.",
+                _intro_desc_style,
+            ))
+            story.append(Spacer(1, 0.08*inch))
+
+        _legend = "<i>" + (
+            "Your firm's mark denotes the proposed fee."
+            if _logo_ok else "\u2605 marks your firm's proposed fee.")
+        if _cur_fee_pct is not None:
+            _legend += " \u25CF marks the client's current fee."
+        _legend += (" Performance figures are hypothetical and for "
+                    "illustration only. Past performance does not guarantee "
+                    "future results.</i>")
+        story.append(Paragraph(_legend, caption))
+
+        # ── Total cost of ownership — proposed portfolios ──────────────
+        # The fee table above covers the *advisory* fee only. Clients also
+        # pay the underlying funds' expense ratios. This block shows each
+        # proposed portfolio's weighted fund expense ratio, the advisory
+        # fee, and the all-in total so the reader sees the complete cost.
+        _toc_opts = [o for o in (_opt1_resolved, _opt2_resolved, _opt3_resolved)
+                     if o and o[3]]   # o[3] = tickers; skip external/saved
+        if _toc_opts:
+            _toc_rows = [["Proposed Portfolio", "Fund Expenses",
+                          "Advisory Fee", "All-In Cost"]]
+            _adv_dec = _adv_fee_pct_for_compare  # already in percent units
+            _toc_partial = False
+            for _o in _toc_opts:
+                _lbl, _tks, _wts = _o[0], _o[3], _o[4]
+                try:
+                    _wer, _cov = weighted_expense_ratio(_tks, _wts)
+                except Exception:
+                    _wer, _cov = 0.0, 0.0
+                _wer_pct = (_wer or 0.0) * 100.0
+                _mark = ""
+                if _cov is not None and _cov < 99.5:
+                    _toc_partial = True
+                    _mark = "*"
+                _toc_rows.append([
+                    str(_lbl),
+                    f"{_wer_pct:.2f}%{_mark}",
+                    f"{_adv_dec:.2f}%",
+                    f"{_wer_pct + _adv_dec:.2f}%",
+                ])
+            _toc_tbl = Table(
+                _toc_rows,
+                colWidths=[2.9*inch, 1.5*inch, 1.5*inch, 1.5*inch],
+            )
+            _toc_tbl.setStyle(TableStyle([
+                ("BACKGROUND",    (0, 0), (-1, 0), NAVY),
+                ("TEXTCOLOR",     (0, 0), (-1, 0), WHITE),
+                ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTNAME",      (-1, 1), (-1, -1), "Helvetica-Bold"),
+                ("TEXTCOLOR",     (-1, 1), (-1, -1), NAVY),
+                ("ALIGN",         (1, 0), (-1, -1), "RIGHT"),
+                ("ALIGN",         (0, 0), (0, -1),  "LEFT"),
+                ("FONTSIZE",      (0, 0), (-1, -1), 9),
+                ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+                ("TOPPADDING",    (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("ROWBACKGROUNDS",(0, 1), (-1, -1), [WHITE, BG_SOFT]),
+                ("BOX",           (0, 0), (-1, -1), 1.0, NAVY),
+                ("LINEBELOW",     (0, 0), (-1, 0),  1.2, ACCENT),
+            ]))
+            story.append(Spacer(1, 0.22*inch))
+            story.append(Paragraph(
+                "<b>Total Cost of Ownership — Proposed Portfolios</b>",
+                _intro_desc_style,
+            ))
+            story.append(Spacer(1, 0.06*inch))
+            story.append(_toc_tbl)
+            _toc_note = ("<i>Fund Expenses is the weighted average net expense "
+                         "ratio of the portfolio's underlying funds. All-In Cost "
+                         "adds the advisory fee. Fund expenses are paid to the "
+                         "fund companies, not the advisor.")
+            if _toc_partial:
+                _toc_note += (" *Expense-ratio data was unavailable for some "
+                              "holdings; the weighted figure covers the rest.")
+            _toc_note += "</i>"
+            story.append(Spacer(1, 0.08*inch))
+            story.append(Paragraph(_toc_note, caption))
 
     # Implementation Plan (formerly Section 5 here) has been moved to the
     # second-to-last page, beneath the Advisor signature card. See the
@@ -11422,10 +13188,28 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
             _combined_block.append(section_header("Section 8", "Implementation Plan"))
             # Header row is fixed; body rows come from the PDF Content
             # tab (advisor edits) or DEFAULT_PDF_CONTENT.
+            # Body cells are Paragraphs (not bare strings) so long Action
+            # text wraps within the column and stacks onto extra lines
+            # instead of overflowing the table's right edge. Header row stays
+            # string-based so the navy/white TableStyle treatment applies.
+            _impl_stage_style = ParagraphStyle(
+                "impl_stage", fontSize=9, leading=12,
+                fontName="Helvetica-Bold", textColor=NAVY_MID)
+            _impl_body_style = ParagraphStyle(
+                "impl_body", fontSize=9, leading=12,
+                fontName="Helvetica", textColor=CHARCOAL)
+
+            def _impl_esc(_s):
+                return str(_s).replace("&", "&amp;").replace("<", "&lt;")
+
             impl_rows = [["Stage", "Cadence", "Action"]]
             for _ir in _pdf_content.get("implementation_plan", []):
                 _ir = (list(_ir) + ["", "", ""])[:3]
-                impl_rows.append([str(_c) for _c in _ir])
+                impl_rows.append([
+                    Paragraph(_impl_esc(_ir[0]), _impl_stage_style),
+                    Paragraph(_impl_esc(_ir[1]), _impl_body_style),
+                    Paragraph(_impl_esc(_ir[2]), _impl_body_style),
+                ])
             tbl = Table(impl_rows, colWidths=[1.5*inch, 1.1*inch, 4.3*inch])
             tbl.setStyle(TableStyle([
                 ("BACKGROUND",   (0,0), (-1,0), NAVY),
@@ -11474,10 +13258,25 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
 
     story.append(Paragraph("Key Definitions", h3))
     # Glossary rows come from the PDF Content tab or DEFAULT_PDF_CONTENT.
+    # Same wrapping fix as Implementation Plan — Paragraph cells so a long
+    # custom Definition wraps within its column instead of running off-table.
+    _gl_term_style = ParagraphStyle(
+        "gl_term", fontSize=9, leading=12,
+        fontName="Helvetica-Bold", textColor=NAVY)
+    _gl_def_style = ParagraphStyle(
+        "gl_def", fontSize=9, leading=12,
+        fontName="Helvetica", textColor=CHARCOAL)
+
+    def _gl_esc(_s):
+        return str(_s).replace("&", "&amp;").replace("<", "&lt;")
+
     glossary = []
     for _gr in _pdf_content.get("key_definitions", []):
         _gr = (list(_gr) + ["", ""])[:2]
-        glossary.append([str(_c) for _c in _gr])
+        glossary.append([
+            Paragraph(_gl_esc(_gr[0]), _gl_term_style),
+            Paragraph(_gl_esc(_gr[1]), _gl_def_style),
+        ])
     if glossary:
         gl = Table(glossary, colWidths=[1.5*inch, 5.4*inch])
         gl.setStyle(TableStyle([
@@ -11993,6 +13792,25 @@ def risk_color(score):
     elif score <= 65: return "#fb923c"
     elif score <= 80: return "#f87171"
     else:             return "#dc2626"
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _pf_quick_score(tickers_tuple, weights_tuple):
+    """Cached portfolio risk score (0–100) for a (tickers, weights) pair.
+
+    Used by the sidebar Portfolio manager to label entries with their risk
+    score. Cached per portfolio (1h) since the underlying security_risk_score
+    fetches 10y of history per ticker — without this, relabeling the picker on
+    every rerun would refetch repeatedly. Returns None on any failure so a
+    data hiccup degrades to "no score" rather than breaking the picker.
+    """
+    try:
+        if not tickers_tuple:
+            return None
+        return int(round(compute_portfolio_risk_score(
+            list(tickers_tuple), list(weights_tuple))))
+    except Exception:
+        return None
+
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def security_risk_score(ticker):
@@ -12702,57 +14520,141 @@ with st.sidebar:
     )
 
     _PLACEHOLDER = "— select —"
-    _saved_dict  = load_saved()
-    _saved_names = sorted(_saved_dict.keys())
-    _preset_names = [k for k, v in POPULAR_PORTFOLIOS.items() if v is not None]
+    _saved_dict   = load_saved()
+    _saved_names  = sorted(_saved_dict.keys())
+    # Institution filter. "Custom" is the folder for your saved portfolios
+    # (📁); a provider option shows only that provider's models. Saved
+    # portfolios show under "Custom" and "All institutions" — not inside a
+    # provider's view.
+    _pf_insts = _portfolio_institutions()
+    _pf_inst = st.selectbox(
+        "Institution", [_INSTITUTION_ALL, "Custom"] + _pf_insts,
+        key="pf_mgr_inst_filter",
+        help="Pick a provider, or Custom for your own saved portfolios.")
+    _preset_names = _preset_labels_for(_pf_inst)  # Custom → []
+    _show_saved_pf = _pf_inst in (_INSTITUTION_ALL, "Custom")
 
-    # ── Deferred reset: applied BEFORE the selectboxes are instantiated ──
-    # Triggered when picking from one dropdown should clear the other.
-    if st.session_state.pop("_sidebar_pf_clear_custom", False):
-        st.session_state["sb_custom_select"] = _PLACEHOLDER
-    if st.session_state.pop("_sidebar_pf_clear_preset", False):
-        st.session_state["sb_preset_select"] = _PLACEHOLDER
+    # Single grouped picker: saved portfolios first (📁), then built-in
+    # Standard presets (📊). Selecting only PREVIEWS the allocation — it
+    # never loads into the Analyzer (Step 1 has its own Securities loader).
+    # Saved entries are labeled with their risk score ("· Risk NN"); presets
+    # are not (scoring the whole preset universe each render would refetch
+    # 10y of history for dozens of tickers — the selected preset's score
+    # still shows in the preview card below). A display→(is_saved, name) map
+    # keeps the appended score from interfering with name resolution.
+    _SAVED_PFX, _PRESET_PFX = "📁 ", "📊 "
+    _pf_meta = {}
+    _pf_options = [_PLACEHOLDER]
+    if _show_saved_pf:
+        for _n in _saved_names:
+            _sp = _saved_dict.get(_n) or {}
+            _sc = _pf_quick_score(tuple(_sp.get("tickers", [])),
+                                  tuple(_sp.get("weights", [])))
+            _disp = f"{_SAVED_PFX}{_n}" + (f"  ·  Risk {_sc}"
+                                           if _sc is not None else "")
+            _pf_meta[_disp] = (True, _n)
+            _pf_options.append(_disp)
+    for _n in _preset_names:
+        _disp = f"{_PRESET_PFX}{_n}"
+        _pf_meta[_disp] = (False, _n)
+        _pf_options.append(_disp)
 
-    _current_src = st.session_state.get("portfolio_source", "")
+    # Deferred reset (after a delete) — runs before the widget instantiates.
+    if st.session_state.pop("_pf_mgr_reset", False):
+        st.session_state["pf_mgr_select"] = _PLACEHOLDER
 
-    # Initialize dropdown selections from current state if the user hasn't
-    # touched them yet (first render after page load / after external load).
-    if "sb_custom_select" not in st.session_state:
-        st.session_state["sb_custom_select"] = (
-            _current_src[2:] if _current_src.startswith("📁 ")
-            and _current_src[2:] in _saved_names else _PLACEHOLDER
-        )
-    if "sb_preset_select" not in st.session_state:
-        st.session_state["sb_preset_select"] = (
-            _current_src if _current_src in _preset_names else _PLACEHOLDER
-        )
-
-    # ── Standard/popular portfolios (built-in presets) ──
-    _sel_preset = st.selectbox(
-        "Standard",
-        [_PLACEHOLDER] + _preset_names,
-        key="sb_preset_select",
+    _sel = st.selectbox(
+        "Select portfolio", _pf_options, key="pf_mgr_select",
+        label_visibility="collapsed",
     )
-    if _sel_preset != _PLACEHOLDER and _sel_preset != _current_src:
-        load_portfolio_into_session(_sel_preset)
-        # User picked a standard one — clear the custom dropdown on next run
-        st.session_state["_sidebar_pf_clear_custom"] = True
-        st.rerun()
 
-    # ── Custom (user-saved portfolios from saved_portfolios.json) ──
-    if _saved_names:
-        _sel_custom = st.selectbox(
-            "Custom",
-            [_PLACEHOLDER] + _saved_names,
-            key="sb_custom_select",
-        )
-        if _sel_custom != _PLACEHOLDER and f"📁 {_sel_custom}" != _current_src:
-            load_portfolio_into_session(f"📁 {_sel_custom}")
-            # User picked a saved one — clear the preset dropdown on next run
-            st.session_state["_sidebar_pf_clear_preset"] = True
-            st.rerun()
-    else:
-        st.caption("_No saved portfolios yet. Save one from the main view to see it here._")
+    def _pf_alloc_for(_is_saved, _name):
+        """[(ticker, weight_pct), …] for a saved or preset selection."""
+        if _is_saved:
+            _sp = load_saved().get(_name) or {}
+            return [(_t, float(_w) * 100.0)
+                    for _t, _w in zip(_sp.get("tickers", []),
+                                      _sp.get("weights", []))]
+        _tks, _wmap = _resolve_preset(_name)
+        if not _tks:
+            return []
+        if _wmap:
+            return [(_t, float(_wmap.get(_t, 0.0))) for _t in _tks]
+        _n2 = len(_tks)
+        return [(_t, 100.0 / _n2) for _t in _tks] if _n2 else []
+
+    if _sel != _PLACEHOLDER and _sel in _pf_meta:
+        _is_saved, _pf_name = _pf_meta[_sel]
+        _alloc    = _pf_alloc_for(_is_saved, _pf_name)
+        if _alloc:
+            # Selected portfolio's risk score (cheap — one portfolio, cached).
+            _sel_score = _pf_quick_score(
+                tuple(_t for _t, _ in _alloc),
+                tuple(_w for _, _w in _alloc),
+            )
+            # Allocation preview — top 8 by weight, remainder rolled to OTHER.
+            _alloc_sorted = sorted(_alloc, key=lambda x: -x[1])
+            _top, _rest = _alloc_sorted[:8], _alloc_sorted[8:]
+            _rows = "".join(
+                '<div style="display:flex;justify-content:space-between;'
+                'font-size:0.72rem;color:#475569;padding:2px 0">'
+                f'<span style="font-weight:700;color:#1a2b4a">{_t}</span>'
+                f'<span>{_w:.1f}%</span></div>'
+                for _t, _w in _top
+            )
+            if _rest:
+                _other_w = sum(_w for _, _w in _rest)
+                _rows += (
+                    '<div style="display:flex;justify-content:space-between;'
+                    'font-size:0.72rem;color:#64748b;padding:2px 0">'
+                    '<span style="font-weight:700">OTHER</span>'
+                    f'<span>{_other_w:.1f}%</span></div>'
+                )
+            st.markdown(
+                '<div style="background:#ffffff;border:1px solid #e2e8f0;'
+                'border-radius:8px;padding:8px 10px;margin:6px 0">'
+                '<div style="font-size:0.6rem;letter-spacing:0.08em;'
+                'text-transform:uppercase;color:#64748b;margin-bottom:4px">'
+                f'Allocations · {len(_alloc)} holdings'
+                + (f' · Risk {_sel_score}' if _sel_score is not None else '')
+                + f'</div>{_rows}</div>',
+                unsafe_allow_html=True,
+            )
+            # Download CSV (saved or preset)
+            _csv = "Ticker,Weight (%)\n" + "\n".join(
+                f"{_t},{_w:.2f}" for _t, _w in _alloc_sorted)
+            st.download_button(
+                "⬇ Download CSV", _csv,
+                file_name=f"{_pf_name.replace(' ', '_')}.csv",
+                mime="text/csv", use_container_width=True, key="pf_mgr_dl",
+            )
+            # Delete — saved portfolios only (presets live in code).
+            if _is_saved:
+                _del_flag = f"_pf_del_confirm_{_pf_name}"
+                if not st.session_state.get(_del_flag):
+                    if st.button("🗑 Delete", key="pf_mgr_del",
+                                 use_container_width=True):
+                        st.session_state[_del_flag] = True
+                        st.rerun()
+                else:
+                    st.caption(
+                        f"Delete **{_pf_name}**? This can't be undone.")
+                    _dc1, _dc2 = st.columns(2)
+                    if _dc1.button("Yes, delete", key="pf_mgr_del_yes",
+                                   use_container_width=True):
+                        _shared_update_json(
+                            SAVE_FILE,
+                            lambda d, n=_pf_name: d.pop(n, None),
+                        )
+                        st.session_state.pop(_del_flag, None)
+                        st.session_state["_pf_mgr_reset"] = True
+                        st.rerun()
+                    if _dc2.button("Cancel", key="pf_mgr_del_no",
+                                   use_container_width=True):
+                        st.session_state.pop(_del_flag, None)
+                        st.rerun()
+        else:
+            st.caption("_Couldn't resolve this portfolio's holdings._")
 
     # ── EXCEL / CSV UPLOAD ─────────────────────────────────────
     # Bulk-load a portfolio from a spreadsheet rather than typing tickers.
@@ -12769,7 +14671,8 @@ with st.sidebar:
         '📤 Upload Portfolio</div>',
         unsafe_allow_html=True,
     )
-    st.caption("Excel (.xlsx) or CSV with ticker + weight or share columns.")
+    st.caption("Excel (.xlsx) or CSV with ticker + weight or share columns. "
+               "Saved to your portfolios (does not load the Analyzer).")
     _upload = st.file_uploader(
         "Choose file",
         type=["csv", "xlsx", "xls"],
@@ -12871,21 +14774,15 @@ with st.sidebar:
                     if not _tks:
                         st.error("No tickers with positive weight in the file.")
                     else:
-                        # Push into session state — same shape load_portfolio_into_session uses
-                        st.session_state.ticker_input_val     = ", ".join(_tks)
-                        st.session_state["ticker_text_input"] = ", ".join(_tks)
-                        st.session_state["loaded_weights"]    = {
-                            t: round(float(w), 1) for t, w in zip(_tks, _ws)
+                        # Stash the parsed portfolio and prompt for a name —
+                        # the sidebar SAVES uploads to saved_portfolios.json
+                        # rather than loading them into the Analyzer (Step 1).
+                        st.session_state["_pf_upload_parsed"] = {
+                            "tickers": _tks,
+                            "weights": [float(w) for w in _ws],
+                            "fname": _upload.name,
                         }
-                        st.session_state.portfolio_source = (
-                            f"📤 Uploaded — {_upload.name}"
-                        )
                         st.session_state["_last_upload_processed"] = _upload.name
-                        st.success(
-                            f"✅ Loaded {len(_tks)} ticker(s) from "
-                            f"`{_upload.name}`. Switch to the Analyzer tab "
-                            f"to review."
-                        )
                         st.rerun()
         except Exception as _up_err:
             st.error(f"Couldn't parse file: {_up_err}")
@@ -12893,6 +14790,48 @@ with st.sidebar:
                 "Expected columns (any case): Ticker/Symbol + one of: "
                 "Weight, Allocation, %, Value, or Shares."
             )
+
+    # ── Save an uploaded portfolio (name prompt) ──────────────
+    # Uploads are SAVED to saved_portfolios.json (so they appear in the
+    # picker above and in the Optimizer), never loaded into the Analyzer.
+    _pf_parsed = st.session_state.get("_pf_upload_parsed")
+    if _pf_parsed:
+        st.caption(
+            f"Parsed **{len(_pf_parsed['tickers'])}** holdings from "
+            f"`{_pf_parsed['fname']}`. Name it to save:"
+        )
+        _up_name = st.text_input(
+            "Save uploaded portfolio as",
+            value=os.path.splitext(_pf_parsed["fname"])[0],
+            key="pf_upload_name", label_visibility="collapsed",
+            placeholder="Name to save as",
+        )
+        _us1, _us2 = st.columns(2)
+        if _us1.button("💾 Save", key="pf_upload_save_btn",
+                       use_container_width=True):
+            _nm = (_up_name or "").strip()
+            if not _nm:
+                st.warning("Enter a name to save.")
+            else:
+                _tks = _pf_parsed["tickers"]
+                _ws  = _pf_parsed["weights"]
+                _tot = sum(_ws) or 1.0
+                _dec = [round(float(w) / _tot, 6) for w in _ws]
+                _shared_update_json(
+                    SAVE_FILE,
+                    lambda d, n=_nm, t=_tks, w=_dec: d.update({
+                        n: {"tickers": t, "weights": w,
+                            "saved_at":
+                                datetime.now().isoformat(timespec="minutes")}
+                    }),
+                )
+                st.session_state.pop("_pf_upload_parsed", None)
+                st.success(f"✅ Saved **{_nm}** to your portfolios.")
+                st.rerun()
+        if _us2.button("Cancel", key="pf_upload_cancel_btn",
+                       use_container_width=True):
+            st.session_state.pop("_pf_upload_parsed", None)
+            st.rerun()
 
     # Composite Optimizer sliders previously lived here in the sidebar.
     # They've moved to the Optimizer tab itself (main_tab3) — that's where
@@ -12918,7 +14857,6 @@ st.markdown(f"""
         {_HEADER_LOGO_SVG}
         <div>
             <h1>Foresight Portfolio Intelligence</h1>
-            <p>Advanced optimization · 13 strategies · Monte Carlo projections · Real-time data</p>
         </div>
     </div>
 </div>
@@ -13071,12 +15009,31 @@ with main_tab1:
         st.session_state["loaded_weights"]            = {}
 
     saved_names   = list(load_saved().keys())
-    preset_names  = [k for k in POPULAR_PORTFOLIOS if not k.startswith("── ") and k != "Custom — Enter Your Own Tickers"]
+
+    # Institution filter. "Custom" is the folder for your own saved
+    # portfolios (📁); the provider options (Schwab / Zacks / WisdomTree / …)
+    # show only that provider's models. Saved/custom portfolios appear under
+    # "Custom" and "All institutions" — not inside a provider's view.
+    _insts = _portfolio_institutions()
+    _inst_filter = st.selectbox(
+        "Institution", [_INSTITUTION_ALL, "Custom"] + _insts,
+        key="portfolio_inst_filter",
+        help="Pick a provider to see only its models, or Custom for your "
+             "own saved portfolios.",
+    )
+    _show_saved = _inst_filter in (_INSTITUTION_ALL, "Custom")
+    preset_names = _preset_labels_for(_inst_filter)  # Custom → []
+
     source_opts   = (
         ["Custom — Enter Your Own Tickers"] +
-        ([f"📁 {n}" for n in saved_names] if saved_names else []) +
+        ([f"📁 {n}" for n in saved_names] if (_show_saved and saved_names) else []) +
         preset_names
     )
+    # Keep the active selection visible even if the current filter would hide
+    # it, so changing the filter never silently drops a loaded portfolio.
+    _cur_src = st.session_state.portfolio_source
+    if _cur_src and _cur_src not in source_opts:
+        source_opts.append(_cur_src)
     src_col, rand_col = st.columns([3, 1])
     sel_src = src_col.selectbox(
         "Load portfolio",
@@ -13255,14 +15212,28 @@ with main_tab1:
                 )
                 custom_weights[ticker] = w
         total = sum(custom_weights.values())
-        if total == 0:
+        if total <= 0:
             st.caption("Set weights above 0 to include your portfolio.")
         elif abs(total - 100.0) < 0.5:
             st.success(f"✅ Total: {total:.1f}% — Your portfolio will be included!")
             custom_weights_valid = True
         else:
-            remaining = 100.0 - total
-            st.warning(f"⚠️ Total: {total:.1f}% — Need {abs(remaining):.1f}% {'more' if remaining > 0 else 'less'}")
+            # Auto-normalize to 100% (proportions preserved) rather than
+            # discarding the allocation. Previously a sum even slightly off
+            # 100% — common when entering an optimizer-rounded Option 1/3
+            # allocation that lands at e.g. 99.8% or 100.2% — left
+            # custom_weights_valid False, which made BOTH the backtest
+            # (cw=None → re-optimized) and submitted_weights (→ equal weight)
+            # silently ignore the advisor's entered weights. Normalizing here
+            # means the portfolio the advisor actually entered is the one
+            # that gets analyzed and fed to the Optimizer.
+            custom_weights = {t: round(w * 100.0 / total, 4)
+                              for t, w in custom_weights.items()}
+            custom_weights_valid = True
+            st.info(
+                f"ℹ️ Total was {total:.1f}% — normalized to 100% with your "
+                f"proportions kept, so your portfolio is used as entered."
+            )
 
 
     # Custom weights
@@ -16368,6 +18339,25 @@ with main_tab4:
     client_profiles      = _safe_load_json(PROFILES_FILE)
     all_client_holdings  = _safe_load_json(CLIENT_HOLDINGS_FILE)
     all_client_watchlist = _safe_load_json(CLIENT_WATCHLISTS_FILE)
+    # User records carry the referral fields the portal writes: referral_code,
+    # referred_by / referred_by_name, and referrals / referrals_sent.
+    all_users            = _safe_load_json("ra_users.json")
+
+    def _user_record_for(profile_key, profile):
+        """Resolve a profile's matching ra_users record. Profiles and users are
+        both keyed by the normalized email, but fall back to the client_email
+        field and a scan in case the normalization ever differs."""
+        u = all_users.get(profile_key)
+        if u:
+            return u
+        pe = (profile.get("client_email") or "").strip().lower()
+        if pe and all_users.get(pe):
+            return all_users.get(pe)
+        target = pe or profile_key
+        for v in all_users.values():
+            if isinstance(v, dict) and (v.get("email", "") or "").strip().lower() == target:
+                return v
+        return {}
 
     if not client_profiles:
         st.markdown("""
@@ -16394,6 +18384,14 @@ with main_tab4:
         sm2.metric("Complete",         complete)
         sm3.metric("Avg Risk Score",   f"{avg_sc:.0f}")
         sm4.metric("High Risk (>60)",  high_r)
+        _total_referred = sum(1 for v in all_users.values()
+                              if isinstance(v, dict) and v.get("referred_by"))
+        if _total_referred:
+            st.caption(
+                f"🔗 {_total_referred} "
+                f"{'client' if _total_referred == 1 else 'clients'} joined via an "
+                f"existing client's invite link."
+            )
         st.markdown("---")
 
         # Sort: Unassociated Reports folder pinned to the top; real clients
@@ -16579,6 +18577,35 @@ with main_tab4:
                         )
                     st.markdown(f"<div>{chips_html}</div>", unsafe_allow_html=True)
 
+                # ── Referrals ──────────────────────────────────────────
+                # "Referred by" (this client arrived via someone's invite link)
+                # and who this client has, in turn, brought in. Pulled from the
+                # ra_users record the portal writes; section hidden when there's
+                # nothing to show.
+                _uref = _user_record_for(profile_key, p)
+                _referred_by_name = (_uref.get("referred_by_name") or "").strip()
+                _refs_list = _uref.get("referrals") if isinstance(_uref.get("referrals"), list) else []
+                _refs_sent = _uref.get("referrals_sent")
+                if not isinstance(_refs_sent, int):
+                    _refs_sent = len(_refs_list)
+                if _referred_by_name or _refs_sent:
+                    st.markdown("---")
+                    st.markdown("**Referrals**")
+                    if _referred_by_name:
+                        st.markdown(f"Referred by **{_referred_by_name}**")
+                    if _refs_sent:
+                        st.markdown(
+                            f"Brought in **{_refs_sent}** "
+                            f"{'client' if _refs_sent == 1 else 'clients'} who signed up:"
+                        )
+                        if _refs_list:
+                            _rrows = [{"Name":   (r.get("name") or "—"),
+                                       "Email":  (r.get("email") or "—"),
+                                       "Joined": (r.get("at") or "—")}
+                                      for r in _refs_list]
+                            st.dataframe(pd.DataFrame(_rrows),
+                                         use_container_width=True, hide_index=True)
+
                 if p.get("questions"):
                     st.markdown("---")
                     st.markdown("**Assessment Responses**")
@@ -16641,21 +18668,24 @@ with main_tab4:
                                 delete_proposal(profile_key, _vid)
                                 st.rerun()
 
-                            # ── Pie charts for the tiers (3 or 4 depending on vintage) ──
-                            # Order matches the new tier-tab strip:
-                            # Option 1 = balanced (proposed), Option 2 = conservative,
-                            # Option 3 = aggressive. Internal keys unchanged.
+                            # ── Risk gauges for the 3 proposals ──────────
+                            # Cleaned-up view: just the risk-score gauges for
+                            # Option 1/2/3. The Broad-ETF Alternate column and
+                            # the allocation pie charts were removed per advisor
+                            # preference. Order matches the tier-tab strip:
+                            # Option 1 = balanced (proposed), Option 2 =
+                            # conservative, Option 3 = aggressive. Internal keys
+                            # (and all save/load/PDF code) unchanged.
                             _tier_cfg_full = [
                                 ("balanced",     "Option 1 (proposed)"),
                                 ("conservative", "Option 2"),
                                 ("aggressive",   "Option 3"),
-                                ("alternate",    "Broad-ETF Alternate"),
                             ]
                             _present = [(k, l) for k, l in _tier_cfg_full
                                         if k in _prop.get("tiers", {})]
                             if _present:
-                                _pie_cols = st.columns(len(_present))
-                                for _pc, (_ptk, _ptlbl) in zip(_pie_cols, _present):
+                                _gauge_cols = st.columns(len(_present))
+                                for _gc, (_ptk, _ptlbl) in zip(_gauge_cols, _present):
                                     _tp = _prop.get("tiers", {}).get(_ptk, {})
                                     _ptks = _tp.get("tickers", [])
                                     _pws  = _tp.get("weights", [])
@@ -16685,58 +18715,46 @@ with main_tab4:
                                             holding_vols=_sh_vols,
                                             portfolio_vol=_saved_pvol,
                                         )
-                                        with _pc:
-                                            # Compact gauge above the pie
+                                        with _gc:
+                                            # The gauge's built-in plotly number
+                                            # (gauge+number mode) gets clipped when
+                                            # the gauge scales up to fill a wide
+                                            # column under use_container_width — the
+                                            # arc well slides past the fixed figure
+                                            # height. So we render the gauge as the
+                                            # arc only and draw the score ourselves
+                                            # as HTML nested into the well, which
+                                            # shows reliably at any screen width.
+                                            _sc = int(max(1, min(99, _saved_score)))
+                                            if _sc <= 33:   _sc_col = "#00A84F"   # green
+                                            elif _sc <= 66: _sc_col = "#E0930A"   # amber
+                                            else:           _sc_col = "#E0302A"   # red
+                                            _g = make_risk_gauge(_saved_score, height=160)
+                                            _g.update_traces(mode="gauge")  # drop built-in number
                                             st.plotly_chart(
-                                                make_risk_gauge(_saved_score, height=140),
+                                                _g,
                                                 use_container_width=True,
                                                 config={"displayModeBar": False},
                                                 key=f"saved_prop_gauge_{profile_key}_{_vid}_{_ptk}",
                                             )
-                                            st.plotly_chart(
-                                                make_allocation_pie(
-                                                    _ptks, _pws,
-                                                    title=_ptlbl,
-                                                    height=340,
-                                                ),
-                                                use_container_width=True,
-                                                config={"displayModeBar": False},
-                                                key=f"saved_prop_pie_{profile_key}_{_vid}_{_ptk}",
+                                            # Score (nested up into the arc well) +
+                                            # option label below. Negative margin
+                                            # pulls the number into the gauge.
+                                            st.markdown(
+                                                f"<div style='text-align:center;margin-top:-66px'>"
+                                                f"<div style='font-size:2.1rem;font-weight:700;"
+                                                f"color:{_sc_col};line-height:1'>{_sc}</div>"
+                                                f"<div style='font-weight:700;font-size:0.95rem;"
+                                                f"color:#111827;margin-top:14px'>{_ptlbl}</div>"
+                                                f"</div>",
+                                                unsafe_allow_html=True,
                                             )
 
-                            # Compact view of the tiers (summary cards, 3 or 4).
-                            # Labels are kept short here because each tile is
-                            # ≤25% of row width. Order matches the new tier-tab
-                            # strip: Proposed=Option 1, Conservative=Option 2,
-                            # Aggressive=Option 3.
-                            _tile_cfg_full = [
-                                ("balanced",     "⚖️ Option 1 (proposed)"),
-                                ("conservative", "🛡️ Option 2"),
-                                ("aggressive",   "🚀 Option 3"),
-                                ("alternate",    "🧭 Broad-ETF Alt."),
-                            ]
-                            _tile_present = [(k, l) for k, l in _tile_cfg_full
-                                             if k in _prop.get("tiers", {})]
-                            if _tile_present:
-                                _tile_cols = st.columns(len(_tile_present))
-                                for _tc, (_tk, _tlabel) in zip(_tile_cols, _tile_present):
-                                    tprop = _prop.get("tiers", {}).get(_tk, {})
-                                    _tc.markdown(
-                                        f"<div style='background:#f9fafb;border:1px solid #e5e7eb;"
-                                        f"border-radius:10px;padding:12px'>"
-                                        f"<div style='font-weight:600;font-size:0.78rem;"
-                                        f"color:#6b7280;margin-bottom:6px'>{_tlabel} · "
-                                        f"target {tprop.get('target_score','?')}</div>"
-                                        f"<div style='font-size:0.72rem;color:#111827'>"
-                                        f"{tprop.get('equity_pct',0):.0f}% eq / "
-                                        f"{tprop.get('bond_pct',0):.0f}% bd / "
-                                        f"{tprop.get('cash_pct',0):.0f}% cash</div>"
-                                        f"<div style='font-size:0.7rem;color:#6b7280;margin-top:4px'>"
-                                        f"{', '.join(tprop.get('tickers', [])[:5])}"
-                                        + ("…" if len(tprop.get('tickers', [])) > 5 else "")
-                                        + "</div></div>",
-                                        unsafe_allow_html=True,
-                                    )
+                            # (Compact per-tier summary cards removed — the
+                            # saved-proposal view now shows only the risk gauges
+                            # for the 3 proposals. Full allocation / target /
+                            # holdings detail still lives in the PDF and the
+                            # Optimizer tab.)
 
                             # Action row for this version (2 columns now;
                             # the prior 3rd column "Build PDF Report" button
@@ -16809,10 +18827,32 @@ with main_tab7:
     st.caption(
         "Customize the closing sections of the client proposal PDF — "
         "everything from Advisor Notes onward. Each box is pre-filled "
-        "with the current wording; edit what you like, then Save. Clear "
-        "a box completely and Save to restore that section's default."
+        "with the current wording; edit what you like, then Save. Use the "
+        "↩ Restore default button inside any section to put just that "
+        "section back to its original wording."
     )
     st.markdown("---")
+
+    # Per-section "restore default" helper. Drops the section's saved
+    # override (so get_pdf_content() falls back to DEFAULT_PDF_CONTENT for
+    # it) and clears the editor's widget state so the box re-seeds from the
+    # default on the rerun. Persists immediately; other sections are left
+    # exactly as they are, including any unsaved edits in their boxes.
+    def _pdfc_restore_button(_section_key, _widget_key, _btn_key):
+        if st.button("↩ Restore default", key=_btn_key,
+                     help="Reset this section to its original wording. "
+                          "Saved immediately; other sections are unaffected."):
+            _cur = load_pdf_content()
+            if isinstance(_cur, dict):
+                _cur.pop(_section_key, None)
+                try:
+                    save_pdf_content(_cur)
+                except Exception as _re_err:
+                    st.error(f"Couldn't restore default: {_re_err}")
+                    st.stop()
+            st.session_state.pop(_widget_key, None)
+            st.toast("Section restored to its default.")
+            st.rerun()
 
     # Effective content (advisor edits layered over defaults) pre-fills
     # the editors so the advisor always starts from real text.
@@ -16828,6 +18868,8 @@ with main_tab7:
             "Advisor note", value=_pdfc["advisor_notes"], height=160,
             key="pdfc_notes_input", label_visibility="collapsed",
         )
+        _pdfc_restore_button("advisor_notes", "pdfc_notes_input",
+                             "pdfc_restore_notes")
 
     with st.expander("Implementation Plan", expanded=False):
         st.caption(
@@ -16840,6 +18882,8 @@ with main_tab7:
             num_rows="dynamic", use_container_width=True,
             key="pdfc_impl_input",
         )
+        _pdfc_restore_button("implementation_plan", "pdfc_impl_input",
+                             "pdfc_restore_impl")
 
     with st.expander("How This Proposal Was Built", expanded=False):
         st.caption(
@@ -16850,6 +18894,8 @@ with main_tab7:
             "Methodology", value=_pdfc["methodology"], height=220,
             key="pdfc_method_input", label_visibility="collapsed",
         )
+        _pdfc_restore_button("methodology", "pdfc_method_input",
+                             "pdfc_restore_method")
 
     with st.expander("Key Definitions", expanded=False):
         st.caption(
@@ -16863,6 +18909,8 @@ with main_tab7:
             num_rows="dynamic", use_container_width=True,
             key="pdfc_kd_input",
         )
+        _pdfc_restore_button("key_definitions", "pdfc_kd_input",
+                             "pdfc_restore_kd")
 
     with st.expander("Disclosures", expanded=False):
         st.caption(
@@ -16875,6 +18923,8 @@ with main_tab7:
             "Disclosures", value=_pdfc["disclosures"], height=300,
             key="pdfc_disc_input", label_visibility="collapsed",
         )
+        _pdfc_restore_button("disclosures", "pdfc_disc_input",
+                             "pdfc_restore_disc")
 
     st.markdown("---")
     if st.button("💾 Save PDF content", type="primary",
