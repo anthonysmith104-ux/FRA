@@ -2503,6 +2503,184 @@ def _screen_register():
 # ─────────────────────────────────────────────────────────────────────────────
 # DASHBOARD
 # ─────────────────────────────────────────────────────────────────────────────
+# ── RMD calculator (client tool) ────────────────────────────────────────────
+# IRS Uniform Lifetime Table (Publication 590-B, Table III): distribution
+# period by age. RMD = prior year-end balance ÷ factor.
+_RMD_UNIFORM_LIFETIME = {
+    72: 27.4, 73: 26.5, 74: 25.5, 75: 24.6, 76: 23.7, 77: 22.9, 78: 22.0,
+    79: 21.1, 80: 20.2, 81: 19.4, 82: 18.5, 83: 17.7, 84: 16.8, 85: 16.0,
+    86: 15.2, 87: 14.4, 88: 13.7, 89: 12.9, 90: 12.2, 91: 11.5, 92: 10.8,
+    93: 10.1, 94: 9.5, 95: 8.9, 96: 8.4, 97: 7.8, 98: 7.3, 99: 6.8, 100: 6.4,
+    101: 6.0, 102: 5.6, 103: 5.2, 104: 4.9, 105: 4.6, 106: 4.3, 107: 4.1,
+    108: 3.9, 109: 3.7, 110: 3.5, 111: 3.4, 112: 3.3, 113: 3.1, 114: 3.0,
+    115: 2.9, 116: 2.8, 117: 2.7, 118: 2.5, 119: 2.3, 120: 2.0,
+}
+
+
+def _rmd_start_age(birth_year: int) -> int:
+    """SECURE 2.0 required-beginning age by birth year: 72 for owners already
+    in RMDs (born ≤1950), 73 for 1951–1959, 75 for 1960 or later."""
+    if birth_year <= 1950:
+        return 72
+    if birth_year <= 1959:
+        return 73
+    return 75
+
+
+def _rmd_schedule_link(label: str) -> str:
+    """HubSpot Meetings link pre-filled with the signed-in client, styled to
+    match the Advisor tab's booking button."""
+    from urllib.parse import urlencode as _urlencode
+    _su = st.session_state.get("fr_user") or {}
+    _sp = {}
+    if (_su.get("first_name") or "").strip(): _sp["firstName"] = _su["first_name"].strip()
+    if (_su.get("last_name")  or "").strip(): _sp["lastName"]  = _su["last_name"].strip()
+    if (_su.get("email")      or "").strip(): _sp["email"]     = _su["email"].strip()
+    url = SCHEDULE_URL + (("?" + _urlencode(_sp)) if _sp else "")
+    return (
+        f'<a href="{url}" target="_blank" rel="noopener" '
+        f'style="display:flex;align-items:center;justify-content:center;'
+        f'width:100%;box-sizing:border-box;text-align:center;'
+        f'background:{THEME["primary"]};color:#fff;padding:14px 16px;'
+        f'border-radius:10px;text-decoration:none;font-weight:600;'
+        f'font-size:0.95rem;margin:4px 0 14px">{label}</a>'
+    )
+
+
+def _render_rmd_tab():
+    """Client-facing RMD estimator. Uses the IRS Uniform Lifetime Table and
+    SECURE 2.0 starting ages; routes the spouse-more-than-10-years-younger
+    case to the advisor (Joint Life table) and notes Roth/inherited
+    exceptions in the disclaimer."""
+    _serif = "font-family:'Source Serif Pro',Georgia,serif"
+    navy = THEME["primary"]; ink = THEME["ink"]; ink2 = THEME["ink2"]
+    line = THEME["line"]; gold = THEME["accent"]; muted = THEME["muted"]
+
+    st.markdown('<div class="fr-eyebrow">Retirement planning</div>',
+                unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="font-size:1.15rem;font-weight:600;color:{ink};'
+        f'letter-spacing:-0.01em;margin-bottom:4px">'
+        f'Required Minimum Distribution</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div style="font-size:0.9rem;color:{ink2};line-height:1.55;'
+        f'margin-bottom:18px">Estimate the minimum you must withdraw from a '
+        f'traditional IRA or workplace retirement plan this year under '
+        f'current IRS rules.</div>',
+        unsafe_allow_html=True,
+    )
+
+    bal = st.number_input(
+        "Account balance — as of December 31 last year",
+        min_value=0.0, step=1000.0, value=0.0, format="%.0f", key="rmd_bal",
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        birth = st.number_input("Birth year", min_value=1900, max_value=2010,
+                                value=1953, step=1, key="rmd_birth")
+    with c2:
+        year = st.number_input("Distribution year", min_value=2023,
+                               max_value=2100, value=datetime.now().year,
+                               step=1, key="rmd_year")
+    spouse = st.checkbox(
+        "My spouse is my sole beneficiary and more than 10 years younger "
+        "than me", key="rmd_spouse",
+    )
+
+    if not bal or bal <= 0:
+        st.caption("Enter your account balance above to see your estimate.")
+    else:
+        age   = int(year) - int(birth)
+        start = _rmd_start_age(int(birth))
+        usd0  = lambda n: "${:,.0f}".format(n)
+
+        def _stat(v, k):
+            return (
+                f'<div style="flex:1;text-align:center;padding:12px 10px">'
+                f'<div style="{_serif};font-size:1.15rem;font-weight:600;'
+                f'color:{navy}">{v}</div>'
+                f'<div style="font-size:0.62rem;letter-spacing:0.1em;'
+                f'text-transform:uppercase;color:{muted};margin-top:3px">{k}'
+                f'</div></div>'
+            )
+
+        def _card(amount, sub, factor, pct, note, warn=False):
+            border = THEME["risk"] if warn else gold
+            nbg = THEME["risk_soft"] if warn else THEME["surface2"]
+            return (
+                f'<div class="fr-card">'
+                f'<div class="fr-eyebrow">Estimated RMD for {int(year)}</div>'
+                f'<div style="{_serif};font-size:2.4rem;font-weight:600;'
+                f'color:{navy};line-height:1.05;letter-spacing:-0.02em">'
+                f'{amount}</div>'
+                f'<div style="font-size:0.85rem;color:{ink2};margin-top:4px">'
+                f'{sub}</div>'
+                f'<div style="display:flex;border:1px solid {line};'
+                f'border-radius:10px;overflow:hidden;margin-top:16px;'
+                f'background:{THEME["surface"]}">'
+                f'{_stat(factor, "Factor")}'
+                f'<div style="width:1px;background:{line}"></div>'
+                f'{_stat(pct, "Of balance")}'
+                f'<div style="width:1px;background:{line}"></div>'
+                f'{_stat(age, "Age this year")}'
+                f'</div>'
+                f'<div style="margin-top:14px;font-size:0.85rem;color:{ink};'
+                f'background:{nbg};border-left:3px solid {border};'
+                f'padding:11px 14px;border-radius:0 8px 8px 0;line-height:1.5">'
+                f'{note}</div>'
+                f'</div>'
+            )
+
+        if age < start:
+            html = _card(
+                "$0", f"No RMD is required for {int(year)}.", "—", "—",
+                f"Your first RMD year is <b>{int(birth) + start}</b>, the year "
+                f"you turn <b>{start}</b>. That first withdrawal can be delayed "
+                f"until April 1 of the following year.",
+            )
+        elif spouse:
+            html = _card(
+                "See your advisor", "Your case uses the IRS Joint Life table.",
+                "Joint", "Lower",
+                "When a spouse more than 10 years younger is your sole "
+                "beneficiary, your RMD is figured from the IRS Joint Life &amp; "
+                "Last Survivor table, which produces a <b>smaller</b> required "
+                "amount. We'll calculate the exact figure with you.",
+                warn=True,
+            )
+        else:
+            look   = min(max(age, 72), 120)
+            factor = _RMD_UNIFORM_LIFETIME[look]
+            rmd    = bal / factor
+            pct    = (1.0 / factor) * 100.0
+            note = (f"Withdraw at least <b>{usd0(rmd)}</b> by "
+                    f"<b>December 31, {int(year)}</b>.")
+            if age == start:
+                note += (f" Since this is your first RMD, you may delay it "
+                         f"until <b>April 1, {int(year) + 1}</b> — but that "
+                         f"means two taxable RMDs in {int(year) + 1}.")
+            html = _card(
+                usd0(rmd),
+                f"{usd0(bal)} ÷ {factor:.1f} (factor for age {look})",
+                f"{factor:.1f}", f"{pct:.2f}%", note,
+            )
+
+        st.markdown(html, unsafe_allow_html=True)
+        st.markdown(_rmd_schedule_link("Talk through your RMD strategy →"),
+                    unsafe_allow_html=True)
+
+    st.caption(
+        "Estimate only — not tax advice. Figures use the IRS Uniform Lifetime "
+        "Table (Publication 590-B) and SECURE 2.0 starting ages (73 if born "
+        "1951–1959, 75 if born 1960 or later). Roth IRAs have no lifetime RMD "
+        "for the original owner; inherited IRAs and the spouse-more-than-10-"
+        "years-younger case are handled separately. Confirm your figures with "
+        "your tax professional or your advisor."
+    )
+
+
 def render_dashboard():
     user = st.session_state.fr_user
     ck   = _client_key()
@@ -2544,9 +2722,10 @@ def render_dashboard():
     # contact details without having to message the advisor; placed at the
     # far right (rightmost = "settings-like" convention; Advisor sits to
     # its left as "their info to my info").
-    (tab_home, tab_goals, tab_holdings,
+    (tab_home, tab_goals, tab_holdings, tab_rmd,
      tab_advisor, tab_my_info) = st.tabs(
-        ["Home", "Financial Goals", "Holdings", "Advisor", "My Info"]
+        ["Home", "Financial Goals", "Holdings", "RMD Calculator",
+         "Advisor", "My Info"]
     )
 
     with tab_home:
@@ -2556,6 +2735,8 @@ def render_dashboard():
         _render_plan_tab(ck)
     with tab_holdings:
         _render_holdings_tab(holdings, ck)
+    with tab_rmd:
+        _render_rmd_tab()
     with tab_advisor:
         _render_advisor_tab()
     with tab_my_info:
