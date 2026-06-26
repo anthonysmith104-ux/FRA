@@ -2396,28 +2396,28 @@ def _screen_register():
         st.caption("Your email is how you'll sign in next time.")
 
         # ── Required agreement ──────────────────────────────────────────
-        # The "Terms & Conditions" / "Privacy Policy" words in the checkbox
-        # label are links. Clicking one adds a ?agree= query param, which we
-        # catch here to open that document in a popup, then clear the param so
-        # the URL stays clean (and the same link can reopen it later). The
-        # submit button stays disabled until the box is checked; acceptance
-        # (version + timestamp) is recorded on the user record below.
-        _ag = st.query_params.get("agree")
-        if _ag in ("terms", "privacy"):
-            try:
-                del st.query_params["agree"]
-            except Exception:
-                pass
-            if _ag == "terms":
+        # Two buttons open the documents directly through st.dialog. The
+        # checkbox label previously held [Terms](?agree=terms)-style markdown
+        # links; a Streamlit update changed link handling so clicking one
+        # reloaded the whole app *inside* the dialog. Buttons calling
+        # _agreement_popup don't depend on link or query-param behavior, so
+        # the consent gate survives Streamlit upgrades. The submit button
+        # stays disabled until the box is checked; acceptance (version +
+        # timestamp) is recorded on the user record below.
+        _tc1, _tc2 = st.columns(2)
+        with _tc1:
+            if st.button("View Terms & Conditions", key="fr_view_terms",
+                         use_container_width=True):
                 _agreement_popup("Terms & Conditions", TERMS_TEXT,
                                  "fr_terms_close", version=TOS_VERSION)
-            else:
+        with _tc2:
+            if st.button("View Privacy Policy", key="fr_view_privacy",
+                         use_container_width=True):
                 _agreement_popup("Privacy Policy", PRIVACY_TEXT,
                                  "fr_privacy_close")
 
         agreed = st.checkbox(
-            "I agree to the [Terms & Conditions](?agree=terms) and "
-            "[Privacy Policy](?agree=privacy)",
+            "I agree to the Terms & Conditions and Privacy Policy",
             key="fr_rg_consent",
         )
 
