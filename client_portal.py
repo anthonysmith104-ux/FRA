@@ -43,6 +43,18 @@ import streamlit.components.v1 as components
 import pandas as pd
 import plotly.graph_objects as go
 
+# ── Firebase sign-in (Google / Facebook / email) ─────────────────────────────
+# Verified sign-in for returning clients, replacing the old email-only lookup.
+# Guarded so a missing/broken module never takes down the open quiz funnel —
+# only the returning-client sign-in path degrades.
+try:
+    import firebase_auth  # type: ignore
+    _FIREBASE_AVAILABLE = True
+except Exception as _fb_err:  # pragma: no cover
+    firebase_auth = None  # type: ignore
+    _FIREBASE_AVAILABLE = False
+    print(f"[firebase_auth] import failed: {_fb_err}")
+
 # ── HubSpot CRM sync ─────────────────────────────────────────────────────────
 # Bridge Streamlit Cloud's secret to the environment variable that
 # hubspot_sync.py looks for. Streamlit's `secrets.toml` is a separate
@@ -1835,6 +1847,7 @@ def _logout():
     st.session_state.fr_answers = {}
     st.session_state.fr_scores  = None
     st.session_state.fr_show_signin = False
+    st.session_state.fr_fb_signout = True
     st.rerun()
 
 
@@ -1869,6 +1882,15 @@ def render_login():
     _ref = st.query_params.get("ref")
     if _ref and not st.session_state.get("fr_ref_code"):
         st.session_state.fr_ref_code = str(_ref).strip()[:32]
+
+    # After a sign-out, clear the in-browser Firebase session once so the
+    # iframe doesn't silently re-authenticate the user on the next sign-in.
+    if st.session_state.pop("fr_fb_signout", False) and _FIREBASE_AVAILABLE \
+            and firebase_auth is not None:
+        try:
+            firebase_auth.logout(key="fr_fb_signout_run")
+        except Exception:
+            pass
 
     step = st.session_state.fr_step
     if   step == "welcome":  _screen_welcome()
@@ -1951,29 +1973,55 @@ def _screen_welcome():
         _spc_l, _form, _spc_r = st.columns([1, 2, 1])
         with _form:
             st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
-            login_email = st.text_input("Email", key="fr_login_email",
-                                        placeholder="you@example.com",
-                                        label_visibility="collapsed")
-            si1, si2 = st.columns([1, 1])
-            with si1:
+
+            if not _FIREBASE_AVAILABLE or firebase_auth is None:
+                st.error("Sign-in is temporarily unavailable. Please try again shortly.")
                 if st.button("Cancel", key="fr_signin_cancel",
                              use_container_width=True):
                     st.session_state.fr_show_signin = False
                     st.rerun()
-            with si2:
-                if st.button("Sign in", type="primary", key="fr_btn_login",
+            else:
+                # Verified sign-in via Google, Facebook, or email. Replaces the
+                # old email-only lookup (which let anyone who knew a client's
+                # address into that client's data). Firebase returns a signed
+                # ID token; we verify it server-side, then map the verified
+                # email onto the existing account.
+                _token = firebase_auth.render_login(key="fr_fb_login")
+
+                if st.button("Cancel", key="fr_signin_cancel",
                              use_container_width=True):
-                    user = find_user(login_email)
-                    if user is None:
-                        st.error("No account found. Take the assessment to create one.")
+                    st.session_state.fr_show_signin = False
+                    st.rerun()
+
+                if _token:
+                    _claims = firebase_auth.verify_token(_token)
+                    if not _claims:
+                        st.error("We couldn't verify that sign-in. Please try again.")
                     else:
-                        # Don't set a "Welcome back" flash — the dashboard's
-                        # "Good morning/afternoon/evening, {name}" greeting
-                        # already acknowledges the user, and stacking a green
-                        # banner on top added visual noise without information.
-                        st.session_state.fr_user  = user
-                        st.session_state.fr_show_signin = False
-                        st.rerun()
+                        _email = (_claims.get("email") or "").strip().lower()
+                        _user = find_user(_email)
+                        if _user is not None:
+                            # Existing account → sign in.
+                            st.session_state.fr_user = _user
+                            st.session_state.fr_show_signin = False
+                            st.rerun()
+                        else:
+                            # Verified identity, but no account on file yet.
+                            # Send them into the assessment to create one,
+                            # pre-filling the name from their Google/Facebook
+                            # profile and remembering the verified email.
+                            _name = (_claims.get("name") or "").strip()
+                            _first, _, _last = _name.partition(" ")
+                            st.session_state.fr_first = _first
+                            st.session_state.fr_last  = _last
+                            st.session_state.fr_prefill_email = _email
+                            st.session_state.fr_show_signin = False
+                            st.session_state.fr_step = "prequiz"
+                            st.session_state.fr_flash = (
+                                "No account yet — let's set one up. "
+                                "It only takes a minute."
+                            )
+                            st.rerun()
 
 
 # ── SCREEN 2: Pre-quiz (name + age) ──────────────────────────────────────────
