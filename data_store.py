@@ -1,110 +1,144 @@
-"""data_store.py — shared GitHub-backed JSON store for the MRB Capital apps.
+"""data_store.py — shared Firestore-backed JSON store for the MRB Capital apps.
 
-Both the client portal and the advisor app read/write the same JSON files
-through this module, so changes made in one app become visible to the other
-within ~60 seconds. The backing store is a private GitHub repo named in
-Streamlit secrets:
+Drop-in replacement for the previous GitHub-backed store. The public interface
+is IDENTICAL — load_json / save_json / update_json / is_remote / clear_cache /
+selftest — so neither client_portal.py nor app.py changes. Only the backend
+moved: GitHub repo  →  Cloud Firestore. The point of the move is to get client
+PII out of a git repo and into a private database.
 
-    [github]
-    token = "github_pat_..."
-    data_repo = "owner/reponame"
+Secrets (already present from the Firebase auth work):
 
-The token must have Contents: Read and write on that one repo.
+    [firebase_service_account]
+    type = "service_account"
+    project_id = "risk-checkup"
+    private_key = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"
+    client_email = "...@risk-checkup.iam.gserviceaccount.com"
+    ...
 
-Public API (designed to drop in for shared.load_json / shared.update_json):
+Public API (unchanged):
 
-    load_json(path, default=...)      -> dict / list — read JSON from store
-    update_json(path, mutator)        -> None       — read, mutate, write back
+    load_json(path, default=...)   -> dict / list   — read JSON from store
+    save_json(path, value)         -> None          — full-file overwrite
+    update_json(path, mutator)     -> None          — read, mutate, write back
 
-Both accept either a bare filename ("client_profiles.json") or a full path
-("/some/dir/client_profiles.json"); the basename is what gets used inside
-the GitHub repo.
+Both accept a bare filename ("ra_users.json") or a full path; the basename is
+what addresses the data in Firestore.
 
-Behavior:
+Storage scheme
+--------------
+Most files are small config blobs → stored as ONE Firestore document:
+    collection "_files", document <basename>, field "_value" = <the JSON>
 
-  - If [github] secrets are configured, all reads/writes go to GitHub.
-  - If they are NOT configured (e.g. local dev with no .streamlit/secrets.toml),
-    operations fall back to local-disk JSON in the original location. This
-    keeps `streamlit run client_portal.py` on a laptop working without
-    requiring a token.
-  - Reads are cached for 60 seconds per file to avoid hammering the API.
-    update_json() invalidates the cache for the file it touches.
-  - Writes use the GitHub Contents API with the file's SHA, so concurrent
-    writes get a 409 and we retry once. (Last-write-wins semantics in the
-    rare case of a true conflict.)
+The three big record files are KEY->RECORD maps that grow with the client base.
+To stay clear of Firestore's 1 MB-per-document ceiling and to make concurrent
+registrations safe, each is "sharded" — one document per client:
+    collection "<name without .json>", document <client key>,
+        fields { "_key": <original key>, "_value": <that client's record> }
+load_json reassembles the full {key: record} dict; update_json writes back only
+the documents that actually changed (so two clients registering at once touch
+different documents and never clobber each other).
 
-This file is the ONLY place that talks to the GitHub API. If a third app
-ever needs to share data, it imports this module and gets the same view.
+Behavior preserved from the GitHub version
+------------------------------------------
+  - If the Firebase service-account secret is NOT configured (local dev with no
+    secrets), operations fall back to local-disk JSON in the original path, so
+    `streamlit run client_portal.py` on a laptop keeps working.
+  - Reads are cached 60 s per file; writes invalidate that file's cache.
+  - update_json applies the mutator and writes back; on the rare concurrent
+    edit of the same record, last-write-wins (same semantics as before).
 """
 from __future__ import annotations
 
-import base64
 import json
 import os
 import time
 from threading import Lock
 from typing import Any, Callable, Optional
 
-import requests
 import streamlit as st
 
+import firebase_admin
+from firebase_admin import credentials, firestore
 
-GITHUB_API     = "https://api.github.com"
 _CACHE_TTL_SEC = 60.0
 
+# The big key->record maps, stored one document per key. Everything else is a
+# single document under the "_files" collection.
+_SHARDED = {"ra_users.json", "risk_profiles.json", "client_holdings.json"}
+_FILES_COLLECTION = "_files"
 
-# ── Config ──────────────────────────────────────────────────────────────────
-def _config() -> Optional[tuple[str, str]]:
-    """Return (token, 'owner/repo') from Streamlit secrets, or None if the
-    secrets aren't present. Never raises — callers fall back to local mode
-    when this returns None."""
+# Firestore commits at most 500 writes per batch; stay under it.
+_BATCH_LIMIT = 450
+
+
+# ── Config / connection ─────────────────────────────────────────────────────
+def _has_firebase() -> bool:
+    """True if a Firebase service account is configured in secrets."""
     try:
-        gh = st.secrets["github"]
+        sa = st.secrets["firebase_service_account"]
     except (KeyError, FileNotFoundError, AttributeError):
-        return None
-    token = gh.get("token") if hasattr(gh, "get") else gh["token"]
-    repo  = gh.get("data_repo") if hasattr(gh, "get") else gh["data_repo"]
-    if not token or not repo or "/" not in repo:
-        return None
-    return token, repo
-
-
-def _headers(token: str) -> dict:
-    return {
-        "Authorization": f"Bearer {token}",
-        "Accept":         "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
+        return False
+    return bool(sa)
 
 
 def is_remote() -> bool:
-    """True if we're talking to GitHub. False if falling back to local disk
-    (e.g. on a developer laptop without secrets configured)."""
-    return _config() is not None
+    """True if we're talking to Firestore. False if falling back to local disk
+    (e.g. a developer laptop without secrets)."""
+    return _has_firebase()
+
+
+_fs_client = None
+
+
+def _db():
+    """Return a cached Firestore client, initializing the Admin SDK once."""
+    global _fs_client
+    if _fs_client is not None:
+        return _fs_client
+    if not firebase_admin._apps:
+        sa = dict(st.secrets["firebase_service_account"])
+        if "private_key" in sa:
+            sa["private_key"] = sa["private_key"].replace("\\n", "\n")
+        firebase_admin.initialize_app(credentials.Certificate(sa))
+    _fs_client = firestore.client()
+    return _fs_client
+
+
+def _doc_id(key: str) -> str:
+    """Make a safe Firestore document id from a record key (e.g. an email).
+    Firestore ids can't contain '/', can't be '.' or '..', and can't match the
+    reserved __.*__ pattern. The original key is always stored in the doc's
+    _key field, so reassembly is exact regardless of this sanitization."""
+    s = (str(key) or "").replace("/", "_").strip()
+    if s in ("", ".", ".."):
+        s = "k_" + s
+    # Reserved: ids wrapped in double underscores (e.g. __name__).
+    if s.startswith("__") and s.endswith("__"):
+        s = "k_" + s.strip("_")
+    return s[:1500] or "k_blank"
 
 
 # ── Cache ───────────────────────────────────────────────────────────────────
-# Keyed by basename. Value is (expires_at, parsed_json, sha).
-# A lock guards the dict because Streamlit can fire concurrent reruns.
-_cache: dict[str, tuple[float, Any, Optional[str]]] = {}
+# Keyed by basename. Value is (expires_at, parsed_json).
+_cache: dict[str, tuple[float, Any]] = {}
 _cache_lock = Lock()
 
 
-def _cache_get(name: str) -> Optional[tuple[Any, Optional[str]]]:
+def _cache_get(name: str) -> Optional[tuple]:
     with _cache_lock:
         entry = _cache.get(name)
         if entry is None:
             return None
-        expires, value, sha = entry
+        expires, value = entry
         if time.time() > expires:
             _cache.pop(name, None)
             return None
-        return value, sha
+        return (value,)  # wrap so a cached None is distinguishable from a miss
 
 
-def _cache_put(name: str, value: Any, sha: Optional[str]) -> None:
+def _cache_put(name: str, value: Any) -> None:
     with _cache_lock:
-        _cache[name] = (time.time() + _CACHE_TTL_SEC, value, sha)
+        _cache[name] = (time.time() + _CACHE_TTL_SEC, value)
 
 
 def _cache_invalidate(name: str) -> None:
@@ -113,91 +147,122 @@ def _cache_invalidate(name: str) -> None:
 
 
 def clear_cache() -> None:
-    """Drop all cached reads. Useful if you know remote state changed and
-    don't want to wait out the TTL."""
+    """Drop all cached reads."""
     with _cache_lock:
         _cache.clear()
 
 
-# ── GitHub I/O ──────────────────────────────────────────────────────────────
-class _ConflictError(Exception):
-    """Internal — caller (update_json) catches this and retries once."""
+# ── Firestore I/O ───────────────────────────────────────────────────────────
+# Values are stored as a JSON string under "_json" rather than as a live nested
+# map. This sidesteps every Firestore document restriction at once (reserved
+# keys, nested arrays-of-arrays, null entities) and is invisible to the apps.
+# Legacy docs written with a raw "_value" map are still read for safety.
+def _encode(value: Any) -> dict:
+    return {"_json": json.dumps(value, default=str)}
 
 
-def _github_get(name: str) -> tuple[Any, Optional[str]]:
-    """Fetch JSON file from the data repo. Returns (parsed_value, sha).
-    Returns (None, None) if the file doesn't exist yet."""
-    cfg = _config()
-    if cfg is None:
-        raise RuntimeError("data_store._github_get called without secrets")
-    token, repo = cfg
-    url = f"{GITHUB_API}/repos/{repo}/contents/{name}"
-    r = requests.get(url, headers=_headers(token), timeout=10)
-    if r.status_code == 404:
-        return None, None
-    if r.status_code != 200:
-        raise RuntimeError(
-            f"GitHub GET {name} failed: {r.status_code} {r.text[:300]}"
-        )
-    payload = r.json()
-    raw = base64.b64decode(payload["content"]).decode("utf-8")
-    if not raw.strip():
-        return None, payload.get("sha")
-    try:
-        parsed = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        # The file exists but isn't valid JSON (e.g. a hand-edit left a
-        # trailing comma or unbalanced brace). Don't take the whole app down
-        # over one bad file — treat it as no usable value and keep the sha so
-        # a later write can overwrite the broken file cleanly. Callers get the
-        # default; the app loads instead of crashing.
-        return None, payload.get("sha")
-    return parsed, payload.get("sha")
+def _decode(doc: dict) -> Any:
+    if doc is None:
+        return None
+    if "_json" in doc:
+        try:
+            return json.loads(doc["_json"])
+        except Exception:
+            return None
+    return doc.get("_value")
 
 
-def _github_put(
-    name: str,
-    value: Any,
-    prev_sha: Optional[str],
-    message: str,
-) -> str:
-    """Write JSON to the data repo. Returns the new SHA. Raises on failure."""
-    cfg = _config()
-    if cfg is None:
-        raise RuntimeError("data_store._github_put called without secrets")
-    token, repo = cfg
-    url = f"{GITHUB_API}/repos/{repo}/contents/{name}"
-    body = json.dumps(value, indent=2, default=str).encode("utf-8")
-    payload = {
-        "message": message,
-        "content": base64.b64encode(body).decode("ascii"),
-        "branch":  "main",
-    }
-    if prev_sha:
-        payload["sha"] = prev_sha
-    r = requests.put(url, headers=_headers(token),
-                     json=payload, timeout=15)
-    if r.status_code in (200, 201):
-        return r.json()["content"]["sha"]
-    if r.status_code == 409 or (r.status_code == 422 and "sha" in r.text):
-        raise _ConflictError(r.text)
-    raise RuntimeError(
-        f"GitHub PUT {name} failed: {r.status_code} {r.text[:300]}"
-    )
+def _fs_read(name: str) -> Any:
+    """Read the value of a file from Firestore. Returns the parsed value, or
+    None if it doesn't exist yet."""
+    db = _db()
+    if name in _SHARDED:
+        coll = name[:-5] if name.endswith(".json") else name
+        out: dict = {}
+        for snap in db.collection(coll).stream():
+            d = snap.to_dict() or {}
+            key = d.get("_key", snap.id)
+            out[key] = _decode(d)
+        return out if out else None
+    snap = db.collection(_FILES_COLLECTION).document(name).get()
+    if not snap.exists:
+        return None
+    return _decode(snap.to_dict() or {})
+
+
+def _fs_write_single(name: str, value: Any) -> None:
+    _db().collection(_FILES_COLLECTION).document(name).set(_encode(value))
+
+
+def _chunked(items, n):
+    items = list(items)
+    for i in range(0, len(items), n):
+        yield items[i:i + n]
+
+
+def _fs_write_sharded(name: str, value: dict,
+                      delete_missing: bool = True,
+                      prev_keys: Optional[set] = None) -> None:
+    """Write a {key: record} dict to a sharded collection. When delete_missing
+    is True, documents whose key is absent from `value` are removed."""
+    db = _db()
+    coll = name[:-5] if name.endswith(".json") else name
+    if not isinstance(value, dict):
+        value = {}
+
+    if delete_missing and prev_keys is None:
+        prev_keys = {(s.to_dict() or {}).get("_key", s.id)
+                     for s in db.collection(coll).stream()}
+
+    for chunk in _chunked(list(value.items()), _BATCH_LIMIT):
+        batch = db.batch()
+        for k, v in chunk:
+            batch.set(db.collection(coll).document(_doc_id(k)),
+                      {"_key": k, **_encode(v)})
+        batch.commit()
+
+    if delete_missing and prev_keys:
+        removed = [k for k in prev_keys if k not in value]
+        for chunk in _chunked(removed, _BATCH_LIMIT):
+            batch = db.batch()
+            for k in chunk:
+                batch.delete(db.collection(coll).document(_doc_id(k)))
+            batch.commit()
+
+
+def _fs_write_changed(name: str, new_value: dict, old_value: dict) -> None:
+    """Write only the records that changed between old_value and new_value
+    (and delete the ones that were removed). Keeps concurrent registrations of
+    different clients from clobbering each other."""
+    db = _db()
+    coll = name[:-5] if name.endswith(".json") else name
+
+    changed = [(k, v) for k, v in new_value.items()
+               if k not in old_value or old_value[k] != v]
+    removed = [k for k in old_value if k not in new_value]
+
+    for chunk in _chunked(changed, _BATCH_LIMIT):
+        batch = db.batch()
+        for k, v in chunk:
+            batch.set(db.collection(coll).document(_doc_id(k)),
+                      {"_key": k, **_encode(v)})
+        batch.commit()
+    for chunk in _chunked(removed, _BATCH_LIMIT):
+        batch = db.batch()
+        for k in chunk:
+            batch.delete(db.collection(coll).document(_doc_id(k)))
+        batch.commit()
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
 def load_json(path: str, default: Any = None) -> Any:
-    """Read a JSON file from the shared store (or local disk if no
-    secrets are configured). Returns `default` if the file doesn't
-    exist. The `path` argument may be a full filesystem path; only its
-    basename is used to address the file in the GitHub repo."""
+    """Read a JSON file from the shared store (or local disk if no secrets are
+    configured). Returns `default` if the file doesn't exist. `path` may be a
+    full filesystem path; only its basename addresses the data."""
     name = os.path.basename(path)
     fallback = default if default is not None else {}
 
-    cfg = _config()
-    if cfg is None:
-        # Local fallback — read from disk like the original shared.load_json.
+    if not _has_firebase():
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
@@ -206,67 +271,49 @@ def load_json(path: str, default: Any = None) -> Any:
 
     cached = _cache_get(name)
     if cached is not None:
-        value, _sha = cached
+        value = cached[0]
         return value if value is not None else fallback
 
     try:
-        value, sha = _github_get(name)
-    except RuntimeError:
-        # Remote read failed — return default rather than crashing.
-        # Don't cache the failure; we'll retry on the next call.
+        value = _fs_read(name)
+    except Exception:
+        # Read failed — return default rather than crashing. Don't cache the
+        # failure; retry on the next call.
         return fallback
 
-    _cache_put(name, value, sha)
+    _cache_put(name, value)
     return value if value is not None else fallback
 
 
 def save_json(path: str, value: Any) -> None:
-    """Write `value` as the entire contents of the JSON file. This is a
-    full-file overwrite — use update_json() instead if you only want to
-    change part of the file and preserve concurrent edits.
-
-    Same signature as shared.save_json — drop-in replacement."""
+    """Write `value` as the entire contents of the file (full overwrite).
+    Use update_json() to change part of a file while preserving concurrent
+    edits. Same signature as before."""
     name = os.path.basename(path)
 
-    cfg = _config()
-    if cfg is None:
-        # Local fallback — atomic-ish write to disk.
-        os.makedirs(
-            os.path.dirname(os.path.abspath(path)) or ".",
-            exist_ok=True,
-        )
+    if not _has_firebase():
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         tmp = f"{path}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(value, f, indent=2, default=str)
         os.replace(tmp, path)
         return
 
-    # Remote — fetch current SHA (if any) so the write succeeds even if
-    # the file already exists. We don't pass the cached SHA because save
-    # is intentionally a "blow away whatever's there" operation.
-    try:
-        _existing, sha = _github_get(name)
-    except RuntimeError:
-        sha = None
-
-    new_sha = _github_put(
-        name, value, sha,
-        message=f"save {name}",
-    )
-    _cache_put(name, value, new_sha)
+    if name in _SHARDED:
+        _fs_write_sharded(name, value if isinstance(value, dict) else {},
+                          delete_missing=True)
+    else:
+        _fs_write_single(name, value)
+    _cache_put(name, value)
 
 
 def update_json(path: str, mutator: Callable[[Any], None]) -> None:
     """Read the JSON file, apply `mutator(value)` in-place, write it back.
-    Same signature as shared.update_json — drop-in replacement.
-
-    Retries once on a SHA conflict (someone else wrote between our read
-    and our write)."""
+    Same signature as before. On the rare concurrent edit of the same record,
+    last-write-wins (matching the previous behavior)."""
     name = os.path.basename(path)
 
-    cfg = _config()
-    if cfg is None:
-        # Local fallback — atomic-ish read/mutate/write to disk.
+    if not _has_firebase():
         try:
             with open(path, "r", encoding="utf-8") as f:
                 value = json.load(f)
@@ -275,122 +322,81 @@ def update_json(path: str, mutator: Callable[[Any], None]) -> None:
         if not isinstance(value, dict):
             value = {}
         mutator(value)
-        os.makedirs(
-            os.path.dirname(os.path.abspath(path)) or ".",
-            exist_ok=True,
-        )
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         tmp = f"{path}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(value, f, indent=2, default=str)
         os.replace(tmp, path)
         return
 
-    for attempt in (1, 2):
-        try:
-            value, sha = _github_get(name)
-        except RuntimeError as e:
-            raise RuntimeError(f"data_store.update_json read failed: {e}")
+    # Read fresh (not from cache) so we mutate current state.
+    try:
+        value = _fs_read(name)
+    except Exception as e:
+        raise RuntimeError(f"data_store.update_json read failed: {e}")
 
-        if value is None:
-            value = {}
-        if not isinstance(value, (dict, list)):
-            value = {}
+    if value is None:
+        value = {}
+    if not isinstance(value, (dict, list)):
+        value = {}
 
+    if name in _SHARDED:
+        if not isinstance(value, dict):
+            value = {}
+        # Snapshot before mutation so we can write back only what changed.
+        old_snapshot = json.loads(json.dumps(value, default=str))
         mutator(value)
+        _fs_write_changed(name, value, old_snapshot)
+    else:
+        mutator(value)
+        _fs_write_single(name, value)
 
-        try:
-            new_sha = _github_put(
-                name, value, sha,
-                message=f"update {name}",
-            )
-        except _ConflictError:
-            if attempt == 2:
-                raise RuntimeError(
-                    f"data_store.update_json: conflict writing {name} "
-                    "after retry."
-                )
-            _cache_invalidate(name)
-            time.sleep(0.5)
-            continue
-
-        _cache_put(name, value, new_sha)
-        return
+    _cache_put(name, value)
 
 
 # ── Selftest (kept as a diagnostic) ─────────────────────────────────────────
 def selftest() -> dict:
-    """Verify GitHub credentials with a write/read/delete round-trip on a
-    test file. Returns a dict; never raises."""
+    """Verify Firestore credentials with a write/read/delete round-trip on a
+    test document. Returns a dict; never raises."""
     out: dict = {"step": "start"}
     try:
-        cfg = _config()
-        if cfg is None:
+        if not _has_firebase():
             out["status"] = "error"
-            out["mode"]   = "local"
-            out["error"]  = "No [github] secrets configured."
+            out["mode"] = "local"
+            out["error"] = "No [firebase_service_account] secret configured."
             return out
-        token, repo = cfg
-        out["repo"] = repo
+        db = _db()
+        out["project"] = st.secrets["firebase_service_account"].get("project_id", "?")
         out["mode"] = "remote"
         out["step"] = "config_ok"
 
-        path = ".selftest/ping.txt"
-        url  = f"{GITHUB_API}/repos/{repo}/contents/{path}"
-        body = "selftest from data_store.py\n"
-        b64  = base64.b64encode(body.encode("utf-8")).decode("ascii")
+        ref = db.collection(_FILES_COLLECTION).document("_selftest")
+        token = f"selftest {time.time()}"
+        ref.set(_encode(token))
+        out["step"] = "write_ok"
 
-        r_get = requests.get(url, headers=_headers(token), timeout=10)
-        sha = r_get.json().get("sha") if r_get.status_code == 200 else None
-
-        payload = {"message": "data_store selftest",
-                   "content": b64, "branch": "main"}
-        if sha:
-            payload["sha"] = sha
-        r_put = requests.put(url, headers=_headers(token),
-                             json=payload, timeout=15)
-        if r_put.status_code not in (200, 201):
-            out["status"] = "error"
-            out["step"]   = "write_failed"
-            out["http"]   = r_put.status_code
-            out["detail"] = r_put.json()
-            return out
-
-        r_get2 = requests.get(url, headers=_headers(token), timeout=10)
-        if r_get2.status_code != 200:
-            out["status"] = "error"
-            out["step"]   = "read_failed"
-            return out
-        round_trip = base64.b64decode(
-            r_get2.json()["content"]).decode("utf-8")
-        out["round_trip_ok"] = (round_trip == body)
-
-        requests.delete(
-            url, headers=_headers(token),
-            json={"message": "data_store selftest cleanup",
-                  "sha": r_get2.json()["sha"], "branch": "main"},
-            timeout=10,
-        )
+        got = ref.get()
+        out["round_trip_ok"] = bool(got.exists and
+                                    _decode(got.to_dict() or {}) == token)
+        ref.delete()
         out["status"] = "ok"
-        out["step"]   = "cleanup_ok"
+        out["step"] = "cleanup_ok"
         return out
-
     except Exception as e:
         out["status"] = "error"
-        out["error"]  = f"{type(e).__name__}: {e}"
+        out["error"] = f"{type(e).__name__}: {e}"
         return out
 
 
 def render_selftest_page():
     """Diagnostic page — visit /?selftest=1 to see results."""
     st.markdown("### data_store selftest")
-    st.caption(
-        "Mode: " +
-        ("remote (GitHub)" if is_remote() else "local fallback (no token)")
-    )
-    with st.spinner("Pinging GitHub..."):
+    st.caption("Mode: " +
+               ("remote (Firestore)" if is_remote() else "local fallback (no secret)"))
+    with st.spinner("Pinging Firestore..."):
         result = selftest()
     if result.get("status") == "ok":
-        st.success("All steps passed. The data layer is connected.")
+        st.success("All steps passed. The Firestore data layer is connected.")
     else:
         st.error("Selftest failed — see details below.")
     st.json(result)
