@@ -2413,9 +2413,12 @@ def _screen_register():
         # below; they only need to add a phone and accept the terms.
         if _FIREBASE_AVAILABLE and firebase_auth is not None \
                 and not st.session_state.get("fr_prefill_email"):
-            st.markdown('<div class="fr-eyebrow">Fastest — use an account you '
-                        'already have</div>', unsafe_allow_html=True)
-            _reg_token = firebase_auth.render_login(key="fr_reg_fb")
+            st.markdown('<div class="fr-eyebrow">Create your account</div>',
+                        unsafe_allow_html=True)
+            _reg_token = firebase_auth.render_login(
+                key="fr_reg_fb",
+                title="Create your account",
+                subtitle="Sign up with Google, Facebook, or email.")
             if _reg_token and not st.session_state.get("fr_reg_linked"):
                 _rc = firebase_auth.verify_token(_reg_token)
                 if _rc:
@@ -2437,7 +2440,7 @@ def _screen_register():
                         # instant a Firebase session already existed (the
                         # "flash then vanish").
             if st.session_state.get("fr_prefill_email"):
-                st.success(f"Using your account: "
+                st.success(f"Creating your account as: "
                            f"{st.session_state.get('fr_prefill_email')}")
             st.markdown('<div style="text-align:center;color:#6b6f78;'
                         'font-size:13px;margin:10px 0;">or enter your details'
@@ -2490,12 +2493,12 @@ def _screen_register():
         # timestamp) is recorded on the user record below.
         _tc1, _tc2 = st.columns(2)
         with _tc1:
-            if st.button("View Terms & Conditions", key="fr_view_terms",
+            if st.button("Terms & Conditions", key="fr_view_terms",
                          use_container_width=True):
                 _agreement_popup("Terms & Conditions", TERMS_TEXT,
                                  "fr_terms_close", version=TOS_VERSION)
         with _tc2:
-            if st.button("View Privacy Policy", key="fr_view_privacy",
+            if st.button("Privacy Policy", key="fr_view_privacy",
                          use_container_width=True):
                 _agreement_popup("Privacy Policy", PRIVACY_TEXT,
                                  "fr_privacy_close")
