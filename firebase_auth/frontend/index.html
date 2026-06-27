@@ -175,6 +175,7 @@
   // ---- App state ----
   let initialized = false;
   let signupMode = false;
+  let signupDefaultApplied = false;
   let lastTokenSent = null;
   let baseTitle = "Sign in to your portal";
   let baseSubtitle = "Use one of the options below to continue.";
@@ -298,6 +299,19 @@
     if (typeof args.subtitle === "string" && args.subtitle) {
       baseSubtitle = args.subtitle;
       $("subtitle").textContent = baseSubtitle;
+    }
+    if (args.signup_default && !signupDefaultApplied) {
+      // Registration screen: default the email path to "Create account" mode
+      // so it doesn't confusingly say "Sign in". User can still toggle to
+      // sign-in if they already have an account.
+      signupDefaultApplied = true;
+      signupMode = true;
+      $("emailBtn").textContent = "Create account";
+      $("toggleMode").textContent = "Have an account? Sign in";
+      $("password").setAttribute("autocomplete", "new-password");
+      if (!(typeof args.title === "string" && args.title)) {
+        $("title").textContent = "Create your account";
+      }
     }
     if (cfg.apiKey) { init(cfg); }
     autoHeight();
