@@ -2405,82 +2405,63 @@ def _screen_register():
 
     _l, _form, _r = st.columns([1, 2, 1])
     with _form:
-        # ── Fast path: register with Google / Facebook ──────────────────
-        # If they sign up with a provider here, the account is created under
-        # their verified identity (email + Firebase UID), so a later "Sign in
-        # with Google" matches every time — no looping back to the assessment.
-        # Capturing their identity locks the email field and pre-fills the name
-        # below; they only need to add a phone and accept the terms.
-        if _FIREBASE_AVAILABLE and firebase_auth is not None \
-                and not st.session_state.get("fr_prefill_email"):
-            st.markdown('<div class="fr-eyebrow">Create your account</div>',
-                        unsafe_allow_html=True)
-            _reg_token = firebase_auth.render_login(
-                key="fr_reg_fb",
-                title="Create your account",
-                subtitle="Sign up with Google, Facebook, or email.")
-            if _reg_token and not st.session_state.get("fr_reg_linked"):
-                _rc = firebase_auth.verify_token(_reg_token)
-                if _rc:
-                    _ve = (_rc.get("email") or "").strip().lower()
-                    if _ve:
-                        st.session_state.fr_prefill_email = _ve
-                        st.session_state.fr_link_uid = (
-                            _rc.get("uid") or _rc.get("user_id") or "")
-                        _nm = (_rc.get("name") or "").strip()
-                        if _nm and not st.session_state.get("fr_first"):
-                            _f, _, _l2 = _nm.partition(" ")
-                            st.session_state.fr_first = _f
-                            st.session_state.fr_last = _l2
-                        st.session_state.fr_reg_linked = True
-                        # No st.rerun() here. The component emitting its token
-                        # already triggers a Streamlit rerun, and the locked
-                        # email field renders just below in this same pass. An
-                        # explicit rerun yanked the whole block off-screen the
-                        # instant a Firebase session already existed (the
-                        # "flash then vanish").
-            if st.session_state.get("fr_prefill_email"):
-                st.success(f"Creating your account as: "
-                           f"{st.session_state.get('fr_prefill_email')}")
-            st.markdown('<div style="text-align:center;color:#6b6f78;'
-                        'font-size:13px;margin:10px 0;">or enter your details'
-                        '</div>', unsafe_allow_html=True)
-
-        # No fr-card wrapper here — same reason as the prequiz screen: it
-        # rendered an empty padded white box above the first label. The
-        # eyebrow + inputs already group visually on their own.
-        st.markdown('<div class="fr-eyebrow">Contact info</div>',
+        # ── Your details — name (confirmed from the assessment), phone,
+        #    and optional address. Comes FIRST; the account box below supplies
+        #    the email, so there's no separate email field here.
+        st.markdown('<div class="fr-eyebrow">Your details</div>',
                     unsafe_allow_html=True)
-        # If the user arrived here from a verified sign-in (Google / Facebook /
-        # email) with no existing account, lock the email field to the verified
-        # address. This guarantees the account is created under the exact email
-        # their sign-in returns next time, so find_user() matches and they land
-        # on their dashboard instead of being looped back into the assessment.
-        # Anonymous funnel users (no verified email) still type theirs freely.
-        _verified_email = (st.session_state.get("fr_prefill_email") or "").strip().lower()
-        if _verified_email:
-            st.text_input("Email *", value=_verified_email,
-                          key="fr_rg_email_locked", disabled=True,
-                          help="Verified from your sign-in — your account is "
-                               "created under this address.")
-            email = _verified_email
-        else:
-            email = st.text_input("Email *", key="fr_rg_email",
-                                  placeholder="you@example.com")
+        # Pre-fill the name captured in the assessment so the client just
+        # confirms it. setdefault (rather than value=) avoids the Streamlit
+        # default-vs-session_state conflict and still lets them edit.
+        st.session_state.setdefault("fr_rg_first",
+                                    st.session_state.get("fr_first", ""))
+        st.session_state.setdefault("fr_rg_last",
+                                    st.session_state.get("fr_last", ""))
+        _n1, _n2 = st.columns(2)
+        with _n1:
+            first = st.text_input("First name *", key="fr_rg_first")
+        with _n2:
+            last = st.text_input("Last name *", key="fr_rg_last")
         phone = st.text_input("Phone *", key="fr_rg_phone",
                               placeholder="(555) 555-5555")
 
-        st.markdown(
-            f'<div style="margin-top:18px"><div class="fr-eyebrow">'
-            f'Optional</div></div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown('<div style="margin-top:14px"><div class="fr-eyebrow">'
+                    'Optional</div></div>', unsafe_allow_html=True)
         addr = st.text_input("Address", key="fr_rg_addr",
                              placeholder="123 Main St")
         zipcode = st.text_input("ZIP code", key="fr_rg_zip",
                                 placeholder="12345")
 
-        st.caption("Your email is how you'll sign in next time.")
+        # ── Create your account — supplies the email and the sign-in identity.
+        #    Registering with Google/Facebook/email keys the account to a
+        #    verified identity (email + Firebase UID), so a later sign-in
+        #    matches every time. This is the only place email is collected.
+        st.markdown('<div style="margin-top:22px"><div class="fr-eyebrow">'
+                    'Create your account</div></div>', unsafe_allow_html=True)
+        if not st.session_state.get("fr_prefill_email"):
+            if _FIREBASE_AVAILABLE and firebase_auth is not None:
+                _reg_token = firebase_auth.render_login(
+                    key="fr_reg_fb",
+                    title="Create your account",
+                    subtitle="Sign up with Google, Facebook, or email.")
+                if _reg_token and not st.session_state.get("fr_reg_linked"):
+                    _rc = firebase_auth.verify_token(_reg_token)
+                    if _rc:
+                        _ve = (_rc.get("email") or "").strip().lower()
+                        if _ve:
+                            st.session_state.fr_prefill_email = _ve
+                            st.session_state.fr_link_uid = (
+                                _rc.get("uid") or _rc.get("user_id") or "")
+                            st.session_state.fr_reg_linked = True
+                            # No st.rerun(): the token emit already reruns, and
+                            # the confirmation renders below this same pass.
+            else:
+                st.error("Account creation is temporarily unavailable. "
+                         "Please try again shortly.")
+        email = (st.session_state.get("fr_prefill_email") or "").strip().lower()
+        if email:
+            st.success(f"Creating your account as: {email}")
+            st.caption("This is the email you'll sign in with next time.")
 
         # ── Required agreement ──────────────────────────────────────────
         # Two buttons open the documents directly through st.dialog. The
@@ -2528,8 +2509,15 @@ def _screen_register():
                         "Please check the box agreeing to the Terms & "
                         "Conditions and Privacy Policy to continue."
                     )
-                if not is_valid_email(email):
-                    errors.append("Please enter a valid email address.")
+                if not email:
+                    errors.append(
+                        "Please create your account above — Continue with "
+                        "Google, Facebook, or email — to finish."
+                    )
+                elif not is_valid_email(email):
+                    errors.append("That account email looks invalid. Please try again.")
+                if not (first or "").strip() or not (last or "").strip():
+                    errors.append("Please enter your first and last name.")
                 phone_digits = "".join(ch for ch in (phone or "") if ch.isdigit())
                 if not (phone or "").strip():
                     errors.append("Phone number is required.")
@@ -2542,6 +2530,11 @@ def _screen_register():
                 if errors:
                     for e in errors: st.error(e)
                     return
+
+                # Keep the confirmed names as the canonical values so downstream
+                # (profile client_name, greetings) use what the client confirmed.
+                st.session_state.fr_first = (first or "").strip()
+                st.session_state.fr_last  = (last or "").strip()
 
                 # Register the user
                 ok, msg = register_user(
