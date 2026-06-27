@@ -725,6 +725,18 @@ def find_user(email: str) -> Optional[dict]:
             return v
     return None
 
+def find_user_by_uid(uid: str) -> Optional[dict]:
+    """Find an account previously linked to this Firebase UID. Lets a returning
+    client match even if their provider email differs from the email their
+    record is keyed under (once the link has been established)."""
+    if not uid:
+        return None
+    users = load_users()
+    for v in users.values():
+        if isinstance(v, dict) and v.get("firebase_uid") == uid:
+            return v
+    return None
+
 def register_user(first: str, last: str, email: str, phone: str = "") -> tuple[bool, str]:
     """Atomic upsert under a single lock.
 
@@ -1848,6 +1860,7 @@ def _logout():
     st.session_state.fr_scores  = None
     st.session_state.fr_show_signin = False
     st.session_state.fr_fb_signout = True
+    st.session_state.pop("fr_prefill_email", None)
     st.rerun()
 
 
@@ -1950,6 +1963,7 @@ def _screen_welcome():
     with _cta:
         if st.button("Start risk profile  →", type="primary",
                      key="fr_start_btn", use_container_width=True):
+            st.session_state.pop("fr_prefill_email", None)
             st.session_state.fr_step = "prequiz"
             st.rerun()
 
@@ -1999,7 +2013,22 @@ def _screen_welcome():
                         st.error("We couldn't verify that sign-in. Please try again.")
                     else:
                         _email = (_claims.get("email") or "").strip().lower()
-                        _user = find_user(_email)
+                        _uid = _claims.get("uid") or _claims.get("user_id") or ""
+                        # 1) Match by Firebase UID first — handles a returning
+                        #    client whose record was already linked, even if the
+                        #    email on the record differs from the provider email.
+                        _user = find_user_by_uid(_uid)
+                        # 2) Otherwise match by verified email, and link the UID
+                        #    onto that record the first time. Safe because
+                        #    Firebase has proven they own this email and the
+                        #    account is keyed under it.
+                        if _user is None:
+                            _user = find_user(_email)
+                            if (_user is not None and _uid
+                                    and not _user.get("firebase_uid")):
+                                update_user(_user.get("email", _email),
+                                            {"firebase_uid": _uid})
+                                _user["firebase_uid"] = _uid
                         if _user is not None:
                             # Existing account → sign in.
                             st.session_state.fr_user = _user
@@ -2007,20 +2036,21 @@ def _screen_welcome():
                             st.rerun()
                         else:
                             # Verified identity, but no account on file yet.
-                            # Send them into the assessment to create one,
-                            # pre-filling the name from their Google/Facebook
-                            # profile and remembering the verified email.
+                            # Send them straight into the assessment like any
+                            # other visitor — no "set up an account" popup,
+                            # since results are shown before the info is asked
+                            # for. Name pre-fills from their Google/Facebook
+                            # profile; the verified email is pinned for the
+                            # registration step at the end, and the UID is
+                            # carried so the new account is linked on creation.
                             _name = (_claims.get("name") or "").strip()
                             _first, _, _last = _name.partition(" ")
                             st.session_state.fr_first = _first
                             st.session_state.fr_last  = _last
                             st.session_state.fr_prefill_email = _email
+                            st.session_state.fr_link_uid = _uid
                             st.session_state.fr_show_signin = False
                             st.session_state.fr_step = "prequiz"
-                            st.session_state.fr_flash = (
-                                "No account yet — let's set one up. "
-                                "It only takes a minute."
-                            )
                             st.rerun()
 
 
@@ -2378,8 +2408,22 @@ def _screen_register():
         # eyebrow + inputs already group visually on their own.
         st.markdown('<div class="fr-eyebrow">Contact info</div>',
                     unsafe_allow_html=True)
-        email = st.text_input("Email *", key="fr_rg_email",
-                              placeholder="you@example.com")
+        # If the user arrived here from a verified sign-in (Google / Facebook /
+        # email) with no existing account, lock the email field to the verified
+        # address. This guarantees the account is created under the exact email
+        # their sign-in returns next time, so find_user() matches and they land
+        # on their dashboard instead of being looped back into the assessment.
+        # Anonymous funnel users (no verified email) still type theirs freely.
+        _verified_email = (st.session_state.get("fr_prefill_email") or "").strip().lower()
+        if _verified_email:
+            st.text_input("Email *", value=_verified_email,
+                          key="fr_rg_email_locked", disabled=True,
+                          help="Verified from your sign-in — your account is "
+                               "created under this address.")
+            email = _verified_email
+        else:
+            email = st.text_input("Email *", key="fr_rg_email",
+                                  placeholder="you@example.com")
         phone = st.text_input("Phone *", key="fr_rg_phone",
                               placeholder="(555) 555-5555")
 
@@ -2473,6 +2517,12 @@ def _screen_register():
                     user["age"]     = int(st.session_state.fr_age)
                     user["address"] = (addr or "").strip()
                     user["zip"]     = (zipcode or "").strip()
+                    # If they arrived from a Google/Facebook/email sign-in,
+                    # link the Firebase UID now so future sign-ins match by UID
+                    # regardless of any later email change.
+                    _luid = (st.session_state.get("fr_link_uid") or "").strip()
+                    if _luid:
+                        user["firebase_uid"] = _luid
                     # Audit trail: which agreement version the client accepted
                     # and when (UTC). Reaching here requires the consent box,
                     # since it gates the submit button above.
