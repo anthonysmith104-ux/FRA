@@ -2432,13 +2432,45 @@ def _screen_register():
         zipcode = st.text_input("ZIP code", key="fr_rg_zip",
                                 placeholder="12345")
 
+        # ── Required agreement — MUST be accepted before an account can be
+        #    created by ANY method (Google, Facebook, or email/password). The
+        #    account-creation box below only renders once this box is checked,
+        #    so no sign-in identity can be created without consent. Acceptance
+        #    (version + timestamp) is written onto the user record at submit.
+        #    Two buttons open the documents via st.dialog (link-based markdown
+        #    reloaded the app inside the dialog on newer Streamlit, so buttons
+        #    + _agreement_popup are used and survive Streamlit upgrades).
+        st.markdown('<div style="margin-top:22px"><div class="fr-eyebrow">'
+                    'Agreement</div></div>', unsafe_allow_html=True)
+        _tc1, _tc2 = st.columns(2)
+        with _tc1:
+            if st.button("Terms & Conditions", key="fr_view_terms",
+                         use_container_width=True):
+                _agreement_popup("Terms & Conditions", TERMS_TEXT,
+                                 "fr_terms_close", version=TOS_VERSION)
+        with _tc2:
+            if st.button("Privacy Policy", key="fr_view_privacy",
+                         use_container_width=True):
+                _agreement_popup("Privacy Policy", PRIVACY_TEXT,
+                                 "fr_privacy_close")
+
+        agreed = st.checkbox(
+            "I agree to the Terms & Conditions and Privacy Policy",
+            key="fr_rg_consent",
+        )
+
         # ── Create your account — supplies the email and the sign-in identity.
-        #    Registering with Google/Facebook/email keys the account to a
-        #    verified identity (email + Firebase UID), so a later sign-in
-        #    matches every time. This is the only place email is collected.
+        #    Gated on the agreement above: the sign-up options only appear once
+        #    the client has agreed, so an account can't be created (by any
+        #    method) without consent. Registering keys the account to a verified
+        #    identity (email + Firebase UID). This is the only place email is set.
         st.markdown('<div style="margin-top:22px"><div class="fr-eyebrow">'
                     'Create your account</div></div>', unsafe_allow_html=True)
-        if not st.session_state.get("fr_prefill_email"):
+        if not agreed and not st.session_state.get("fr_prefill_email"):
+            st.info("Please check the box above to accept the Terms & "
+                    "Conditions and Privacy Policy — account creation unlocks "
+                    "once you've agreed.")
+        elif not st.session_state.get("fr_prefill_email"):
             if _FIREBASE_AVAILABLE and firebase_auth is not None:
                 _reg_token = firebase_auth.render_login(
                     key="fr_reg_fb",
@@ -2462,32 +2494,6 @@ def _screen_register():
         if email:
             st.success(f"Creating your account as: {email}")
             st.caption("This is the email you'll sign in with next time.")
-
-        # ── Required agreement ──────────────────────────────────────────
-        # Two buttons open the documents directly through st.dialog. The
-        # checkbox label previously held [Terms](?agree=terms)-style markdown
-        # links; a Streamlit update changed link handling so clicking one
-        # reloaded the whole app *inside* the dialog. Buttons calling
-        # _agreement_popup don't depend on link or query-param behavior, so
-        # the consent gate survives Streamlit upgrades. The submit button
-        # stays disabled until the box is checked; acceptance (version +
-        # timestamp) is recorded on the user record below.
-        _tc1, _tc2 = st.columns(2)
-        with _tc1:
-            if st.button("Terms & Conditions", key="fr_view_terms",
-                         use_container_width=True):
-                _agreement_popup("Terms & Conditions", TERMS_TEXT,
-                                 "fr_terms_close", version=TOS_VERSION)
-        with _tc2:
-            if st.button("Privacy Policy", key="fr_view_privacy",
-                         use_container_width=True):
-                _agreement_popup("Privacy Policy", PRIVACY_TEXT,
-                                 "fr_privacy_close")
-
-        agreed = st.checkbox(
-            "I agree to the Terms & Conditions and Privacy Policy",
-            key="fr_rg_consent",
-        )
 
         b1, b2 = st.columns([1, 2])
         with b1:
