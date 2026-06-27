@@ -1861,6 +1861,7 @@ def _logout():
     st.session_state.fr_show_signin = False
     st.session_state.fr_fb_signout = True
     st.session_state.pop("fr_prefill_email", None)
+    st.session_state.pop("fr_reg_linked", None)
     st.rerun()
 
 
@@ -1964,6 +1965,7 @@ def _screen_welcome():
         if st.button("Start risk profile  →", type="primary",
                      key="fr_start_btn", use_container_width=True):
             st.session_state.pop("fr_prefill_email", None)
+            st.session_state.pop("fr_reg_linked", None)
             st.session_state.fr_step = "prequiz"
             st.rerun()
 
@@ -2403,6 +2405,36 @@ def _screen_register():
 
     _l, _form, _r = st.columns([1, 2, 1])
     with _form:
+        # ── Fast path: register with Google / Facebook ──────────────────
+        # If they sign up with a provider here, the account is created under
+        # their verified identity (email + Firebase UID), so a later "Sign in
+        # with Google" matches every time — no looping back to the assessment.
+        # Capturing their identity locks the email field and pre-fills the name
+        # below; they only need to add a phone and accept the terms.
+        if _FIREBASE_AVAILABLE and firebase_auth is not None \
+                and not st.session_state.get("fr_prefill_email"):
+            st.markdown('<div class="fr-eyebrow">Fastest — use an account you '
+                        'already have</div>', unsafe_allow_html=True)
+            _reg_token = firebase_auth.render_login(key="fr_reg_fb")
+            if _reg_token and not st.session_state.get("fr_reg_linked"):
+                _rc = firebase_auth.verify_token(_reg_token)
+                if _rc:
+                    _ve = (_rc.get("email") or "").strip().lower()
+                    if _ve:
+                        st.session_state.fr_prefill_email = _ve
+                        st.session_state.fr_link_uid = (
+                            _rc.get("uid") or _rc.get("user_id") or "")
+                        _nm = (_rc.get("name") or "").strip()
+                        if _nm and not st.session_state.get("fr_first"):
+                            _f, _, _l2 = _nm.partition(" ")
+                            st.session_state.fr_first = _f
+                            st.session_state.fr_last = _l2
+                        st.session_state.fr_reg_linked = True
+                        st.rerun()
+            st.markdown('<div style="text-align:center;color:#6b6f78;'
+                        'font-size:13px;margin:10px 0;">or enter your details'
+                        '</div>', unsafe_allow_html=True)
+
         # No fr-card wrapper here — same reason as the prequiz screen: it
         # rendered an empty padded white box above the first label. The
         # eyebrow + inputs already group visually on their own.
