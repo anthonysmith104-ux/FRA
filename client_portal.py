@@ -2430,7 +2430,15 @@ def _screen_register():
                             st.session_state.fr_first = _f
                             st.session_state.fr_last = _l2
                         st.session_state.fr_reg_linked = True
-                        st.rerun()
+                        # No st.rerun() here. The component emitting its token
+                        # already triggers a Streamlit rerun, and the locked
+                        # email field renders just below in this same pass. An
+                        # explicit rerun yanked the whole block off-screen the
+                        # instant a Firebase session already existed (the
+                        # "flash then vanish").
+            if st.session_state.get("fr_prefill_email"):
+                st.success(f"Using your account: "
+                           f"{st.session_state.get('fr_prefill_email')}")
             st.markdown('<div style="text-align:center;color:#6b6f78;'
                         'font-size:13px;margin:10px 0;">or enter your details'
                         '</div>', unsafe_allow_html=True)
