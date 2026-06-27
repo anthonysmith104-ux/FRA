@@ -77,14 +77,22 @@ def get_db(sa_dict):
 def _doc_id(key):
     s = (str(key) or "").replace("/", "_").strip()
     if s in ("", ".", ".."):
-        s = "_" + s
-    return s[:1500]
+        s = "k_" + s
+    if s.startswith("__") and s.endswith("__"):
+        s = "k_" + s.strip("_")
+    return s[:1500] or "k_blank"
 
 
 def _chunked(items, n):
     items = list(items)
     for i in range(0, len(items), n):
         yield items[i:i + n]
+
+
+def _encode(value):
+    # Store as a JSON string (matches data_store.py) to sidestep Firestore's
+    # reserved-id / nested-entity / null restrictions.
+    return {"_json": json.dumps(value, default=str)}
 
 
 def fs_write_merge(db, name, value):
@@ -99,11 +107,11 @@ def fs_write_merge(db, name, value):
             batch = db.batch()
             for k, v in chunk:
                 batch.set(db.collection(coll).document(_doc_id(k)),
-                          {"_key": k, "_value": v})
+                          {"_key": k, **_encode(v)})
                 n += 1
             batch.commit()
         return n
-    db.collection(_FILES_COLLECTION).document(name).set({"_value": value})
+    db.collection(_FILES_COLLECTION).document(name).set(_encode(value))
     return 1
 
 
