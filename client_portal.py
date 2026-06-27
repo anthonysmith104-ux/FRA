@@ -2442,51 +2442,58 @@ def _screen_register():
         #    + _agreement_popup are used and survive Streamlit upgrades).
         st.markdown('<div style="margin-top:22px"><div class="fr-eyebrow">'
                     'Agreement</div></div>', unsafe_allow_html=True)
-        _tc1, _tc2 = st.columns(2)
-        with _tc1:
-            if st.button("Terms & Conditions", key="fr_view_terms",
-                         use_container_width=True):
-                _agreement_popup("Terms & Conditions", TERMS_TEXT,
-                                 "fr_terms_close", version=TOS_VERSION)
-        with _tc2:
-            if st.button("Privacy Policy", key="fr_view_privacy",
-                         use_container_width=True):
-                _agreement_popup("Privacy Policy", PRIVACY_TEXT,
-                                 "fr_privacy_close")
+        if st.button("Terms & Conditions and Privacy Policy",
+                     key="fr_view_legal", use_container_width=True):
+            # One document: scroll through the Terms first, the Privacy Policy
+            # follows at the end. Single popup, single checkbox.
+            _combined_legal = (
+                "## Terms & Conditions\n\n"
+                + TERMS_TEXT.strip()
+                + "\n\n---\n\n## Privacy Policy\n\n"
+                + PRIVACY_TEXT.strip()
+            )
+            _agreement_popup("Terms & Conditions and Privacy Policy",
+                             _combined_legal, "fr_legal_close",
+                             version=TOS_VERSION)
 
         agreed = st.checkbox(
             "I agree to the Terms & Conditions and Privacy Policy",
             key="fr_rg_consent",
         )
 
-        # ── Create your account — supplies the email and the sign-in identity.
-        #    Gated on the agreement above: the sign-up options only appear once
-        #    the client has agreed, so an account can't be created (by any
-        #    method) without consent. Registering keys the account to a verified
-        #    identity (email + Firebase UID). This is the only place email is set.
+        # ── Create your account — the sign-up options are always shown as part
+        #    of the flow. Consent is enforced at the moment of creation: if they
+        #    authenticate before checking the agreement box, we don't capture
+        #    the account and give a gentle nudge; once the box is checked, the
+        #    (persisted) sign-in is captured on the next rerun. No account can be
+        #    created without consent, and there's no standing "please check"
+        #    banner cluttering the page.
         st.markdown('<div style="margin-top:22px"><div class="fr-eyebrow">'
                     'Create your account</div></div>', unsafe_allow_html=True)
-        if not agreed and not st.session_state.get("fr_prefill_email"):
-            st.info("Please check the box above to accept the Terms & "
-                    "Conditions and Privacy Policy — account creation unlocks "
-                    "once you've agreed.")
-        elif not st.session_state.get("fr_prefill_email"):
+        if not st.session_state.get("fr_prefill_email"):
             if _FIREBASE_AVAILABLE and firebase_auth is not None:
                 _reg_token = firebase_auth.render_login(
                     key="fr_reg_fb",
                     title="Create your account",
-                    subtitle="Sign up with Google, Facebook, or email.")
+                    subtitle="Sign up with Google, Facebook, or email.",
+                    signup_default=True)
                 if _reg_token and not st.session_state.get("fr_reg_linked"):
                     _rc = firebase_auth.verify_token(_reg_token)
                     if _rc:
                         _ve = (_rc.get("email") or "").strip().lower()
-                        if _ve:
+                        if _ve and not agreed:
+                            # Authenticated but hasn't agreed yet — gentle
+                            # nudge, don't capture. Checking the box re-captures
+                            # the persisted sign-in on the next rerun.
+                            st.toast("Please accept the Terms & Conditions to "
+                                     "finish")
+                            st.warning("Almost there — check the agreement box "
+                                       "above to finish creating your account.")
+                        elif _ve and agreed:
                             st.session_state.fr_prefill_email = _ve
                             st.session_state.fr_link_uid = (
                                 _rc.get("uid") or _rc.get("user_id") or "")
                             st.session_state.fr_reg_linked = True
-                            # No st.rerun(): the token emit already reruns, and
-                            # the confirmation renders below this same pass.
             else:
                 st.error("Account creation is temporarily unavailable. "
                          "Please try again shortly.")
