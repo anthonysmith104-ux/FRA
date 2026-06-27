@@ -176,6 +176,8 @@
   let initialized = false;
   let signupMode = false;
   let lastTokenSent = null;
+  let baseTitle = "Sign in to your portal";
+  let baseSubtitle = "Use one of the options below to continue.";
 
   const $ = function (id) { return document.getElementById(id); };
   function showMsg(text, cls) {
@@ -250,7 +252,7 @@
 
     $("toggleMode").onclick = function () {
       signupMode = !signupMode;
-      $("title").textContent = signupMode ? "Create your account" : "Sign in to your portal";
+      $("title").textContent = signupMode ? "Create your account" : baseTitle;
       $("emailBtn").textContent = signupMode ? "Create account" : "Sign in";
       $("toggleMode").textContent = signupMode ? "Have an account? Sign in" : "Create an account";
       $("password").setAttribute("autocomplete", signupMode ? "new-password" : "current-password");
@@ -288,6 +290,14 @@
       $("card").classList.add("hidden");
       autoHeight();
       return;
+    }
+    if (typeof args.title === "string" && args.title) {
+      baseTitle = args.title;
+      if (!signupMode) { $("title").textContent = baseTitle; }
+    }
+    if (typeof args.subtitle === "string" && args.subtitle) {
+      baseSubtitle = args.subtitle;
+      $("subtitle").textContent = baseSubtitle;
     }
     if (cfg.apiKey) { init(cfg); }
     autoHeight();
