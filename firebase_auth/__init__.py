@@ -79,10 +79,13 @@ def _init_admin():
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-def render_login(key="firebase_login"):
+def render_login(key="firebase_login", title=None, subtitle=None):
     """Render the login UI. Returns a Firebase ID token (str) once the user
-    signs in with any method, otherwise None."""
-    value = _component(config=_web_config(), mode="auth", key=key, default=None)
+    signs in with any method, otherwise None. `title`/`subtitle` override the
+    component heading (e.g. "Create your account" on a registration screen)."""
+    value = _component(config=_web_config(), mode="auth",
+                       title=title or "", subtitle=subtitle or "",
+                       key=key, default=None)
     if isinstance(value, str) and value and value != "signed_out":
         return value
     return None
