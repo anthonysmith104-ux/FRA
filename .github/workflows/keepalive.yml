@@ -1,22 +1,74 @@
-name: Keep Streamlit apps awake
 
-on:
-  schedule:
-    - cron: "0 */6 * * *"   # every 6 hours (well under the 12-hour sleep limit)
-  workflow_dispatch:         # lets you run it manually from the Actions tab
+[advisor_access]
+emails = ["anthonysmith@mrb-capital-group.com,"Michael@mrb-capital-group.com"]
 
-jobs:
-  keepalive:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install Playwright
-        run: |
-          pip install playwright
-          playwright install chromium --with-deps
-      - name: Visit the apps
-        run: python keepalive.py
+
+# ─────────────────────────────────────────────────────────────────────────
+# Foresight Risk Advisor — Streamlit Cloud requirements
+#
+# Streamlit Cloud uses Python 3.14 as of May 2026. We use minimum-version
+# constraints (>=) instead of strict pins (==) so pip can pick the latest
+# wheel-available version for whatever Python the cloud runs. Strict pins
+# caused build failures when the cloud upgraded Python and old wheels
+# didn't exist for the new interpreter.
+#
+# Two specific things to know:
+# 1) Pillow constraint: streamlit pulls in pillow<11; we let it choose
+#    rather than pinning Pillow ourselves. Reportlab is happy with any
+#    recent Pillow.
+# 2) scipy + numpy: don't pin minor versions. They have to compile from
+#    source if no wheel exists, and scipy needs gfortran for that —
+#    Streamlit Cloud's build container doesn't include gfortran.
+#
+# Last verified: 2026-05-01
+# ─────────────────────────────────────────────────────────────────────────
+
+# Streamlit + UI
+streamlit>=1.39
+
+# Data + computation
+pandas>=2.2
+numpy>=2.0
+scikit-learn>=1.5
+scipy>=1.14
+
+# Portfolio optimization
+skfolio>=0.8
+
+# Market data
+yfinance>=0.2.50
+requests>=2.31
+
+# Plotting
+plotly>=5.20
+matplotlib>=3.9
+
+# PDF generation
+reportlab>=4.2
+# Pillow: don't pin — let streamlit's <11 constraint resolve naturally.
+# Reportlab works fine with whatever Pillow streamlit picks.
+
+# Spreadsheet upload (Excel/CSV ingest)
+openpyxl>=3.1
+
+# Statement import (AI) — local PDF text extraction for the redaction step,
+# so account numbers are masked before anything is sent to the Anthropic API.
+# pdfplumber pulls in pdfminer.six + Pillow (Pillow already constrained above
+# via streamlit). The app falls back to pypdf if this isn't present.
+pdfplumber>=0.11
+
+# Date math (used in goal/horizon calculations)
+python-dateutil>=2.9
+
+# Authentication (Firebase) — verified sign-in via Google / Facebook / email,
+# and the backend for the Firestore data store. firebase-admin is a pure-Python
+# wheel; its one compiled dependency is grpcio (via google-cloud-firestore).
+# grpcio>=1.75.1 ships Python 3.14 wheels, so there's no source build.
+firebase-admin>=6.5
+grpcio>=1.75.1
+
+# NOTE: openbb is NOT included.
+# advisor_app.py has an `import openbb` at the top wrapped in try/except,
+# but the try/except handles ImportError gracefully — the app falls back
+# to yfinance for prices. Including openbb here adds 200+ transitive
+# dependencies and dramatically slows cold-start.
