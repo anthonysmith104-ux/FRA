@@ -1,0 +1,22 @@
+name: Keep Streamlit apps awake
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6 hours (well under the 12-hour sleep limit)
+  workflow_dispatch:         # lets you run it manually from the Actions tab
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install chromium --with-deps
+      - name: Visit the apps
+        run: python keepalive.py
