@@ -64,7 +64,15 @@ _CACHE_TTL_SEC = 60.0
 
 # The big key->record maps, stored one document per key. Everything else is a
 # single document under the "_files" collection.
-_SHARDED = {"ra_users.json", "risk_profiles.json", "client_holdings.json"}
+#
+# client_proposals.json is a {client_key: {version_id: proposal}} map. It used
+# to be a single document, but holding every client's every proposal version in
+# one doc eventually crossed Firestore's 1 MiB-per-document ceiling. Sharding it
+# per client (one document per client_key) keeps each document small. On the
+# first read after this file joined the set, the legacy single document is
+# migrated into the sharded collection automatically (see _fs_read).
+_SHARDED = {"ra_users.json", "risk_profiles.json", "client_holdings.json",
+            "client_proposals.json"}
 _FILES_COLLECTION = "_files"
 
 # Firestore commits at most 500 writes per batch; stay under it.
@@ -172,6 +180,60 @@ def _decode(doc: dict) -> Any:
     return doc.get("_value")
 
 
+def _migrate_legacy_single_to_sharded(name: str, coll: str) -> Optional[dict]:
+    """One-time migration for a file that was newly added to _SHARDED.
+
+    Its data still lives in the legacy single document under _files/<name>.
+    Copy each top-level record into its own document in the sharded collection,
+    then delete the legacy document so records deleted later can't be
+    resurrected if the collection legitimately empties.
+
+    Safety: records are written one at a time (not in a 450-write batch) so a
+    single oversized record can't fail the whole migration. If ANY write fails,
+    the partial migration is rolled back and the legacy document is left intact,
+    so nothing is lost — the caller still receives the full legacy value for
+    this run and the file stays in single-document mode until it can migrate
+    cleanly. Returns the full {key: record} dict, or None if there's nothing to
+    migrate."""
+    db = _db()
+    legacy_ref = db.collection(_FILES_COLLECTION).document(name)
+    legacy = legacy_ref.get()
+    if not legacy.exists:
+        return None
+
+    value = _decode(legacy.to_dict() or {})
+    if not isinstance(value, dict) or not value:
+        # Empty / non-map legacy doc — clear it so we don't re-check forever.
+        try:
+            legacy_ref.delete()
+        except Exception:
+            pass
+        return value if isinstance(value, dict) else None
+
+    written: list = []
+    try:
+        for k, v in value.items():
+            db.collection(coll).document(_doc_id(k)).set({"_key": k, **_encode(v)})
+            written.append(k)
+    except Exception:
+        # Roll back so the collection isn't left half-populated (which would
+        # make subsequent reads return only the migrated subset). Keep the
+        # legacy doc; the app still sees everything via the returned value.
+        for k in written:
+            try:
+                db.collection(coll).document(_doc_id(k)).delete()
+            except Exception:
+                pass
+        return value
+
+    # Fully migrated — remove the legacy single document.
+    try:
+        legacy_ref.delete()
+    except Exception:
+        pass
+    return value
+
+
 def _fs_read(name: str) -> Any:
     """Read the value of a file from Firestore. Returns the parsed value, or
     None if it doesn't exist yet."""
@@ -183,7 +245,11 @@ def _fs_read(name: str) -> Any:
             d = snap.to_dict() or {}
             key = d.get("_key", snap.id)
             out[key] = _decode(d)
-        return out if out else None
+        if out:
+            return out
+        # Sharded collection is empty — this file may have just joined _SHARDED
+        # with its data still in the legacy single document. Migrate it once.
+        return _migrate_legacy_single_to_sharded(name, coll)
     snap = db.collection(_FILES_COLLECTION).document(name).get()
     if not snap.exists:
         return None
@@ -192,6 +258,26 @@ def _fs_read(name: str) -> Any:
 
 def _fs_write_single(name: str, value: Any) -> None:
     _db().collection(_FILES_COLLECTION).document(name).set(_encode(value))
+
+
+# Tracks sharded files whose stale legacy single-document copy has already been
+# purged this process, so we attempt the (idempotent) delete only once per file.
+_legacy_purged: set = set()
+
+
+def _purge_legacy_single(name: str) -> None:
+    """After a sharded file has been written, ensure no stale single-document
+    copy survives under the _files collection. If one lingered, an empty
+    sharded collection later (e.g. after every record is deleted) would trigger
+    re-migration and resurrect those deleted records. Idempotent; runs at most
+    once per file per process. Deleting a non-existent document is a no-op."""
+    if name in _legacy_purged:
+        return
+    _legacy_purged.add(name)
+    try:
+        _db().collection(_FILES_COLLECTION).document(name).delete()
+    except Exception:
+        pass
 
 
 def _chunked(items, n):
@@ -302,6 +388,7 @@ def save_json(path: str, value: Any) -> None:
     if name in _SHARDED:
         _fs_write_sharded(name, value if isinstance(value, dict) else {},
                           delete_missing=True)
+        _purge_legacy_single(name)
     else:
         _fs_write_single(name, value)
     _cache_put(name, value)
@@ -347,6 +434,7 @@ def update_json(path: str, mutator: Callable[[Any], None]) -> None:
         old_snapshot = json.loads(json.dumps(value, default=str))
         mutator(value)
         _fs_write_changed(name, value, old_snapshot)
+        _purge_legacy_single(name)
     else:
         mutator(value)
         _fs_write_single(name, value)
