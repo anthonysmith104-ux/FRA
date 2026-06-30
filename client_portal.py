@@ -1193,7 +1193,7 @@ PROFILE_QUESTIONS = [
         ("Uncertain — major change expected",   30),
     ]},
     {"id": "net_worth", "section": "Context",
-     "text": "What is your liquid cash (excluding retirement)?",
+     "text": "What is your liquid cash — e.g. checking, savings, money market (excluding retirement accounts)?",
      # See income_band note re: single dollar sign per option.
      "type": "select", "options": [
         ("Under $100,000",              30),
