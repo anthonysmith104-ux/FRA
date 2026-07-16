@@ -681,23 +681,54 @@ def get_prices(tickers, start_date, end_date):
     return pd.DataFrame(), "failed"
 
 
-# NOTE: imports below were previously here (post-function-defs); moved to top
-# of file alongside other stdlib/third-party imports. Only skfolio kept here
-# since it's a heavy import and only used by run_backtest.
-from skfolio.preprocessing import prices_to_returns
-from skfolio.optimization import (
-    MeanRisk, RiskBudgeting, EqualWeighted,
-    HierarchicalRiskParity, NestedClustersOptimization,
-    MaximumDiversification, ObjectiveFunction
-)
-from skfolio.moments import (
-    LedoitWolf, GerberCovariance,
-    DenoiseCovariance, EWMu, ShrunkMu
-)
-from skfolio.prior import EmpiricalPrior, BlackLitterman
-from skfolio.model_selection import WalkForward, cross_val_predict
-from skfolio import RiskMeasure, RatioMeasure
-from sklearn.model_selection import train_test_split
+# LAZY SKFOLIO/SKLEARN LOADER (2026-07-15 performance pass) ──────────────
+# skfolio drags in the sklearn+scipy import chain — several seconds of
+# cold-start on Community Cloud — and is only needed on the optimizer /
+# backtest / projection paths. _load_skfolio() imports on first use and
+# injects the symbols into module globals so all existing call sites work
+# unchanged. Call it at the top of any function that uses these symbols.
+# (Dropped in this pass: RatioMeasure, BlackLitterman — zero usages.)
+_SKFOLIO_LOADED = False
+
+def _load_skfolio():
+    global _SKFOLIO_LOADED
+    if _SKFOLIO_LOADED:
+        return
+    global prices_to_returns, MeanRisk, RiskBudgeting, EqualWeighted
+    global HierarchicalRiskParity, NestedClustersOptimization
+    global MaximumDiversification, ObjectiveFunction
+    global LedoitWolf, GerberCovariance, DenoiseCovariance, EWMu, ShrunkMu
+    global EmpiricalPrior, WalkForward, cross_val_predict
+    global RiskMeasure, train_test_split
+    from skfolio.preprocessing import prices_to_returns
+    from skfolio.optimization import (
+        MeanRisk, RiskBudgeting, EqualWeighted,
+        HierarchicalRiskParity, NestedClustersOptimization,
+        MaximumDiversification, ObjectiveFunction
+    )
+    from skfolio.moments import (
+        LedoitWolf, GerberCovariance,
+        DenoiseCovariance, EWMu, ShrunkMu
+    )
+    from skfolio.prior import EmpiricalPrior
+    from skfolio.model_selection import WalkForward, cross_val_predict
+    from skfolio import RiskMeasure
+    from sklearn.model_selection import train_test_split
+    _g = globals()
+    _g.update({
+        "prices_to_returns": prices_to_returns, "MeanRisk": MeanRisk,
+        "RiskBudgeting": RiskBudgeting, "EqualWeighted": EqualWeighted,
+        "HierarchicalRiskParity": HierarchicalRiskParity,
+        "NestedClustersOptimization": NestedClustersOptimization,
+        "MaximumDiversification": MaximumDiversification,
+        "ObjectiveFunction": ObjectiveFunction, "LedoitWolf": LedoitWolf,
+        "GerberCovariance": GerberCovariance,
+        "DenoiseCovariance": DenoiseCovariance, "EWMu": EWMu,
+        "ShrunkMu": ShrunkMu, "EmpiricalPrior": EmpiricalPrior,
+        "WalkForward": WalkForward, "cross_val_predict": cross_val_predict,
+        "RiskMeasure": RiskMeasure, "train_test_split": train_test_split,
+    })
+    _SKFOLIO_LOADED = True
 
 # ── DATA FILE LOCATIONS ──────────────────────────────────────────────────────
 # Anchor every JSON store to the directory app.py lives in. Previously these
@@ -3091,6 +3122,7 @@ def _optimize_within_corridor(user_tickers, user_weights, objective="min_vol",
     differs is the objective function (minimize vs maximize_ratio).
     Always returns weights summing to 1.0 (skfolio's invariant).
     """
+    _load_skfolio()
     if not user_tickers or not user_weights:
         return None
     # Build base weights as decimals (skfolio expects 0-1, not 0-100)
@@ -4638,6 +4670,7 @@ def run_backtest(tickers, years, custom_weights=None, custom_weights_valid=False
                  cov_estimator="Ledoit-Wolf", mu_estimator="Shrunk",
                  use_hrp=True, use_nco=True, use_maxdiv=True,
                  use_walkforward=False):
+    _load_skfolio()
     end_dt   = date.today()
     start_dt = end_dt - relativedelta(years=years)
 
@@ -13938,6 +13971,7 @@ def security_risk_score(ticker):
 
 def fetch_benchmark_returns(benchmark_ticker, years):
     """Fetch benchmark returns aligned to test period."""
+    _load_skfolio()
     try:
         end_dt   = date.today()
         start_dt = end_dt - relativedelta(years=years)
@@ -14238,6 +14272,7 @@ def build_projection_chart(strategy_name, returns, benchmark_returns, bm_label,
     50% (25th-75th), median path. The 90% band makes downside scenarios
     visually obvious — losses are shaded below the dashed 0% line.
     """
+    _load_skfolio()
     # Strip emoji prefixes from labels for legend display, preserving the 👤
     # silhouette on the client-current portfolio. Same convention as the
     # _clean_label helper used by the other charts.
