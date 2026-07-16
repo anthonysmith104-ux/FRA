@@ -723,6 +723,7 @@ CLIENT_HOLDINGS_FILE   = _data_path("client_holdings.json")
 # directly so the PDF builder can embed them with reportlab.platypus.Image).
 FIRM_SETTINGS_FILE     = _data_path("firm_settings.json")
 FIRM_LOGO_PATH         = _data_path("firm_logo.png")
+COVER_WATERMARK_PATH   = _data_path("cover_watermark.png")  # three-helmet mark, baked ~8.5% navy alpha
 ADVISOR_PHOTO_PATH     = _data_path("advisor_photo.png")
 
 def load_firm_settings() -> dict:
@@ -6584,6 +6585,25 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
 
         canvas.saveState()
 
+        # ── Cover watermark: three-helmet mark, centered, drawn FIRST so
+        # the navy band and all flowables render over it. Opacity is
+        # baked into the PNG's alpha channel (ReportLab mask='auto'
+        # honors it), so no canvas transparency state is needed.
+        try:
+            if os.path.exists(COVER_WATERMARK_PATH):
+                _wm_w = 5.8 * inch
+                _wm_h = _wm_w * 0.5457   # asset aspect ratio (h/w)
+                canvas.drawImage(
+                    COVER_WATERMARK_PATH,
+                    (_pw - _wm_w) / 2.0,
+                    (_ph - _wm_h) / 2.0 - 0.55 * inch,
+                    _wm_w, _wm_h,
+                    preserveAspectRatio=True,
+                    mask='auto',
+                )
+        except Exception:
+            pass
+
         # Wordmark color matches the body antique gold (ACCENT) so the
         # masthead's gold reads as the same color as the document's
         # other gold accents (PORTFOLIO & RISK PROFILE REVIEW title,
@@ -9848,13 +9868,44 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                 if _profile:
                     _info_cache[_tk_u] = _profile
                     continue
-                # Fallback to yfinance
+                # Fallback to yfinance. NOTE on units (yfinance >= 0.2.5x):
+                #   .info["yield"]                        -> DECIMAL (0.033 = 3.3%)
+                #   .info["dividendYield"]                -> PERCENT  (3.3  = 3.3%)
+                #   .info["trailingAnnualDividendYield"]  -> DECIMAL
+                # We normalize everything to DECIMAL here; the display
+                # layer multiplies by 100 unconditionally.
                 try:
                     _yt = _yf.Ticker(_tk_u)
-                    _inf = _yt.info or {}
+                    try:
+                        _inf = _yt.info or {}
+                    except Exception:
+                        _inf = {}
+                    _y = _inf.get("yield")
+                    if _y is None and _inf.get("dividendYield") is not None:
+                        try:
+                            _y = float(_inf["dividendYield"]) / 100.0
+                        except (TypeError, ValueError):
+                            _y = None
+                    if _y is None:
+                        _y = _inf.get("trailingAnnualDividendYield") or None
+                    if not _y:
+                        # Last resort: trailing-12mo dividends / last close.
+                        # Uses the history endpoint, which typically still
+                        # works when .info is blocked/429'd on cloud hosts.
+                        try:
+                            _dv = _yt.dividends
+                            if _dv is not None and len(_dv):
+                                _cut = _dv.index.max() - pd.Timedelta(days=370)
+                                _ttm = float(_dv[_dv.index >= _cut].sum())
+                                _px_hist = _yt.history(period="5d")["Close"]
+                                _px = float(_px_hist.iloc[-1]) if len(_px_hist) else 0.0
+                                if _px > 0 and _ttm > 0:
+                                    _y = _ttm / _px
+                        except Exception:
+                            pass
                     _info_cache[_tk_u] = {
                         "name":      _inf.get("longName") or _inf.get("shortName") or _tk_u,
-                        "sec_yield": _inf.get("yield") or _inf.get("dividendYield"),
+                        "sec_yield": _y,
                         "type":      _inf.get("quoteType", "").upper(),
                     }
                 except Exception:
@@ -10136,10 +10187,13 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
                 _name_short = _name if len(_name) <= 42 else _name[:40] + "…"
                 _type = _info.get("type") or ""
                 _sec_y = _info.get("sec_yield")
-                _sec_str = (f"{_sec_y*100:.2f}%" if isinstance(_sec_y, (int, float))
-                            and _sec_y and _sec_y < 1 else
-                            (f"{_sec_y:.2f}%" if isinstance(_sec_y, (int, float))
-                             and _sec_y else "—"))
+                # sec_yield is stored as a DECIMAL everywhere (0.033 = 3.3%)
+                # — all fetch paths normalize (AV returns decimals natively;
+                # the yfinance fallback converts). Display x100 always; show
+                # an em-dash for None/zero (non-payers).
+                _sec_str = (f"{_sec_y*100:.2f}%"
+                            if isinstance(_sec_y, (int, float)) and _sec_y
+                            else "—")
 
                 # Look up expense ratio via the existing helper. Returns
                 # a decimal (0.0005 = 0.05%) or None when no source has
