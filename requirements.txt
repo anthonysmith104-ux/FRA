@@ -46,11 +46,10 @@ reportlab>=4.2
 # Spreadsheet upload (Excel/CSV ingest)
 openpyxl>=3.1
 
-# Statement import (AI) — local PDF text extraction for the redaction step,
-# so account numbers are masked before anything is sent to the Anthropic API.
-# pdfplumber pulls in pdfminer.six + Pillow (Pillow already constrained above
-# via streamlit). The app falls back to pypdf if this isn't present.
-pdfplumber>=0.11
+# pdfplumber REMOVED (2026-07-15 performance pass): zero usages anywhere in
+# the repo — the statement-redaction feature its old comment described was
+# never shipped. Dropping it removes the pdfminer.six dependency chain from
+# installs and container memory. Re-add if/when statement import lands.
 
 # Date math (used in goal/horizon calculations)
 python-dateutil>=2.9
