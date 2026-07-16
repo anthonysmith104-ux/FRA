@@ -1446,18 +1446,14 @@ def logo_mark(color: str = None, size: int = 26) -> str:
     so the call sites' surrounding flex layout stays unchanged.
     """
     if FIRM_LOGO_DATA_URI:
-        # The firm_logo.png artwork sits off-center inside its square canvas
-        # (more whitespace on the left than the right), so the rendered image
-        # appears shifted right. Nudge it left by ~7.5% of its width to
-        # optically center the artwork. Scales with `size` so it works at
-        # both the 160px welcome mark and the 26px header mark.
-        nudge = round(size * 0.075, 1)
+        # firm_logo.png (2026-07-15 asset) is cropped to content, centered,
+        # and background-transparent, so no optical-centering nudge is
+        # needed — the image renders true to its box at every size.
         return (
             f'<img src="{FIRM_LOGO_DATA_URI}" '
             f'width="{size}" height="{size}" '
             f'alt="Firm logo" '
-            f'style="display:block;object-fit:contain;'
-            f'        margin-left:-{nudge}px"/>'
+            f'style="display:block;object-fit:contain"/>'
         )
     color = color or THEME["primary"]
     return (
