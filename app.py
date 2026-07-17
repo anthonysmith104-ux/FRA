@@ -6618,25 +6618,6 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
 
         canvas.saveState()
 
-        # ── Cover watermark: three-helmet mark, centered, drawn FIRST so
-        # the navy band and all flowables render over it. Opacity is
-        # baked into the PNG's alpha channel (ReportLab mask='auto'
-        # honors it), so no canvas transparency state is needed.
-        try:
-            if os.path.exists(COVER_WATERMARK_PATH):
-                _wm_w = 5.8 * inch
-                _wm_h = _wm_w * 0.5457   # asset aspect ratio (h/w)
-                canvas.drawImage(
-                    COVER_WATERMARK_PATH,
-                    (_pw - _wm_w) / 2.0,
-                    (_ph - _wm_h) / 2.0 - 0.55 * inch,
-                    _wm_w, _wm_h,
-                    preserveAspectRatio=True,
-                    mask='auto',
-                )
-        except Exception:
-            pass
-
         # Wordmark color matches the body antique gold (ACCENT) so the
         # masthead's gold reads as the same color as the document's
         # other gold accents (PORTFOLIO & RISK PROFILE REVIEW title,
@@ -6807,6 +6788,70 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
             topPadding=0, bottomPadding=0,
         )
 
+    def _on_true_cover(canvas, _doc):
+        """Dedicated cover page (added 2026-07-16): cream field, centered
+        three-helmet watermark, firm wordmark, report title, client name,
+        and date. Drawn entirely on the canvas — the story only passes
+        through this page with a spacer + page break."""
+        _pw, _ph = _portrait_size
+        canvas.saveState()
+        # Cream field
+        canvas.setFillColor(BG_SOFT)
+        canvas.rect(0, 0, _pw, _ph, fill=1, stroke=0)
+        # Helmet watermark, large, centered slightly low
+        try:
+            if os.path.exists(COVER_WATERMARK_PATH):
+                _wm_w = 6.4 * inch
+                _wm_h = _wm_w * 0.5457
+                canvas.drawImage(
+                    COVER_WATERMARK_PATH,
+                    (_pw - _wm_w) / 2.0,
+                    (_ph - _wm_h) / 2.0 - 0.9 * inch,
+                    _wm_w, _wm_h,
+                    preserveAspectRatio=True, mask='auto',
+                )
+        except Exception:
+            pass
+        # Navy band top + gold rule (mirrors interior pages)
+        canvas.setFillColor(NAVY)
+        canvas.rect(0, _ph - 0.42 * inch, _pw, 0.42 * inch, fill=1, stroke=0)
+        canvas.setFillColor(ACCENT)
+        canvas.rect(0, _ph - 0.46 * inch, _pw, 0.04 * inch, fill=1, stroke=0)
+        # Wordmark block, upper third
+        try:
+            _cov_firm = (_firm_name or "MRB CAPITAL GROUP").upper()
+        except NameError:
+            _cov_firm = "MRB CAPITAL GROUP"
+        canvas.setFillColor(ACCENT)
+        canvas.setFont("Helvetica-Bold", 12)
+        _track = "  ".join(_cov_firm)
+        canvas.drawCentredString(_pw / 2.0, _ph - 1.9 * inch, _track)
+        canvas.setFillColor(NAVY)
+        canvas.setFont("Times-Bold", 27)
+        canvas.drawCentredString(_pw / 2.0, _ph - 2.55 * inch,
+                                 "Portfolio & Risk Profile Review")
+        # Client name + date, lower third
+        _cov_client = (client_profile or {}).get("client_name", "") or ""
+        canvas.setFillColor(NAVY)
+        canvas.setFont("Times-Roman", 19)
+        canvas.drawCentredString(_pw / 2.0, 2.85 * inch,
+                                 f"Prepared for {_cov_client}" if _cov_client
+                                 else "Client Portfolio Review")
+        canvas.setFillColor(colors.HexColor("#888888"))
+        canvas.setFont("Helvetica", 10.5)
+        canvas.drawCentredString(_pw / 2.0, 2.5 * inch,
+                                 datetime.now().strftime("%B %d, %Y"))
+        canvas.setFont("Helvetica", 8.5)
+        canvas.drawCentredString(_pw / 2.0, 0.55 * inch,
+                                 "Confidential — prepared exclusively for the client named above")
+        canvas.restoreState()
+
+    _true_cover_tmpl = PageTemplate(
+        id='truecover',
+        frames=[_make_frame(_portrait_size, 'truecover_frame')],
+        pagesize=_portrait_size,
+        onPage=_on_true_cover,
+    )
     _cover_tmpl = PageTemplate(
         id='cover',
         frames=[_make_cover_frame(_portrait_size, 'cover_frame')],
@@ -6833,7 +6878,12 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         author="Portfolio Intelligence",
         **_margins,
     )
-    doc.addPageTemplates([_cover_tmpl, _portrait_tmpl, _landscape_tmpl])
+    _want_cover = bool(sections.get("cover", True))
+    if _want_cover:
+        doc.addPageTemplates([_true_cover_tmpl, _cover_tmpl,
+                              _portrait_tmpl, _landscape_tmpl])
+    else:
+        doc.addPageTemplates([_cover_tmpl, _portrait_tmpl, _landscape_tmpl])
 
     # ── TYPOGRAPHY ─────────────────────────────────────────────
     # Phase 1: display headings move to Times-Roman serif for editorial
@@ -7988,6 +8038,12 @@ def build_client_proposal_pdf(client_profile, proposal, sections):
         return flowables
 
     story = []
+    if _want_cover:
+        # Page 1 is drawn entirely by _on_true_cover; the story just
+        # touches the page and breaks to the 'cover' (band) template.
+        story.append(NextPageTemplate('cover'))
+        story.append(Spacer(1, 1))
+        story.append(PageBreak())
     tiers = proposal.get("tiers", {}) or {}
 
     # ── RESOLVE WHICH 3 PORTFOLIOS GO IN THE REPORT ───────────
@@ -14957,15 +15013,23 @@ st.markdown(f"""
 # variable to a new st.tabs() position. main_tab6 (Fee Drag) is bound to the
 # 4th position; main_tab4 (Client Records) is bound to the 5th. main_tab7
 # (PDF Content) is the 6th; main_tab5 (Settings) stays rightmost.
-main_tab1, main_tab2, main_tab3, main_tab6, main_tab4, main_tab7, main_tab5 = st.tabs([
-    "Analyzer", "Results & Charts", "Optimizer", "Fee Drag Analyzer",
-    "Client Records", "PDF Content", "Settings"
-])
+# NAVIGATION (2026-07-15 performance pass): replaced st.tabs with a
+# horizontal radio. st.tabs renders EVERY tab body on EVERY rerun — all
+# seven sections (charts, gauges, tables) re-executed on each widget
+# interaction anywhere in the app. With radio navigation only the active
+# section's code runs, cutting per-interaction render work ~7x. Trade-off:
+# switching sections now triggers a rerun (tabs switched client-side),
+# but each rerun is a fraction of the old cost, so switches feel faster.
+_nav = st.radio(
+    "nav", ["Analyzer", "Results & Charts", "Optimizer", "Fee Drag Analyzer",
+            "Client Records", "PDF Content", "Settings"],
+    horizontal=True, label_visibility="collapsed", key="main_nav",
+)
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 1 — OPTIMIZER
 # ═══════════════════════════════════════════════════════════════
-with main_tab1:
+if _nav == "Analyzer":
     # Sidebar gates the strategy-blend sliders on this flag
     st.session_state["optimizer_tab_active"] = False
 
@@ -17425,47 +17489,9 @@ with main_tab1:
                     st.plotly_chart(fig_rs, use_container_width=True, key=f"rs_{label}",
                                     config={"displayModeBar": False})
     
-            if mode in ("all", "results", "alloc_only"):
-                # (Portfolio Weight Comparison section removed per UX feedback —
-                #  pie charts below serve the same purpose more visually.)
-
-                # Pie charts — only shown in alloc_only mode (Optimizer tab)
-                if mode == "alloc_only":
-                    try:
-                        _tickers = st.session_state.get("tickers", [])
-                        _my_keys = [k for k in results if k.startswith("⭐ ")]
-                        if _my_keys and _tickers:
-                            st.markdown(
-                                '<h4 style="margin:6px 0 2px 0;font-size:1.05rem;'
-                                'color:#111827;font-weight:700">🥧 Portfolio Allocations</h4>',
-                                unsafe_allow_html=True,
-                            )
-                            # Drop Equal Weight from pie lineup
-                            _pie_strats = _my_keys + [
-                                k for k in results
-                                if not k.startswith("⭐ ") and "Equal Weight" not in k
-                            ][:5]
-                            _ncols  = min(3, len(_pie_strats))
-                            _pcols  = st.columns(_ncols)
-                            for _pi, _psname in enumerate(_pie_strats[:6]):
-                                _pr = results[_psname]
-                                _pw = _pr.get("weights", [])
-                                if not _pw:
-                                    continue
-                                _pshort = _psname.replace("⭐ ", "")[:22]
-                                _fig_p  = make_allocation_pie(
-                                    list(_tickers[:len(_pw)]),
-                                    list(_pw),
-                                    title=_pshort,
-                                    height=420,
-                                )
-                                _pcols[_pi % _ncols].plotly_chart(
-                                    _fig_p, use_container_width=True,
-                                    key=f"opt_pie_{label}_{_pi}",
-                                    config={"displayModeBar": False},
-                                )
-                    except Exception:
-                        pass
+            # (Portfolio Weight Comparison section removed per UX feedback.)
+            # (Pie-chart allocation grid removed 2026-07-16 per Tony — the
+            #  tier gauges and holdings tables carry this information.)
 
 
         # Results stored in session state for Tab2/Tab3 display
@@ -17476,7 +17502,7 @@ with main_tab1:
 # ═══════════════════════════════════════════════════════════════
 # TAB 2 — RESULTS
 # ═══════════════════════════════════════════════════════════════
-with main_tab2:
+if _nav == "Results & Charts":
     st.session_state["optimizer_tab_active"] = False
     if not st.session_state.get("results_ready") or not st.session_state.get("bt1"):
         st.info("👆 Run your analysis in the **Analyzer** tab first.")
@@ -17547,7 +17573,7 @@ with main_tab2:
 # ═══════════════════════════════════════════════════════════════
 # TAB 3 — OPTIMIZER & PORTFOLIO RECOMMENDATIONS
 # ═══════════════════════════════════════════════════════════════
-with main_tab3:
+if _nav == "Optimizer":
     # Signal to the sidebar that the Optimizer tab is active — sliders will show
     st.session_state["optimizer_tab_active"] = True
 
@@ -17894,42 +17920,9 @@ with main_tab3:
             # touching the sliders produces no difference vs the prior
             # behavior. Touching any slider activates the blend in place of
             # the default Balanced strategy when proposals are generated.
-            with st.expander("Composite Optimizer (blend strategies)", expanded=False):
-                st.caption(
-                    "0 = ignore · 10 = full weight. Mix multiple optimization "
-                    "strategies into a custom blend. The active blend is used "
-                    "as the basis for the Balanced tier when you generate proposals."
-                )
-                _opt_blend_knobs = {}
-                for _grp_name, _strategies in STRATEGY_GROUPS.items():
-                    with st.expander(_grp_name, expanded=False):
-                        for _strat_name, _strat_desc in _strategies.items():
-                            _val = st.slider(
-                                _strat_name, min_value=0, max_value=10, value=0,
-                                key=f"opt_blend_{_strat_name.replace(' ','_').replace('/','_')}",
-                                help=_strat_desc,
-                            )
-                            _opt_blend_knobs[_strat_name] = _val
-                # Active blend summary
-                _opt_active = {k: v for k, v in _opt_blend_knobs.items() if v > 0}
-                if _opt_active:
-                    _opt_total = sum(_opt_active.values())
-                    _opt_parts = [f"<b>{k}</b> {v/_opt_total:.0%}"
-                                  for k, v in sorted(_opt_active.items(), key=lambda x: -x[1])]
-                    st.markdown(
-                        "<div style='background:#EEF3F6;border:1px solid #E1E8EE;"
-                        "border-radius:10px;padding:10px 14px;margin-top:8px;"
-                        "font-size:0.78rem;color:#0B1F2A;line-height:1.6'>"
-                        "<div style='font-size:0.66rem;color:#6B7E8A;letter-spacing:0.06em;"
-                        "text-transform:uppercase;font-weight:600;margin-bottom:4px'>Active blend</div>"
-                        + " · ".join(_opt_parts) +
-                        "</div>",
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.caption("_No sliders set — proposals will use default Balanced strategy._")
-                # Persist for proposal generation
-                st.session_state["blend_knobs"] = _opt_blend_knobs
+            # (Composite Optimizer blend UI removed 2026-07-16 per Tony —
+            # proposals use the default Balanced strategy; the composite
+            # engine + _blend_* helpers remain for programmatic use.)
             st.markdown("")
 
             tier_tabs = st.tabs([t[0] for t in _tier_tabs_cfg])
@@ -18403,7 +18396,7 @@ with main_tab3:
 # ═══════════════════════════════════════════════════════════════
 # TAB 4 — CLIENT RECORDS
 # ═══════════════════════════════════════════════════════════════
-with main_tab4:
+if _nav == "Client Records":
     st.session_state["optimizer_tab_active"] = False
     # Header removed — the tab label "👥 Client Records" already names the
     # section, so the duplicate H3 below it was redundant.
@@ -18906,7 +18899,7 @@ with main_tab4:
 # ═══════════════════════════════════════════════════════════════
 # TAB 7 — PDF CONTENT (customizable closing sections)
 # ═══════════════════════════════════════════════════════════════
-with main_tab7:
+if _nav == "PDF Content":
     st.session_state["optimizer_tab_active"] = False
     st.markdown(
         "<h3 style='color:#0E5C5E;font-weight:600;letter-spacing:-0.015em;"
@@ -19104,7 +19097,7 @@ with main_tab7:
 # ═══════════════════════════════════════════════════════════════
 # TAB 5 — SETTINGS (firm branding, advisor info, logo + photo)
 # ═══════════════════════════════════════════════════════════════
-with main_tab5:
+if _nav == "Settings":
     st.session_state["optimizer_tab_active"] = False
     st.markdown(
         "<h3 style='color:#0E5C5E;font-weight:600;letter-spacing:-0.015em;"
@@ -19961,7 +19954,7 @@ with main_tab5:
 # is in the low single basis points per year and is shown but not
 # overemphasized — the dominant effect is the expense ratio itself.
 
-with main_tab6:
+if _nav == "Fee Drag Analyzer":
     st.markdown(
         "<h3 style='color:#0E5C5E;font-weight:600;letter-spacing:-0.015em;"
         "margin:0 0 6px 0'>Fee Drag Analyzer</h3>",
