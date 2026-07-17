@@ -15013,6 +15013,1605 @@ st.markdown(f"""
 # variable to a new st.tabs() position. main_tab6 (Fee Drag) is bound to the
 # 4th position; main_tab4 (Client Records) is bound to the 5th. main_tab7
 # (PDF Content) is the 6th; main_tab5 (Settings) stays rightmost.
+
+# ── render_tab: shared results renderer (hoisted 2026-07-16) ──────────
+def render_tab(results, ef_points, label, mode="results"):
+    # Hoisted to module level (2026-07-16): resolve the analyzed
+    # ticker list from session state so every nav section can call
+    # this without the Analyzer page having run this rerun.
+    tickers = list(st.session_state.get("tickers", []) or [])
+    # (Also fixes a pre-existing dormant NameError: _ten_yrs_ago was used
+    # in the short-history detection below but never defined anywhere —
+    # the enclosing try/except swallowed it silently.)
+    _ten_yrs_ago = date.today() - relativedelta(years=10)
+    # Helper to strip emoji prefixes from portfolio labels for display.
+    # Keeps the 👤 silhouette on "Client's Current" (per advisor spec),
+    # strips everything else. Internal label strings are unchanged —
+    # this is purely a render-time cosmetic transform.
+    import re as _re_clean
+    _CLEAN_KEEP_PREFIX = "👤"
+    def _clean_label(s):
+        if not isinstance(s, str):
+            return s
+        if s.startswith(_CLEAN_KEEP_PREFIX):
+            return s  # preserve the silhouette + the rest
+        # Strip a leading emoji + optional whitespace
+        # (covers 🟦 ⚖️ 📈 🧩 📁 ⭐ 🛡️ 🚀 etc.)
+        return _re_clean.sub(
+            r"^[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+\s*",
+            "", s
+        ).strip() or s
+
+    # Guard: results must be a non-empty dict of strategy results
+    if not results or not isinstance(results, dict):
+        st.warning(f"No results available for {label}.")
+        return
+    # Guard: keys must be strings (not nested dicts)
+    if results and not isinstance(next(iter(results)), str):
+        st.warning(f"Unexpected results format for {label}.")
+        return
+    # Narrow modes — skip PCM/charts, render only the requested section
+    # scores_only and alloc_only fall through to their sections below
+    if mode in ("scores_only", "alloc_only"):
+        pass  # handled by section guards below
+
+    # ── Data-integrity callout: show actual date range and flag shortfalls ─
+    _my_k = next((k for k in results if k.startswith("⭐ ")), None)
+    if _my_k and results[_my_k].get("index"):
+        _idx        = results[_my_k]["index"]
+        _n          = len(_idx)
+        _yrs_actual = round(_n / 252, 1)
+        # Compare against the label's requested period
+        _yrs_req = 0
+        if "Year"  in label: _yrs_req = 1
+        if "3 Years"  in label: _yrs_req = 3
+        if "5 Years"  in label: _yrs_req = 5
+        if "10 Years" in label: _yrs_req = 10
+        if _yrs_req and _yrs_actual < _yrs_req * 0.85:
+            st.warning(
+                f"⚠️ **{label}** — requested {_yrs_req}y but only "
+                f"**{_yrs_actual}y of data** was available for your portfolio "
+                f"(from `{_idx[0][:10]}` to `{_idx[-1][:10]}`). "
+                f"One or more tickers have shorter history. "
+                f"Add longer-history tickers or switch to the 1y/3y tab for more reliable stats."
+            )
+        # (Previously emitted a "📅 My Portfolio data: NN trading days"
+        # caption here — removed per UI cleanup, redundant with the
+        # period selector at the top of the tab.)
+
+    # ── CANONICAL COMPARISON ORDER ─────────────────────────
+    # Honors the three Fixed market benchmark toggles at the top of
+    # this tab. Replaces the older 60/40 + 90/10 + S&P + Conservative
+    # set. Order: bonds → balanced → equity, so the matrix reads from
+    # most-conservative to most-aggressive across the benchmark
+    # columns left-to-right.
+    COMP_ORDER  = []
+    COMP_COLORS = {}
+    if st.session_state.get("show_bench_bnd", True):
+        COMP_ORDER.append("🟦 100% Bonds (BND)")
+        COMP_COLORS["🟦 100% Bonds (BND)"] = "#2563eb"
+    if st.session_state.get("show_bench_6040", True):
+        COMP_ORDER.append("⚖️ 60/40 (SPY+AGG)")
+        COMP_COLORS["⚖️ 60/40 (SPY+AGG)"] = "#059669"
+    if st.session_state.get("show_bench_spy", True):
+        COMP_ORDER.append("📈 S&P 500 (SPY)")
+        COMP_COLORS["📈 S&P 500 (SPY)"] = "#dc2626"
+    MY_PORT_COLOR = "#7c3aed"  # Purple for My Portfolio
+
+    # PROXY_MAP, resolve_ticker, get_prices_with_proxies defined at top level
+    # ── Date range for this tab — used throughout ──────────
+    yrs_pcm   = int(label.split()[0]) if label.split()[0].isdigit() else 1
+    end_pcm   = date.today()
+    start_pcm = end_pcm - relativedelta(years=yrs_pcm)
+
+    # ── METRICS PLACEHOLDER (filled after std_chart_comparisons) ──
+    _metrics_box = st.empty()
+
+    if mode not in ("scores_only", "alloc_only"):
+        # ── PCM: DEFAULT 6 COLUMNS ──────────────────────────
+        st.markdown("#### Portfolio Comparison Matrix")
+        # (Previously rendered a "My Portfolio · {benchmark1} ·
+        # {benchmark2} · 1yr period" caption beneath the header —
+        # removed per UI cleanup, redundant with the legend.)
+
+        pcm_standards = {}
+
+        # ══════════════════════════════════════════════════════════════════
+        # CORE DATA INTEGRITY SYSTEM
+        # Every metric is computed from ACTUAL price history for EXACT period.
+        # YTD, 1yr, 3yr, 5yr, 10yr — each period fetched and computed separately.
+        # Uses get_prices_with_proxies so FBTC→GBTC, GLDM→GLD etc. auto-applied.
+        # ══════════════════════════════════════════════════════════════════
+
+        # port_stats_from_prices defined at top level
+        # ── Period dates ─────────────────────────────────────
+        _today     = date.today()
+        _ytd_start = date(_today.year, 1, 1)
+
+        # ── Comparison portfolio definitions ──────────────────
+        # Built dynamically from the three Fixed market benchmark
+        # toggles. Empty dict = all toggles off → no benchmark
+        # columns (the loop below silently skips an empty defs
+        # dict and only the user's portfolio is shown).
+        _CMP_DEFS = {}
+        if st.session_state.get("show_bench_bnd", True):
+            _CMP_DEFS["🟦 100% Bonds (BND)"] = {"BND": 1.0}
+        if st.session_state.get("show_bench_6040", True):
+            _CMP_DEFS["⚖️ 60/40 (SPY+AGG)"] = {"SPY": 0.60, "AGG": 0.40}
+        if st.session_state.get("show_bench_spy", True):
+            _CMP_DEFS["📈 S&P 500 (SPY)"]   = {"SPY": 1.0}
+
+        # ── Fetch comparison prices for this tab's period ─────
+        # IMPORTANT: derive the ticker list directly from _CMP_DEFS so
+        # we never silently miss a ticker (which would cause that
+        # ticker to be filtered out by port_stats_from_prices and
+        # cause the portfolio to look identical to one without it —
+        # e.g. 90/10 was rendering identically to S&P 500 because
+        # BIL was missing from the fetch list).
+        try:
+            _cmp_tickers = sorted({
+                t for d in _CMP_DEFS.values() for t in d.keys()
+            })
+            if not _cmp_tickers:
+                # All three benchmark toggles are off — skip the matrix
+                # benchmark fetch entirely; pcm_standards stays empty
+                # so only My Portfolio renders in the matrix.
+                pass
+            else:
+                _cmp_p, _    = get_prices_cached(
+                    tuple(_cmp_tickers),
+                    str(start_pcm), str(_today))
+                _cmp_p       = _cmp_p.ffill()
+
+                for _sname, _swts in _CMP_DEFS.items():
+                    _st = port_stats_from_prices(_cmp_p, _swts, yrs_pcm)
+                    if _st: pcm_standards[_sname] = _st
+        except Exception: pass
+
+        # ── PARALLEL 10-YEAR FETCH FOR RISK SCORING ───────────
+        # Risk scores must NOT change as the user flips between 1y/3y/
+        # 5y/10y tabs. We compute every portfolio's 10-year vol/drawdown
+        # once (cached in session_state across reruns) and use those
+        # numbers for the Risk Score column in every tab's matrix.
+        # Other metrics (return, Sharpe, etc.) remain period-specific.
+        _SCORING_YEARS = 10
+        _scoring_stats = st.session_state.get("_pcm_scoring_stats_10y", None)
+        if _scoring_stats is None:
+            _scoring_stats = {}
+            try:
+                _start_10y = end_pcm - relativedelta(years=_SCORING_YEARS)
+                # Use proxy-stitched prices so short-history tickers
+                # (e.g. SGOV ~2yr, FBTC ~1yr) get back-filled with
+                # their proxy's older history. Without this, PCM's
+                # 10yr vol diverges from every other scoring path
+                # in the app — which all use get_prices_with_proxies
+                # via _cached_portfolio_vol. Two scoring paths
+                # against different price series produce different
+                # diversification-adjusted risk scores for the
+                # SAME tickers + weights.
+                _cmp_p_10y, _ = get_prices_with_proxies(
+                    tuple(_cmp_tickers),
+                    str(_start_10y), str(_today),
+                    min_days=max(60, int(_SCORING_YEARS * 60)),
+                )
+                if not _cmp_p_10y.empty:
+                    for _sname, _swts in _CMP_DEFS.items():
+                        _s10 = port_stats_from_prices(_cmp_p_10y, _swts, _SCORING_YEARS)
+                        if _s10: _scoring_stats[_sname] = _s10
+            except Exception:
+                pass
+            # Persist for the other tabs/render passes; rebuilt only
+            # when the analysis is re-run (key cleared on re-run).
+            st.session_state["_pcm_scoring_stats_10y"] = _scoring_stats
+
+        # (Equal Weight removed — comparison matrix only uses 60/40, 90/10, S&P 500, Conservative)
+
+        # ── My Portfolio: exact per-ticker price history ───────
+        _my_label_pcm    = next((k.replace("⭐ ","") for k in results
+                                 if k.startswith("⭐ ")), "My Portfolio")
+        my_port_keys_pcm = ([k for k in results if k.startswith("⭐ ")]
+                             or list(results.keys())[:1])
+        my_port = {}
+        if my_port_keys_pcm and tickers:
+            _r = results[my_port_keys_pcm[0]]
+            # Determine weights: prefer loaded portfolio weights
+            _loaded_w = st.session_state.get("loaded_weights", {})
+            if _loaded_w and all(t in _loaded_w for t in tickers):
+                _my_wts = {t: _loaded_w[t]/100.0 for t in tickers}
+            else:
+                _bw = _r.get("weights", [1/len(tickers)]*len(tickers))
+                _my_wts = {t: float(_bw[i]) if i < len(_bw) else 1/len(tickers)
+                           for i, t in enumerate(tickers)}
+            # Normalize
+            _wsum = sum(_my_wts.values())
+            _my_wts = {t: v/_wsum for t, v in _my_wts.items()}
+            try:
+                # Fetch actual prices with proxy substitution
+                _my_p, _proxies = get_prices_with_proxies(tuple(tickers), start_pcm, str(_today))
+                if not _my_p.empty:
+                    _st = port_stats_from_prices(_my_p, _my_wts, yrs_pcm)
+                    if _st:
+                        my_port[_my_label_pcm] = _st
+            except Exception: pass
+            # Fallback to backtest returns
+            if not my_port:
+                try:
+                    _bs = pd.Series(_r["returns"], index=pd.to_datetime(_r["index"]))
+                    _st = port_stats_from_prices(
+                        _bs.to_frame("port"), {"port":1.0}, yrs_pcm)
+                    if _st: my_port[_my_label_pcm] = _st
+                except Exception: pass
+            if not my_port:
+                my_port[_my_label_pcm] = {k:_r.get(k,0) for k in
+                    ["ann_return","ann_vol","sharpe","sortino","calmar",
+                     "max_drawdown","total_return","cvar_5"]}
+                my_port[_my_label_pcm]["ytd_return"] = 0.0
+                # Also record tickers/weights so PCM scoring + ER work
+                my_port[_my_label_pcm]["tickers"] = list(_my_wts.keys())
+                my_port[_my_label_pcm]["weights"] = list(_my_wts.values())
+                my_port[_my_label_pcm]["weights_dict"] = dict(_my_wts)
+
+            # ── 10yr stats for My Portfolio (risk-score scoring only) ──
+            if _my_label_pcm not in _scoring_stats:
+                try:
+                    _start_10y = end_pcm - relativedelta(years=_SCORING_YEARS)
+                    _my_p_10y, _ = get_prices_with_proxies(
+                        tuple(tickers), _start_10y, str(_today))
+                    if not _my_p_10y.empty:
+                        _s10 = port_stats_from_prices(_my_p_10y, _my_wts, _SCORING_YEARS)
+                        if _s10:
+                            _scoring_stats[_my_label_pcm] = _s10
+                            st.session_state["_pcm_scoring_stats_10y"] = _scoring_stats
+                except Exception:
+                    pass
+
+        # ── Step 2 user-selected comparison portfolios ─────────
+        # cmp_port1/cmp_port2 can be: "None", "📁 SavedName", a
+        # POPULAR_PORTFOLIOS preset key, or "✏️ Custom (enter tickers)".
+        # The custom option pulls weights from cmp{1,2}_custom_weights
+        # which were parsed in the Analyzer's Step 2 input.
+        def _resolve_cmp_selection(sel, idx=None):
+            """Return (tickers_list, weights_list, display_name) or None.
+            `idx` is 1 or 2 — used to pull the right custom-weights
+            state when `sel` is the custom-tickers option."""
+            if not sel or sel == "None":
+                return None
+            if sel.startswith("📁 "):
+                sp = load_saved().get(sel[2:])
+                if sp:
+                    tks = sp["tickers"]
+                    wts = sp.get("weights") or [1.0/len(tks)] * len(tks)
+                    return tks, wts, sel
+            # Custom-tickers comparison from Step 2 text input
+            if sel.startswith("✏️ Custom") and idx in (1, 2):
+                cw = st.session_state.get(f"cmp{idx}_custom_weights")
+                cl = st.session_state.get(f"cmp{idx}_custom_label")
+                if cw:
+                    return list(cw.keys()), list(cw.values()), (cl or "✏️ Custom")
+                return None
+            # Popular preset — handles legacy str (equal-weighted)
+            # and Schwab dict (specific weights) uniformly.
+            if sel in POPULAR_PORTFOLIOS and POPULAR_PORTFOLIOS[sel]:
+                tks, wmap = _resolve_preset(sel)
+                if tks:
+                    # _resolve_preset returns weights as percentages;
+                    # this caller wants decimals (sums to 1.0).
+                    _total = sum(wmap.values()) or 1.0
+                    wts = [wmap.get(t, 0.0) / _total for t in tks]
+                    return tks, wts, f"🧩 {sel[:14]}"
+            return None
+
+        user_cmps = {}
+
+        # ── Client's current portfolio (Step 2) ─────────────────
+        # The dedicated "client's current portfolio" picker from
+        # Section 2 of the Analyzer. Distinct from cmp_port1/cmp_port2
+        # (which are advisor-defined comparisons) — this is what the
+        # client actually holds today. Shows up in PCM as its own
+        # column so the advisor can compare current vs proposed vs
+        # market benchmarks side-by-side.
+        _curr_override = st.session_state.get("client_current_portfolio")
+        if _curr_override and _curr_override.get("tickers"):
+            _curr_tks = list(_curr_override["tickers"])
+            _curr_w_pct = _curr_override.get("weights") or {}
+            # Convert percentages → decimals for port_stats_from_prices
+            _curr_wmap = {
+                t: float(_curr_w_pct.get(t, 0)) / 100.0
+                for t in _curr_tks
+                if float(_curr_w_pct.get(t, 0)) > 0
+            }
+            if _curr_wmap:
+                _curr_label_src = _curr_override.get("source_label", "Client's Current")
+                # Display label — short enough to fit a PCM column header
+                _curr_dname = "👤 Client's Current"
+                try:
+                    _cp, _ = get_prices_with_proxies(
+                        tuple(_curr_wmap.keys()), start_pcm, str(_today))
+                    if not _cp.empty:
+                        _st = port_stats_from_prices(_cp, _curr_wmap, yrs_pcm)
+                        if _st:
+                            user_cmps[_curr_dname] = _st
+                except Exception:
+                    pass
+                # 10yr stats for risk scoring
+                if _curr_dname not in _scoring_stats:
+                    try:
+                        _start_10y = end_pcm - relativedelta(years=_SCORING_YEARS)
+                        _cp_10y, _ = get_prices_with_proxies(
+                            tuple(_curr_wmap.keys()), _start_10y, str(_today))
+                        if not _cp_10y.empty:
+                            _s10 = port_stats_from_prices(_cp_10y, _curr_wmap, _SCORING_YEARS)
+                            if _s10:
+                                _scoring_stats[_curr_dname] = _s10
+                                st.session_state["_pcm_scoring_stats_10y"] = _scoring_stats
+                    except Exception:
+                        pass
+
+        for _i, _cmp_key in enumerate(("cmp_port1", "cmp_port2"), start=1):
+            _sel = st.session_state.get(_cmp_key, "None")
+            _resolved = _resolve_cmp_selection(_sel, idx=_i)
+            if not _resolved:
+                continue
+            _tks, _wts, _dname = _resolved
+            try:
+                _cp, _ = get_prices_with_proxies(
+                    tuple(_tks), start_pcm, str(_today))
+                if not _cp.empty:
+                    _wmap = {t: w for t, w in zip(_tks, _wts)}
+                    _st = port_stats_from_prices(_cp, _wmap, yrs_pcm)
+                    if _st:
+                        user_cmps[_dname] = _st
+            except Exception:
+                pass
+            # 10yr stats for risk scoring (cached across periods)
+            if _dname not in _scoring_stats:
+                try:
+                    _start_10y = end_pcm - relativedelta(years=_SCORING_YEARS)
+                    _cp_10y, _ = get_prices_with_proxies(
+                        tuple(_tks), _start_10y, str(_today))
+                    if not _cp_10y.empty:
+                        _wmap = {t: w for t, w in zip(_tks, _wts)}
+                        _s10 = port_stats_from_prices(_cp_10y, _wmap, _SCORING_YEARS)
+                        if _s10:
+                            _scoring_stats[_dname] = _s10
+                            st.session_state["_pcm_scoring_stats_10y"] = _scoring_stats
+                except Exception:
+                    pass
+
+        default_cols = {k: pcm_standards[k] for k in COMP_ORDER if k in pcm_standards}
+        # Order: My Portfolio → Step 2 inputs (client current + cmp1 + cmp2)
+        # → fixed benchmarks. Cap at 8 columns so the table stays
+        # readable but all Step 2 selections + fixed benchmarks fit
+        # (1 my_port + 3 step 2 + 3 benchmarks = 7, plus 1 headroom).
+        all_portfolios = {**my_port, **user_cmps, **default_cols}
+        all_portfolios = dict(list(all_portfolios.items())[:8])
+
+        # Controls row — optional extra strategies to overlay on charts
+        extra_sel = st.multiselect(
+            "Add optimized strategies to comparison charts",
+            options=[k for k in results.keys() if not k.startswith("⭐ ")],
+            default=[], key=f"pcm_extra_{label}",
+            placeholder="Add optimized strategies to charts...",
+        )
+        # Add selected strategies to PCM columns (max 6)
+        for es in extra_sel:
+            if es in results and es not in all_portfolios:
+                if len(all_portfolios) >= 6:
+                    last_key = list(all_portfolios.keys())[-1]
+                    del all_portfolios[last_key]
+                # Augment with tickers/weights so PCM scoring + ER work
+                _r_es = dict(results[es])
+                _w_es = _r_es.get("weights", [])
+                if _w_es and tickers:
+                    _r_es["tickers"] = list(tickers[:len(_w_es)])
+                    _r_es["weights"] = list(_w_es)
+                    _r_es["weights_dict"] = {
+                        t: float(w) for t, w in zip(tickers, _w_es)
+                    }
+                all_portfolios[es] = _r_es
+        # Store for use in charts below
+        st.session_state[f"chart_extra_{label}"] = extra_sel
+
+        bm_rets = st.session_state.get("bmark_returns_" + label)
+        bm_lbl  = st.session_state.get("benchmark_label", "SPY")
+        bm_ann  = float(pd.Series(bm_rets).mean() * 252) if bm_rets else None
+
+        metric_names = [
+            "Ann. Return", "Ann. Volatility", "Sharpe Ratio", "Sortino Ratio",
+            "Calmar Ratio", "Max Drawdown", "Total Return", "YTD Return",
+            "CVaR (5%)", "Expense Ratio", "Diversification", "Risk Score",
+        ]
+
+        # YTD: Jan 1 of current year to today
+        _ytd_start = date(date.today().year, 1, 1)
+
+        matrix_data = {"Metric": metric_names}
+        for pname, r in all_portfolios.items():
+            ar=r["ann_return"]; av=r["ann_vol"]; sh=r["sharpe"]
+            so=r.get("sortino",0); ca=r.get("calmar",0); md=r["max_drawdown"]
+            tr=r["total_return"]; cv=r.get("cvar_5", ar/252 - 2*av/np.sqrt(252))
+
+            # ── Risk Score uses 10-YEAR vol/drawdown, not period-specific ──
+            # Risk is a property of the portfolio, not of which tab the user
+            # is on. Pull 10yr stats from _scoring_stats; fall back to the
+            # period values if 10yr data isn't available (short-history
+            # tickers etc.).
+            _score_st = _scoring_stats.get(pname, {}) if _scoring_stats else {}
+            _av_score = float(_score_st.get("ann_vol", av) or av)
+            _md_score = float(_score_st.get("max_drawdown", md) or md)
+            _sh_score = float(_score_st.get("sharpe",  sh) or sh)
+
+            # ── Risk Score: per-holding weighted-avg + correlation ──
+            # If we have tickers/weights, use the proper portfolio scorer
+            # (classifies each holding via _classify_ticker, applies caps,
+            # discounts for diversification). Otherwise fall back to the
+            # equity-class composite.
+            _p_tks = r.get("tickers", [])
+            _p_wts = r.get("weights", [])
+            div_ratio = None   # diversification ratio for this portfolio
+            if _p_tks and _p_wts:
+                _h_scores = []
+                _h_vols   = []
+                for _tt in _p_tks:
+                    _rr = security_risk_score(_tt)
+                    if _rr:
+                        _h_scores.append(_rr["score"])
+                        _h_vols.append(_rr.get("ann_vol", 0.15))
+                    else:
+                        _h_scores.append(50)
+                        _h_vols.append(0.15)
+                # Use 10yr portfolio vol for scoring (locked across tabs)
+                rs = compute_portfolio_risk_score(
+                    _p_tks, _p_wts,
+                    holding_scores=_h_scores,
+                    holding_vols=_h_vols,
+                    portfolio_vol=_av_score,
+                )
+                # Diversification ratio: 1.00 = perfectly correlated,
+                # < 1.0 = some diversification benefit. Uses the period's
+                # `av` (not 10yr) since this is informational, not a score.
+                _w_arr = np.array([float(x or 0) for x in _p_wts])
+                _w_sum = _w_arr.sum()
+                if _w_sum > 0:
+                    _w_norm = _w_arr / _w_sum
+                    _wsv = float(np.dot(_w_norm,
+                                        np.array(_h_vols, dtype=float)))
+                    if _wsv > 1e-6:
+                        div_ratio = max(0.0, min(1.0, av / _wsv))
+            else:
+                # Fallback path also uses 10yr values for scoring
+                rs = compute_risk_score(_av_score, _md_score, _sh_score,
+                                        asset_class="equity")
+            # ── Weighted Expense Ratio ──
+            if _p_tks and _p_wts:
+                _wer, _cov = weighted_expense_ratio(_p_tks, _p_wts)
+                if _cov > 0:
+                    er_str = f"{_wer*100:.2f}%"
+                    if _cov < 95:
+                        er_str += f"  ({_cov:.0f}% covered)"
+                else:
+                    er_str = "—"
+            else:
+                er_str = "—"
+            # ── Diversification ratio cell ──
+            # Render as ratio + qualitative tag so the meaning is clear
+            if div_ratio is not None:
+                if div_ratio >= 0.95:
+                    _div_tag = "concentrated"
+                elif div_ratio >= 0.80:
+                    _div_tag = "moderate"
+                elif div_ratio >= 0.60:
+                    _div_tag = "diversified"
+                else:
+                    _div_tag = "well-diversified"
+                div_str = f"{div_ratio:.2f}  ({_div_tag})"
+            else:
+                div_str = "—"
+            alpha = f"{ar-bm_ann:+.2%}" if bm_ann is not None else "—"
+            # PCM column header — emoji-stripped per advisor preference
+            # (only the 👤 silhouette on Client's Current is preserved).
+            short = _clean_label(pname.replace("⭐ ",""))[:24]
+            # Order must match metric_names list exactly
+            ytd = r.get("ytd_return", 0)
+            matrix_data[short] = [
+                f"{ar:.2%}", f"{av:.2%}", f"{sh:.2f}", f"{so:.2f}",
+                f"{ca:.2f}", f"{md:.2%}", f"{tr:.2%}", f"{ytd:.2%}",
+                f"{cv:.2%}", er_str, div_str, str(rs),
+            ]
+
+        matrix_df = pd.DataFrame(matrix_data)
+        st.dataframe(matrix_df,
+                     use_container_width=True, hide_index=True,
+                     column_config={"Metric": st.column_config.TextColumn("Metric", width="medium")})
+        if bm_ann:
+            st.caption(f"📊 Benchmark: {bm_lbl} · Ann. Return {bm_ann:.2%}")
+        st.caption(
+            "💡 **Diversification ratio** = portfolio volatility ÷ weighted "
+            "sum of individual holding volatilities. **1.00** means the "
+            "holdings move perfectly together (no diversification benefit). "
+            "**Lower values** indicate that uncorrelated movements between "
+            "holdings are reducing overall portfolio risk — a "
+            "well-diversified portfolio typically lands in the 0.55–0.75 range."
+        )
+
+        # ── DEBUG: per-portfolio breakdown ────────────────────
+        # Lets the user verify expense ratio + diversification ratio
+        # calculations by seeing which tickers contributed and where
+        # data is missing. Open if numbers look off.
+        with st.expander("🔍 Show calculation details (per-portfolio breakdown)", expanded=False):
+            for pname, r in all_portfolios.items():
+                _p_tks = r.get("tickers", [])
+                _p_wts = r.get("weights", [])
+                if not _p_tks or not _p_wts:
+                    st.markdown(f"**{pname}**: _(no holdings recorded — using portfolio-level fallback)_")
+                    continue
+                st.markdown(f"**{pname}** — {len(_p_tks)} holdings")
+                _w_arr = np.array([float(x or 0) for x in _p_wts])
+                _w_arr = _w_arr / _w_arr.sum() if _w_arr.sum() > 0 else _w_arr
+                _rows = []
+                for _t, _w in zip(_p_tks, _w_arr):
+                    _rs = security_risk_score(_t)
+                    _er = _expense_ratio_for_ticker(_t)
+                    _cls, _ct = _classify_ticker(_t)
+                    _rows.append({
+                        "Ticker": _t,
+                        "Weight": f"{_w*100:.1f}%",
+                        "Class":  f"{_cls}/{_ct}" if _cls == "bond" else _cls,
+                        "Vol":    f"{_rs.get('ann_vol', 0)*100:.1f}%" if _rs else "—",
+                        "Score":  _rs["score"] if _rs else "—",
+                        "ER":     ("0.00%" if _er == 0.0 else
+                                  f"{_er*100:.2f}%" if _er is not None else "—"),
+                    })
+                st.dataframe(pd.DataFrame(_rows), hide_index=True,
+                            use_container_width=True)
+                # Also show the aggregated metrics so the user can verify
+                _wer, _cov = weighted_expense_ratio(_p_tks, _p_wts)
+                st.caption(
+                    f"→ Weighted ER: **{_wer*100:.3f}%** "
+                    f"(coverage {_cov:.0f}%)  ·  "
+                    f"Portfolio vol: **{r.get('ann_vol', 0)*100:.2f}%**"
+                )
+                st.markdown("---")
+
+        # ── STANDARD COMPARISON PORTFOLIOS FOR CHARTS ─────────
+        std_chart_comparisons = {}
+        try:
+            yrs_cmp   = int(label.split()[0]) if label.split()[0].isdigit() else 3
+            end_cmp   = date.today()
+            start_cmp = end_cmp - relativedelta(years=max(1, yrs_cmp))
+            # ── Fixed market benchmarks (BND / 60-40 / SPY) ──────
+            # Three universal reference portfolios. Each is shown
+            # only if its toggle in the Fixed market benchmarks
+            # expander (top of this tab) is on. Replaces the older
+            # 60/40 + 90/10 + S&P + Conservative set.
+            std_cmp_defs = []
+            if st.session_state.get("show_bench_bnd", True):
+                std_cmp_defs.append(("🟦 100% Bonds (BND)",     {"BND": 1.0}))
+            if st.session_state.get("show_bench_6040", True):
+                std_cmp_defs.append(("⚖️ 60/40 (SPY+AGG)",      {"SPY": 0.60, "AGG": 0.40}))
+            if st.session_state.get("show_bench_spy", True):
+                std_cmp_defs.append(("📈 S&P 500 (SPY)",         {"SPY": 1.0}))
+            # Derive ticker list directly from the defs so we never
+            # silently drop one (e.g. BIL was missing previously and
+            # made 90/10 look identical to S&P 500)
+            _need_tks = sorted({t for _, d in std_cmp_defs for t in d.keys()})
+            if not _need_tks:
+                # All three benchmark toggles are off — nothing to fetch.
+                cmp_prices_std = pd.DataFrame()
+            else:
+                cmp_prices_std, _src = get_prices_cached(
+                    tuple(_need_tks), str(start_cmp), str(end_cmp))
+                cmp_prices_std = cmp_prices_std.ffill()
+
+            def cmp_port_rets(wts_dict):
+                cols = [c for c in wts_dict if c in cmp_prices_std.columns]
+                if not cols: return None
+                w    = np.array([wts_dict[c] for c in cols]); w=w/w.sum()
+                rets = cmp_prices_std[cols].pct_change().dropna()
+                return pd.Series((rets.values @ w), index=rets.index)
+
+            for cname, cwts in std_cmp_defs:
+                r = cmp_port_rets(cwts)
+                if r is not None: std_chart_comparisons[cname] = r
+
+            # (Equal Weight removed from chart comparisons per advisor preference.)
+
+            # ── Client's Current Portfolio (Step 2) ─────────
+            # Mirror the PCM treatment: when the advisor has set a
+            # client-current portfolio in Step 2, it should appear
+            # alongside the analyzed portfolio + comparison portfolios
+            # on every period chart (cumulative return, drawdown,
+            # rolling Sharpe). Previously it was only fed to PCM,
+            # which is why the user saw 5 columns in PCM but only 4
+            # lines on each chart.
+            _curr_chart = st.session_state.get("client_current_portfolio")
+            if _curr_chart and _curr_chart.get("tickers"):
+                try:
+                    _curr_tks_c = list(_curr_chart["tickers"])
+                    _curr_w_pct_c = _curr_chart.get("weights") or {}
+                    _curr_w_dec = {
+                        t: float(_curr_w_pct_c.get(t, 0)) / 100.0
+                        for t in _curr_tks_c
+                        if float(_curr_w_pct_c.get(t, 0)) > 0
+                    }
+                    if _curr_w_dec:
+                        _cp_c, _ = get_prices_with_proxies(
+                            tuple(_curr_w_dec.keys()),
+                            str(start_cmp), str(end_cmp))
+                        _cp_c = _cp_c.ffill().dropna(how="all")
+                        _vcols_c = [t for t in _curr_w_dec if t in _cp_c.columns]
+                        if _vcols_c:
+                            _w_c = np.array([_curr_w_dec[t] for t in _vcols_c])
+                            _w_c = _w_c / _w_c.sum() if _w_c.sum() > 0 else _w_c
+                            _r_c = _cp_c[_vcols_c].pct_change().dropna()
+                            std_chart_comparisons["👤 Client's Current"] = pd.Series(
+                                _r_c.values @ _w_c, index=_r_c.index)
+                except Exception:
+                    pass
+
+            # User Step 2 selections (now supports presets in addition to 📁 saved)
+            for cmp_key in ["cmp_port1", "cmp_port2"]:
+                cmp_sel = st.session_state.get(cmp_key, "None")
+                if not cmp_sel or cmp_sel == "None":
+                    continue
+                try:
+                    _cmp_tks, _cmp_wts = None, None
+                    _cmp_label = cmp_sel
+                    if cmp_sel.startswith("📁 "):
+                        sp = load_saved().get(cmp_sel[2:])
+                        if sp:
+                            _cmp_tks = sp["tickers"]
+                            _cmp_wts = sp.get("weights") or [1.0/len(_cmp_tks)]*len(_cmp_tks)
+                    elif cmp_sel in POPULAR_PORTFOLIOS and POPULAR_PORTFOLIOS[cmp_sel]:
+                        # _resolve_preset returns percentage weights;
+                        # this caller wants decimals.
+                        _cmp_tks, _wmap = _resolve_preset(cmp_sel)
+                        if _cmp_tks:
+                            _total = sum(_wmap.values()) or 1.0
+                            _cmp_wts = [_wmap.get(t, 0.0) / _total for t in _cmp_tks]
+                            _cmp_label = f"🧩 {cmp_sel[:14]}"
+                    if _cmp_tks and _cmp_wts:
+                        cp, _src = get_prices_with_proxies(
+                            tuple(_cmp_tks), str(start_cmp), str(end_cmp))
+                        cp = cp.ffill().dropna(how="all")
+                        vcols2 = [t for t in _cmp_tks if t in cp.columns]
+                        if vcols2:
+                            cw = np.array([_cmp_wts[_cmp_tks.index(t)] for t in vcols2])
+                            cw = cw / cw.sum()
+                            cr = cp[vcols2].pct_change().dropna()
+                            std_chart_comparisons[_cmp_label] = pd.Series(
+                                cr.values @ cw, index=cr.index)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Sort in canonical order (keep user comparisons at the end, order preserved)
+        _ordered = {k: std_chart_comparisons[k] for k in COMP_ORDER if k in std_chart_comparisons}
+        _user = {k: v for k, v in std_chart_comparisons.items() if k not in _ordered}
+        std_chart_comparisons = {**_ordered, **_user}
+
+        # ── Align comparison series to My Portfolio date range ─
+        # results use a test-split window; align comparisons to same period
+        if results:
+            _ref_key = next((k for k in results if k.startswith("⭐ ")), list(results.keys())[0])
+            _ref_idx = pd.to_datetime(results[_ref_key]["index"])
+            _ref_start, _ref_end = _ref_idx[0], _ref_idx[-1]
+
+            def _align(s):
+                """Normalize tz and trim to ref window. yfinance returns tz-aware;
+                results["index"] is tz-naive — must match before comparing."""
+                try:
+                    idx = s.index
+                    # Strip timezone info if present
+                    if getattr(idx, "tz", None) is not None:
+                        s = s.copy()
+                        s.index = idx.tz_localize(None)
+                    return s.loc[(_ref_start <= s.index) & (s.index <= _ref_end)]
+                except Exception:
+                    return s
+
+            std_chart_comparisons = {
+                k: _align(s)
+                for k, s in std_chart_comparisons.items()
+                if len(_align(s)) > 5
+            }
+
+        # ── Extra strategy overlays (from PCM selector above) ─────
+        # These are added to charts in addition to comparison portfolios
+        _extra_strats = st.session_state.get(f"chart_extra_{label}", [])
+        _extra_colors = ["#f59e0b","#10b981","#6366f1","#ef4444","#8b5cf6"]
+        _extra_chart_data = {}  # name -> pd.Series of returns
+        for _ei, _en in enumerate(_extra_strats):
+            if _en in results:
+                _er = results[_en]
+                _idx = pd.to_datetime(_er["index"])
+                _extra_chart_data[_en] = pd.Series(_er["returns"], index=_idx)
+
+        # ── RENDER METRICS from all_portfolios (same data as PCM) ────
+        _m_data2 = {}
+        def _strip2(n):
+            for e in ["📐 ","🌦 ","📈 ","🛡️ ","⚖️ ","⭐ "]: n=n.replace(e,"")
+            return n[:22]
+        for _pname, _pdata in all_portfolios.items():
+            _m_data2[_strip2(_pname)] = _pdata
+        if _m_data2:
+            _bs2  = max(_m_data2.items(), key=lambda x: x[1]["sharpe"])
+            _bso2 = max(_m_data2.items(), key=lambda x: x[1].get("sortino",0))
+            _bc2  = max(_m_data2.items(), key=lambda x: x[1].get("calmar",0))
+            _lv2  = min(_m_data2.items(), key=lambda x: x[1]["ann_vol"])
+            _ld2  = max(_m_data2.items(), key=lambda x: x[1]["max_drawdown"])  # least negative = best
+            with _metrics_box.container():
+                m1,m2,m3,m4,m5,m6 = st.columns(6)
+                m1.metric("Sharpe",    f"{_bs2[1]['sharpe']:.2f}",         _strip2(_bs2[0]))
+                m2.metric("Sortino",   f"{_bso2[1].get('sortino',0):.2f}", _strip2(_bso2[0]))
+                m3.metric("Calmar",    f"{_bc2[1].get('calmar',0):.2f}",   _strip2(_bc2[0]))
+                m4.metric("Low Vol",   f"{_lv2[1]['ann_vol']:.1%}",        _strip2(_lv2[0]))
+                m5.metric("Max DD",    f"{_ld2[1]['max_drawdown']:.1%}",   _strip2(_ld2[0]))
+                m6.metric("Count",     str(len(_m_data2)))
+
+        if mode in ("charts", "all"):
+        # ── 10-YEAR HISTORICAL PERFORMANCE ────────────────────
+            st.markdown("---")
+            st.markdown("#### Historical Performance vs Benchmark")
+            bm_name_hist = st.session_state.get("benchmark_label", "SPY")
+            bm_tkr_hist  = st.session_state.get("benchmark_ticker", "SPY")
+            fig_hist = go.Figure()
+            end_full   = date.today()
+            # Use the tab's period for the historical chart (1yr, 3yr, 5yr, 10yr)
+            _hist_yrs  = int(label.split()[0]) if label.split()[0].isdigit() else 10
+            start_full = end_full - relativedelta(years=_hist_yrs)
+            chart_colors_hist = ["#2563eb","#059669","#d97706","#dc2626","#7c3aed","#ea580c"]
+
+            # ── Find actual common start date for this tab's period ──
+            try:
+                _test_prices, _src = get_prices_cached(tuple(tickers), str(start_full), str(end_full))
+                # Fill forward to handle tickers with gaps, then find common start
+                _filled = _test_prices.ffill()
+                _all_valid = _filled.dropna(how="any")
+                if len(_all_valid) > 30:
+                    start_full = _all_valid.index[0].date()
+                else:
+                    _most_valid = _filled.dropna(thresh=max(1, len(tickers)//2))
+                    start_full = _most_valid.index[0].date() if len(_most_valid) > 30 else start_full
+            except Exception:
+                pass
+
+            # Check if we're using a shorter window than the tab's period
+            _tab_start_expected = (date.today() - relativedelta(years=_hist_yrs))
+            _using_relative = (start_full > _tab_start_expected) if hasattr(start_full, "year") else False
+            _actual_years   = round((date.today() - start_full).days / 365.25, 1) if hasattr(start_full, "year") else _hist_yrs
+
+            # Show proxy notice if any tickers used substitutes
+            try:
+                if _hist_proxies:
+                    risk_free = [k for k,v in _hist_proxies.items() if "risk-free" in v]
+                    class_px  = [k for k,v in _hist_proxies.items() if "class proxy" in v or "name proxy" in v]
+                    direct_px = [k for k,v in _hist_proxies.items() if "proxy" in v and k not in risk_free and k not in class_px]
+                    msgs = []
+                    if direct_px:
+                        msgs.append("🔄 **Direct proxy:** " + ", ".join(
+                            f"{k} → {_hist_proxies[k].split('(')[1].rstrip(')')}" for k in direct_px))
+                    if class_px:
+                        msgs.append("📊 **Asset-class proxy:** " + ", ".join(
+                            f"{k} → {_hist_proxies[k]}" for k in class_px))
+                    if risk_free:
+                        msgs.append("⚠️ **Risk-free proxy (BIL):** " + ", ".join(risk_free) +
+                            " — no comparable historical data found; T-Bill returns used")
+                    if msgs:
+                        st.info(" | ".join(msgs) + f" | Showing {_actual_years:.1f}yr window")
+            except Exception: pass
+
+
+            if _using_relative:
+                # Find which tickers are missing full history
+                try:
+                    _short_tickers = [
+                        t for t in tickers
+                        if t in _test_prices.columns and
+                        _test_prices[t].first_valid_index() is not None and
+                        _test_prices[t].first_valid_index().date() > _ten_yrs_ago
+                    ]
+                except Exception:
+                    _short_tickers = []
+                _short_str = ", ".join(_short_tickers[:5]) if _short_tickers else "some tickers"
+                # Pre-compute the contraction outside the f-string —
+                # Python 3.12 allowed `'don\'t have'` inside an f-string
+                # expression, but 3.13 (which Streamlit Cloud uses)
+                # rejects backslashes inside the expression part of
+                # f-strings as a hard SyntaxError.
+                _have_phrase = (
+                    "don't have" if len(_short_tickers) != 1
+                    else "doesn't have"
+                )
+                st.info(
+                    f"📅 **Relative comparison period used** — {_short_str} "
+                    f"{_have_phrase} "
+                    f"{_hist_yrs} years of history. Chart shows the common available window: "
+                    f"**{_actual_years:.1f} years** "
+                    f"(from {start_full.strftime('%b %Y') if hasattr(start_full,'strftime') else start_full}). "
+                    f"All portfolios start at 0% on the same date for a fair comparison."
+                )
+
+            # My Portfolio
+            _mp_hist_keys = [k for k in results if k.startswith("⭐ ")] or (list(results.keys())[:1] if results else [])
+            my_port_hist = {k: results[k] for k in _mp_hist_keys}
+            if my_port_hist:
+                try:
+                    r_my       = list(my_port_hist.values())[0]
+                    port_lbl_h = list(my_port_hist.keys())[0].replace("⭐ ","")
+                    # Fetch ACTUAL historical prices for the full tab period
+                    fp, _hist_proxies = get_prices_with_proxies(tuple(tickers), str(start_full), str(end_full))
+                    if _hist_proxies:
+                        _proxy_msg = ", ".join(f"{k}→{v}" for k,v in _hist_proxies.items())
+                    vcols_h = [t for t in tickers if t in fp.columns]
+                    if vcols_h:
+                        # Use the actual saved/submitted weights
+                        loaded_w = st.session_state.get("loaded_weights", {})
+                        if loaded_w and all(t in loaded_w for t in tickers):
+                            w_arr_h = np.array([loaded_w[t]/100.0 for t in vcols_h])
+                        else:
+                            w_arr_h = np.array(r_my["weights"][:len(vcols_h)])
+                        w_arr_h = w_arr_h / w_arr_h.sum()
+                        # Fill forward missing data (handles short-history tickers)
+                        fp_filled = fp[vcols_h].ffill().dropna(how="all")
+                        common_idx = fp_filled.dropna().index
+                        if len(common_idx) > 5:
+                            rets_h  = fp_filled.loc[common_idx].pct_change().dropna()
+                            port_r  = pd.Series(rets_h.values @ w_arr_h, index=rets_h.index)
+                            port_pct = (1 + port_r).cumprod() - 1
+                            # Update start_full for comparison alignment
+                            start_full = port_r.index[0].date()
+                            end_full   = port_r.index[-1].date()
+                            fig_hist.add_trace(go.Scatter(x=port_pct.index, y=port_pct.values,
+                                mode="lines", name=port_lbl_h,
+                                line=dict(width=3, color=MY_PORT_COLOR, dash="solid"),
+                                hovertemplate=f"<b>{port_lbl_h}</b><br>%{{x|%b %Y}}<br>%{{y:+.1%}}<extra></extra>"))
+                except Exception: pass
+
+            # Comparison portfolios (10yr) — fixed benchmarks
+            # honoring the three toggles at the top of this tab.
+            hist_cmp_defs = []
+            if st.session_state.get("show_bench_bnd", True):
+                hist_cmp_defs.append(("🟦 100% Bonds (BND)", ["BND"],         [1.0],         "#2563eb"))
+            if st.session_state.get("show_bench_6040", True):
+                hist_cmp_defs.append(("⚖️ 60/40 (SPY+AGG)",   ["SPY", "AGG"], [0.60, 0.40],  "#059669"))
+            if st.session_state.get("show_bench_spy", True):
+                hist_cmp_defs.append(("📈 S&P 500 (SPY)",     ["SPY"],         [1.0],         "#dc2626"))
+            for cname, ctkrs, cwts, ccol in hist_cmp_defs:
+                try:
+                    cp, _src = get_prices_cached(tuple(ctkrs), str(start_full), str(end_full))
+                    cp = cp.ffill().dropna(how="all")
+                    vcols_c = [t for t in ctkrs if t in cp.columns]
+                    if vcols_c:
+                        cw = np.array([cwts[ctkrs.index(t)] for t in vcols_c]); cw = cw/cw.sum()
+                        cr = cp[vcols_c].pct_change().dropna()
+                        # Align to the same start date as My Portfolio
+                        # Align to My Portfolio date range
+                        cr = cr[(cr.index >= pd.Timestamp(start_full)) & 
+                                (cr.index <= pd.Timestamp(end_full))]
+                        if len(cr) < 5: continue
+                        cc = (1 + pd.Series(cr.values @ cw, index=cr.index)).cumprod()
+                        cc_pct = (cc - 1)
+                        fig_hist.add_trace(go.Scatter(x=cc_pct.index, y=cc_pct.values, mode="lines",
+                            name=_clean_label(cname),
+                            line=dict(width=1.8, color=ccol, dash="solid"),
+                            hovertemplate=f"<b>{_clean_label(cname)}</b><br>%{{x|%b %Y}}<br>%{{y:+.1%}}<extra></extra>"))
+                except Exception: pass
+
+            # ── Client's Current Portfolio (Step 2) on 10y hist ─────
+            # Was missing from the 10y historical chart specifically —
+            # the period sub-tabs use std_chart_comparisons which got
+            # the client-current addition, but the 10y hist chart has
+            # its own code path that bypassed std_chart_comparisons.
+            # This block adds it explicitly so the 10y view matches
+            # the other charts.
+            _curr_h = st.session_state.get("client_current_portfolio")
+            if _curr_h and _curr_h.get("tickers"):
+                try:
+                    _ch_tks  = list(_curr_h["tickers"])
+                    _ch_wpct = _curr_h.get("weights") or {}
+                    _ch_wmap = {
+                        t: float(_ch_wpct.get(t, 0)) / 100.0
+                        for t in _ch_tks
+                        if float(_ch_wpct.get(t, 0)) > 0
+                    }
+                    if _ch_wmap:
+                        _ch_cp, _ = get_prices_with_proxies(
+                            tuple(_ch_wmap.keys()),
+                            str(start_full), str(end_full))
+                        _ch_cp = _ch_cp.ffill().dropna(how="all")
+                        _ch_vcols = [t for t in _ch_wmap if t in _ch_cp.columns]
+                        if _ch_vcols:
+                            _ch_w = np.array([_ch_wmap[t] for t in _ch_vcols])
+                            if _ch_w.sum() > 0:
+                                _ch_w = _ch_w / _ch_w.sum()
+                            _ch_r = _ch_cp[_ch_vcols].pct_change().dropna()
+                            _ch_r = _ch_r[(_ch_r.index >= pd.Timestamp(start_full)) &
+                                          (_ch_r.index <= pd.Timestamp(end_full))]
+                            if len(_ch_r) >= 5:
+                                _ch_cum = (1 + pd.Series(
+                                    _ch_r.values @ _ch_w, index=_ch_r.index
+                                )).cumprod()
+                                _ch_pct = _ch_cum - 1
+                                # Distinct color: amber/gold so it
+                                # stands out vs portfolio (purple)
+                                # and benchmarks (blue/green/red).
+                                fig_hist.add_trace(go.Scatter(
+                                    x=_ch_pct.index, y=_ch_pct.values, mode="lines",
+                                    name="👤 Client's Current",
+                                    line=dict(width=2.0, color="#d97706", dash="solid"),
+                                    hovertemplate=("<b>👤 Client's Current</b><br>"
+                                                   "%{x|%b %Y}<br>%{y:+.1%}<extra></extra>")
+                                ))
+                except Exception:
+                    pass
+
+            # ── Advisor cmp_port1 / cmp_port2 on 10y hist ────────────
+            # Same pattern: fetch and overlay the Step 2 advisor-set
+            # comparison portfolios on the 10y chart.
+            _cmp_colors_10y = ["#f59e0b", "#8b5cf6"]  # amber, violet
+            for _ci, (_ckey, _ccol) in enumerate(zip(
+                    ("cmp_port1", "cmp_port2"), _cmp_colors_10y)):
+                _csel = st.session_state.get(_ckey, "None")
+                if not _csel or _csel == "None":
+                    continue
+                try:
+                    _c10_tks, _c10_wts = None, None
+                    _c10_label = _csel
+                    if _csel.startswith("📁 "):
+                        sp = load_saved().get(_csel[2:])
+                        if sp:
+                            _c10_tks = sp["tickers"]
+                            _c10_wts = sp.get("weights") or [1.0/len(_c10_tks)]*len(_c10_tks)
+                    elif _csel.startswith("✏️ Custom"):
+                        _custom_w = st.session_state.get(f"cmp{_ci+1}_custom_weights")
+                        _custom_l = st.session_state.get(f"cmp{_ci+1}_custom_label")
+                        if _custom_w:
+                            _c10_tks = list(_custom_w.keys())
+                            _c10_wts = list(_custom_w.values())
+                            if _custom_l:
+                                _c10_label = _custom_l
+                    elif _csel in POPULAR_PORTFOLIOS and POPULAR_PORTFOLIOS[_csel]:
+                        _c10_tks, _wmap = _resolve_preset(_csel)
+                        if _c10_tks:
+                            # Decimal weights to match the rest of this branch
+                            _total = sum(_wmap.values()) or 1.0
+                            _c10_wts = [_wmap.get(t, 0.0) / _total for t in _c10_tks]
+                    if _c10_tks and _c10_wts:
+                        _c10_cp, _ = get_prices_with_proxies(
+                            tuple(_c10_tks), str(start_full), str(end_full))
+                        _c10_cp = _c10_cp.ffill().dropna(how="all")
+                        _c10_vcols = [t for t in _c10_tks if t in _c10_cp.columns]
+                        if _c10_vcols:
+                            _c10_w = np.array([_c10_wts[_c10_tks.index(t)] for t in _c10_vcols])
+                            if _c10_w.sum() > 0:
+                                _c10_w = _c10_w / _c10_w.sum()
+                            _c10_r = _c10_cp[_c10_vcols].pct_change().dropna()
+                            _c10_r = _c10_r[(_c10_r.index >= pd.Timestamp(start_full)) &
+                                            (_c10_r.index <= pd.Timestamp(end_full))]
+                            if len(_c10_r) >= 5:
+                                _c10_cum = (1 + pd.Series(
+                                    _c10_r.values @ _c10_w, index=_c10_r.index
+                                )).cumprod()
+                                _c10_pct = _c10_cum - 1
+                                fig_hist.add_trace(go.Scatter(
+                                    x=_c10_pct.index, y=_c10_pct.values, mode="lines",
+                                    name=_clean_label(_c10_label),
+                                    line=dict(width=1.6, color=_ccol, dash="solid"),
+                                    hovertemplate=(f"<b>{_clean_label(_c10_label)}</b><br>"
+                                                   "%{x|%b %Y}<br>%{y:+.1%}<extra></extra>")
+                                ))
+                except Exception:
+                    pass
+
+            # Benchmark removed — S&P 500 shown via comparison portfolios
+
+            # Extra strategy overlays on 10yr hist (fetch full 10yr data)
+            for _ei, _en in enumerate(_extra_strats):
+                if _en in results:
+                    try:
+                        _ex_r = results[_en]
+                        _ex_fp, _src = get_prices_with_proxies(tuple(tickers), str(start_full), str(end_full))
+                        _ex_vc = [t for t in tickers if t in _ex_fp.columns]
+                        if _ex_vc:
+                            _ex_w = np.array(_ex_r["weights"][:len(_ex_vc)]); _ex_w = _ex_w/_ex_w.sum()
+                            _ex_ret = _ex_fp[_ex_vc].pct_change().dropna()
+                            _ex_cum = (1+pd.Series(_ex_ret.values@_ex_w, index=_ex_ret.index)).cumprod()
+                            _ecol = _extra_colors[_ei % len(_extra_colors)]
+                            _ex_pct = (_ex_cum - 1)
+                            _disp_e = _clean_label(_en)
+                            fig_hist.add_trace(go.Scatter(x=_ex_pct.index, y=_ex_pct.values, mode="lines",
+                                name=_disp_e, line=dict(width=1.5, color=_ecol, dash="solid"),
+                                hovertemplate=f"<b>{_disp_e}</b><br>%{{x|%b %Y}}<br>%{{y:+.1%}}<extra></extra>"))
+                    except Exception: pass
+
+            if len(fig_hist.data) == 0:
+                st.warning("Could not load 10-year data. Check tickers and try again.")
+            else:
+                fig_hist.add_hline(y=0, line_color="#e5e7eb", line_width=1,
+                                    annotation_text="0%", annotation_position="left",
+                                    annotation_font=dict(size=10, color="#9ca3af"))
+                fig_hist.update_layout(
+                    title=dict(text=f"{_hist_yrs}-Year Historical Performance vs {bm_name_hist} ({start_full.strftime('%Y') if hasattr(start_full,'strftime') else str(start_full)[:4]}–{end_full.year})", x=0, xanchor="left",
+                               font=dict(size=14, color="#111827", family="Inter")),
+                    yaxis=dict(title_text="Total Return (%)", tickformat="+.0%",
+                               gridcolor="#f0f0f0", showgrid=True,
+                               title_font=dict(size=12, color="#374151"),
+                               tickfont=dict(size=11, color="#6b7280"),
+                               zeroline=True, zerolinecolor="#e5e7eb", zerolinewidth=1),
+                    xaxis=dict(title_text=None, gridcolor="#f0f0f0",
+                               tickfont=dict(size=11, color="#6b7280")),
+                    height=520, template="plotly_white",
+                    paper_bgcolor="#ffffff", plot_bgcolor="#fafafa",
+                    font=dict(color="#374151", family="Inter"),
+                    # Equalized margins so chart content is visually
+                    # centered, and bottom legend now centered to match.
+                    margin=dict(t=54, b=160, l=72, r=72),
+                    showlegend=True,
+                    legend=dict(bgcolor="rgba(255,255,255,0.95)", bordercolor="#e5e7eb",
+                                borderwidth=1, font=dict(size=11, color="#374151"),
+                                orientation="h", x=0.5, y=-0.22,
+                                xanchor="center", yanchor="top"),
+                    hoverlabel=dict(bgcolor="#111827", font=dict(color="#f9fafb", size=12)),
+                )
+                st.plotly_chart(fig_hist, use_container_width=True, key=f"hist10_{label}",
+                                config={"displayModeBar": True, "displaylogo": False,
+                                        "modeBarButtonsToRemove": ["lasso2d","select2d"]})
+
+            # ── FORWARD MONTE CARLO ─────────────────────────────
+            # Heading reflects the actual projection horizon set on
+            # the slider below (defaults to 10y). Was previously
+            # hardcoded "10-Year" which was misleading at 30y.
+            _mc_years_for_heading = st.session_state.get(
+                f"mc_yrs_{label}", 10
+            )
+            st.markdown(
+                f"#### 🔭 {_mc_years_for_heading}-Year Forward "
+                f"Projection (Monte Carlo)"
+            )
+
+            # ── Flexible Monte Carlo Parameters ─────────────────────
+            with st.expander("⚙️ Projection Settings", expanded=False):
+                mc_pcols = st.columns(4)
+                mc_years = mc_pcols[0].slider("Projection Years", 5, 30, 10, key=f"mc_yrs_{label}")
+                mc_sims  = mc_pcols[1].slider("Simulations", 100, 1000, 500, step=100, key=f"mc_sims_{label}")
+                mc_ret_adj  = mc_pcols[2].slider("Return Adjustment (%/yr)", -5, 5, 0, key=f"mc_radj_{label}",
+                                                  help="Shift expected return up/down from historical")
+                mc_vol_adj  = mc_pcols[3].slider("Volatility Adjustment (%)", -5, 10, 0, key=f"mc_vadj_{label}",
+                                                  help="Increase/decrease volatility assumption")
+
+                # ── Expected-return mode ─────────────────────────────
+                # The single most important methodology choice in any
+                # forward Monte Carlo. Default 'CMA-shrunk' applies
+                # an industry-standard shrinkage of the historical
+                # mean toward a long-run capital markets assumption
+                # (7%/yr equity-blended), which prevents the projection
+                # from extrapolating recent strong-decade returns into
+                # the next decade. Raw historical is preserved as an
+                # option but not the default — it produces unrealistic
+                # forward projections when the trailing window happens
+                # to be unusually strong (e.g. the last 10 years for
+                # US equities).
+                mc_ret_mode = st.radio(
+                    "Expected return assumption",
+                    options=[
+                        "Conservative (CMA-shrunk to 7%/yr)",
+                        "Balanced (50/50 historical and 8% CMA)",
+                        "Historical (raw 10-year mean)",
+                    ],
+                    index=0,
+                    key=f"mc_ret_mode_{label}",
+                    help=(
+                        "Forward Monte Carlo is highly sensitive to the input mean. "
+                        "Using raw historical returns from a strong decade biases the "
+                        "projection upward — the math compounds the optimism. "
+                        "CMA-shrunk shrinks toward a 7%/yr long-run equity assumption, "
+                        "which is closer to industry-standard capital markets expectations. "
+                        "Volatility is preserved from the historical sample regardless of mode."
+                    ),
+                )
+
+                # ── Input data diagnostic ─────────────────────────────
+                # Lives at the bottom of Projection Settings so all the
+                # controls + their effective state are in one place.
+                # Reads from session_state keys populated when the chart
+                # was last built (one rerun behind on first paint, but
+                # any subsequent setting change re-renders the chart
+                # which writes fresh values, so it stays in sync after
+                # the first interaction).
+                st.markdown("---")
+                st.markdown(
+                    "**🔬 Input data diagnostic**  \n"
+                    "<span style='color:#6B7E8A;font-size:0.78rem'>"
+                    "What's actually feeding the simulation, after all "
+                    "settings above are applied. Updates when you change "
+                    "any setting.</span>",
+                    unsafe_allow_html=True,
+                )
+                _diag_final = st.session_state.get(f"_mc_diag_final_{label}")
+                _diag_orig  = st.session_state.get(f"_mc_diag_orig_{label}")
+                _diag_src   = st.session_state.get(f"_mc_diag_src_{label}", "—")
+                if _diag_final and len(_diag_final) > 1:
+                    import numpy as _np_d
+                    _arr_d = _np_d.array(_diag_final, dtype=float)
+                    _md = float(_arr_d.mean())
+                    _sd = float(_arr_d.std())
+                    _eff_ret = (1 + _md) ** 252 - 1
+                    _eff_vol = _sd * (252 ** 0.5)
+                    _yrs_d   = len(_arr_d) / 252.0
+                    _dc1, _dc2, _dc3, _dc4 = st.columns(4)
+                    _dc1.metric("Source",      _diag_src)
+                    _dc2.metric("Sample size", f"{len(_arr_d)} days  (≈{_yrs_d:.1f}yr)")
+                    _dc3.metric("Effective ann. return", f"{_eff_ret:+.1%}/yr",
+                                help="Final mean after CMA shrinkage AND any "
+                                     "Return Adjustment slider value.")
+                    _dc4.metric("Effective ann. vol",    f"{_eff_vol:.1%}/yr",
+                                help="Final vol after any Volatility "
+                                     "Adjustment slider value.")
+                    # Warn for raw-historical mode + high underlying return
+                    if _diag_orig and len(_diag_orig) > 1:
+                        _arr_o = _np_d.array(_diag_orig, dtype=float)
+                        _orig_ann = (1 + float(_arr_o.mean())) ** 252 - 1
+                        if _orig_ann > 0.18 and mc_ret_mode.startswith("Historical"):
+                            st.warning(
+                                f"⚠️ Raw historical mode is selected and the "
+                                f"trailing 10-year annualized return is "
+                                f"**{_orig_ann:+.1%}/yr** — unusually high. "
+                                f"The forward projection will inherit this. "
+                                f"Switch to 'Conservative (CMA-shrunk)' for "
+                                f"more realistic forward expectations."
+                            )
+                else:
+                    st.caption(
+                        "_Diagnostic populates after the chart renders. "
+                        "Change any setting above and it'll appear._"
+                    )
+
+            st.caption(f"{mc_sims} simulations · {mc_years}yr horizon · "
+                       f"based on 10-year historical returns · "
+                       f"expected return assumption applied per Projection Settings · "
+                       f"not a guarantee of future returns.")
+
+            psel_c1, psel_c2 = st.columns([2, 2])
+            # Sort: My Portfolio first, then other strategies
+            _my_strats   = [n for n in results.keys() if n.startswith("⭐ ")]
+            _other_strats= [n for n in results.keys() if not n.startswith("⭐ ")]
+            all_proj_strats = _my_strats + _other_strats
+            my_proj_keys    = _my_strats  # keys starting with ⭐
+            default_proj    = my_proj_keys[0] if my_proj_keys else all_proj_strats[0] if all_proj_strats else None
+
+            if default_proj:
+                proj_strategy = psel_c1.selectbox(
+                    "Strategy to project", all_proj_strats,
+                    index=0,  # Always default to first = My Portfolio
+                    key=f"proj_sel_{label}", label_visibility="collapsed")
+
+                # Build the comparison-portfolio list for this projection.
+                # Default: include all the same comparisons the
+                # cumulative/drawdown/Sharpe charts show — Step 2's
+                # client-current portfolio + advisor cmp_port1/2 +
+                # the toggled-on fixed market benchmarks. Advisor can
+                # tick any off via the multiselect if they want a
+                # cleaner projection chart.
+                _proj_opts_full = []
+                # Client's current portfolio — only if Step 2 picker is set
+                _curr_proj_set = st.session_state.get("client_current_portfolio")
+                if _curr_proj_set and _curr_proj_set.get("tickers"):
+                    _proj_opts_full.append("👤 Client's Current")
+                # Advisor-set comparison portfolios from Step 2
+                for _ci, _ckey in enumerate(("cmp_port1", "cmp_port2"), start=1):
+                    _csel = st.session_state.get(_ckey, "None")
+                    if _csel and _csel != "None":
+                        # Use a stable label that matches std_chart_comparisons
+                        if _csel.startswith("📁 "):
+                            _proj_opts_full.append(_csel)
+                        elif _csel.startswith("✏️ Custom"):
+                            _custom_label = st.session_state.get(f"cmp{_ci}_custom_label")
+                            if _custom_label:
+                                _proj_opts_full.append(_custom_label)
+                        elif _csel in POPULAR_PORTFOLIOS:
+                            _proj_opts_full.append(f"🧩 {_csel[:14]}")
+                # Fixed market benchmarks per their toggles
+                if st.session_state.get("show_bench_bnd", True):
+                    _proj_opts_full.append("🟦 100% Bonds (BND)")
+                if st.session_state.get("show_bench_6040", True):
+                    _proj_opts_full.append("⚖️ 60/40 (SPY+AGG)")
+                if st.session_state.get("show_bench_spy", True):
+                    _proj_opts_full.append("📈 S&P 500 (SPY)")
+                proj_cmp = psel_c2.multiselect(
+                    "Add comparisons", _proj_opts_full,
+                    default=_proj_opts_full,  # Default: all on
+                    key=f"proj_cmp_{label}", label_visibility="collapsed",
+                    placeholder="Add comparison portfolios...")
+
+                if proj_strategy in results:
+                    proj_r = results[proj_strategy]
+                    # ── Use 10-year returns for projection ─────────
+                    # The forward Monte Carlo should always be based on
+                    # the longest available history, NOT whatever period
+                    # sub-tab the user is on. Feeding 1-year returns
+                    # into a 10-year forward sim produces wildly
+                    # inflated forecasts because a single-year window
+                    # is too narrow a sample of return distribution
+                    # behavior. Pull the 10-year backtest's returns for
+                    # the same strategy when available; fall back to
+                    # the period's own returns only if 10y data is
+                    # missing (which happens for very short-history
+                    # tickers).
+                    _bt10_state = st.session_state.get("bt10")
+                    _bt10_results = (
+                        _bt10_state[0] if _bt10_state and isinstance(_bt10_state, (list, tuple))
+                        else (_bt10_state or {})
+                    )
+                    _proj_returns_for_mc = proj_r.get("returns", [])
+                    if _bt10_results and proj_strategy in _bt10_results:
+                        _bt10_ret = _bt10_results[proj_strategy].get("returns", [])
+                        if _bt10_ret and len(_bt10_ret) >= 60:
+                            _proj_returns_for_mc = _bt10_ret
+                    bm_rets_proj = (st.session_state.get("bmark_returns_10 Years") or
+                                    st.session_state.get("bmark_returns_5 Years") or
+                                    st.session_state.get("bmark_returns_3 Years"))
+
+                    # Build comparison list
+                    comparison_list = []
+                    # Add extra selected strategies from PCM selector
+                    for _ei, _en in enumerate(_extra_strats):
+                        if _en in results:
+                            try:
+                                _ex_r2 = results[_en]
+                                comparison_list.append((_en, _ex_r2["returns"]))
+                            except Exception: pass
+                    # Pull the picked comparison portfolios from
+                    # std_chart_comparisons (already built above with
+                    # client-current + advisor cmps + fixed benchmarks
+                    # all in one place). Fall back to a fresh fetch
+                    # for fixed benchmarks if not in std_chart_comparisons
+                    # for some reason.
+                    cmp_map = {
+                        "🟦 100% Bonds (BND)":  (["BND"],          [1.0]),
+                        "⚖️ 60/40 (SPY+AGG)":   (["SPY", "AGG"],   [0.60, 0.40]),
+                        "📈 S&P 500 (SPY)":     (["SPY"],          [1.0]),
+                    }
+                    for cmp_name in proj_cmp:
+                        # Prefer reusing the already-fetched series
+                        if cmp_name in std_chart_comparisons:
+                            try:
+                                _series = std_chart_comparisons[cmp_name]
+                                comparison_list.append((cmp_name, _series.tolist()))
+                                continue
+                            except Exception:
+                                pass
+                        # Fallback: fixed benchmarks via cmp_map
+                        if cmp_name in cmp_map:
+                            try:
+                                cmp_tks, cmp_wts = cmp_map[cmp_name]
+                                cend   = date.today(); cstart = cend - relativedelta(years=3)
+                                cp2, _src = get_prices_cached(tuple(cmp_tks), str(cstart), str(cend))
+                                cp2 = cp2.ffill().dropna(how="all")
+                                vcols_p = [t for t in cmp_tks if t in cp2.columns]
+                                warr_p  = np.array([cmp_wts[cmp_tks.index(t)] for t in vcols_p])
+                                warr_p  = warr_p / warr_p.sum()
+                                cr2     = cp2[vcols_p].pct_change().dropna().values @ warr_p
+                                comparison_list.append((cmp_name, cr2.tolist()))
+                            except Exception: pass
+
+                    proj_lbl = proj_strategy.replace("⭐ ","")
+                    bm_name_proj = st.session_state.get("benchmark_label","SPY")
+
+                    # ─────────────────────────────────────────────
+                    # CMA SHRINKAGE — applied BEFORE chart build so
+                    # the chart, percentile cards, and benchmark line
+                    # all use the same shrunk inputs. Without this,
+                    # the chart was rendering the SPY benchmark with
+                    # raw historical mean (~13%/yr the last decade)
+                    # and projecting that 10y forward, producing the
+                    # wildly optimistic +680% line you saw.
+                    # ─────────────────────────────────────────────
+                    import numpy as _np_shr
+
+                    def _shrink_returns(rets_list, mode):
+                        """Rescale a daily returns list to a target
+                        annualized return per the selected mode.
+                        Preserves the daily *deviations* from the mean
+                        (vol/skew/kurt) — only shifts the mean."""
+                        if not rets_list:
+                            return rets_list
+                        arr = _np_shr.array(rets_list, dtype=float)
+                        if len(arr) < 2:
+                            return rets_list
+                        hist_mean_d = float(arr.mean())
+                        hist_ann = (1.0 + hist_mean_d) ** 252 - 1.0
+                        if mode.startswith("Conservative"):
+                            target_ann = 0.07
+                        elif mode.startswith("Balanced"):
+                            target_ann = 0.5 * hist_ann + 0.5 * 0.08
+                        else:
+                            target_ann = hist_ann  # raw historical
+                        target_mean_d = (1.0 + target_ann) ** (1.0 / 252) - 1.0
+                        shrunk = arr - hist_mean_d + target_mean_d
+                        return shrunk.tolist()
+
+                    # Use the longest-available history series
+                    # (already 10-year per _proj_returns_for_mc fix)
+                    _proj_rets_shrunk = _shrink_returns(
+                        _proj_returns_for_mc, mc_ret_mode
+                    )
+                    # Same shrinkage applied to benchmark so its
+                    # projected line is on the same methodological
+                    # basis as the portfolio line.
+                    _bm_rets_shrunk = (
+                        _shrink_returns(list(bm_rets_proj), mc_ret_mode)
+                        if bm_rets_proj else None
+                    )
+                    # And to each comparison series in the legend
+                    _comp_shrunk = (
+                        [(cn, _shrink_returns(list(cr), mc_ret_mode))
+                         for cn, cr in comparison_list]
+                        if comparison_list else None
+                    )
+
+                    fig_proj = build_projection_chart(
+                        strategy_name=proj_lbl,
+                        returns=_proj_rets_shrunk,
+                        benchmark_returns=_bm_rets_shrunk,
+                        bm_label=bm_name_proj,
+                        years=mc_years,
+                        comparison_list=_comp_shrunk,
+                    )
+                    st.plotly_chart(fig_proj, use_container_width=True,
+                                    # Key includes mc_ret_mode + mc_years so Streamlit
+                                    # treats the chart as new whenever the user changes
+                                    # those settings. Without this, Streamlit caches the
+                                    # plotly figure by key and the chart visually doesn't
+                                    # update even though the underlying figure object is
+                                    # different — classic stale-cache bug.
+                                    key=f"proj_{label}_{proj_strategy[:8]}_"
+                                        f"{mc_ret_mode[:4]}_{mc_years}_"
+                                        f"{mc_ret_adj}_{mc_vol_adj}",
+                                    config={"displayModeBar": True, "displaylogo": False,
+                                            "modeBarButtonsToRemove": ["lasso2d","select2d"]})
+
+                    # Apply flexible MC params from settings
+                    # Same shrunk series feeds the percentile cards
+                    # below — so chart and cards agree on the input.
+                    _mc_rets = list(_proj_rets_shrunk)
+
+                    # Apply user's Return Adjustment / Volatility Adjustment sliders
+                    # (these stack on top of the CMA shrinkage so the advisor can
+                    # nudge from the default Conservative target if they want).
+                    if mc_ret_adj != 0 or mc_vol_adj != 0:
+                        import numpy as _np
+                        _r = _np.array(_mc_rets)
+                        _r = _r + (mc_ret_adj / 100.0 / 252.0)
+                        if mc_vol_adj != 0:
+                            _m = _r.mean()
+                            _r = _m + (_r - _m) * (1 + mc_vol_adj/100.0)
+                        _mc_rets = _r.tolist()
+
+                    # Stash the final input series + the unshrunk source for
+                    # the diagnostic display that lives inside Projection Settings.
+                    # We populate two session_state keys so the expander block
+                    # above (which has already rendered) can pick them up on
+                    # the next rerun via Streamlit's normal state propagation.
+                    st.session_state[f"_mc_diag_final_{label}"] = list(_mc_rets)
+                    st.session_state[f"_mc_diag_orig_{label}"]  = list(_proj_returns_for_mc)
+                    st.session_state[f"_mc_diag_src_{label}"]   = (
+                        "10-year backtest"
+                        if (_bt10_results
+                            and proj_strategy in _bt10_results
+                            and _bt10_results[proj_strategy].get("returns")
+                            and len(_bt10_results[proj_strategy]["returns"]) >= 60)
+                        else f"period-tab fallback ({label})"
+                    )
+                    days, p5, p10, p25, p50, p75, p90, p95, _, prob_loss = run_monte_carlo(
+                        tuple(_mc_rets), years_forward=mc_years,
+                        n_simulations=mc_sims)
+
+                    # Helper: convert a cumulative multiple (e.g. 55.5x)
+                    # into an annualized return so the numbers feel
+                    # sane. A median +5,457% sounds insane until you
+                    # realize that over 30 years it's just +14% annual.
+                    def _ann(cum_multiple, yrs):
+                        if yrs <= 0 or cum_multiple <= 0:
+                            return 0.0
+                        return cum_multiple ** (1.0 / yrs) - 1.0
+
+                    st.caption(
+                        f"**Projection at year {mc_years}** — final "
+                        f"portfolio value relative to today, expressed "
+                        f"as cumulative return. Annualized rate shown "
+                        f"in parens."
+                    )
+                    pc1,pc2,pc3,pc4,pc5 = st.columns(5)
+                    pc1.metric("Median",
+                               f"{p50[-1]-1:+.1%}",
+                               delta=f"{_ann(p50[-1], mc_years):+.1%}/yr",
+                               delta_color="off")
+                    pc2.metric("Best 25%",
+                               f"{p75[-1]-1:+.1%}",
+                               delta=f"{_ann(p75[-1], mc_years):+.1%}/yr",
+                               delta_color="off")
+                    pc3.metric("Worst 25%",
+                               f"{p25[-1]-1:+.1%}",
+                               delta=f"{_ann(p25[-1], mc_years):+.1%}/yr",
+                               delta_color="off")
+                    pc4.metric("Best 10%",
+                               f"{p90[-1]-1:+.1%}",
+                               delta=f"{_ann(p90[-1], mc_years):+.1%}/yr",
+                               delta_color="off")
+                    pc5.metric("Worst 10%",
+                               f"{p10[-1]-1:+.1%}",
+                               delta=f"{_ann(p10[-1], mc_years):+.1%}/yr",
+                               delta_color="off")
+                    # Probability of loss + worst-case (5th pct) row
+                    if prob_loss:
+                        qc1, qc2, qc3, qc4, qc5 = st.columns(5)
+                        _yrs_avail = sorted([y for y in (1,3,5,10) if y in prob_loss])
+                        # Labels intentionally short so they don't truncate
+                        # in the narrow metric columns. Help tooltips give
+                        # the full context.
+                        qc1.metric("Worst 5%", f"{p5[-1]-1:+.1%}",
+                                   help="Worst-case scenario — the 5th percentile "
+                                        "final outcome. A true downside scenario.")
+                        _qcs = [qc2, qc3, qc4, qc5]
+                        for _i, _y in enumerate(_yrs_avail[:4]):
+                            _qcs[_i].metric(
+                                f"Loss Yr {_y}",
+                                f"{prob_loss[_y]*100:.1f}%",
+                                help=f"Probability of loss at year {_y} — "
+                                     f"percent of simulations ending below "
+                                     f"starting value at that horizon."
+                            )
+
+            # ── DRAWDOWN CHART ─────────────────────────────────────
+            st.markdown("#### Drawdown (%)")
+            fig_dd = go.Figure()
+
+            my_dd_keys = [k for k in results if k.startswith("⭐ ")] or (list(results.keys())[:1] if results else [])
+            for name in my_dd_keys:
+                r   = results[name]
+                s   = pd.Series(r["returns"], index=pd.to_datetime(r["index"]))
+                cum = (1+s).cumprod(); dd = (cum/cum.cummax()-1)*100
+                _loaded_src_dd = st.session_state.get("portfolio_source","")
+                port_lbl_dd = name.replace("⭐ ","")
+                fig_dd.add_trace(go.Scatter(x=dd.index, y=dd.values, mode="lines",
+                    name=port_lbl_dd, line=dict(width=2.5, color=MY_PORT_COLOR, dash="solid"),
+                    hovertemplate=f"<b>{port_lbl_dd}</b><br>%{{x|%b %Y}}<br>%{{y:.2f}}%<extra></extra>"))
+
+            for cmp_name, cmp_series in std_chart_comparisons.items():
+                try:
+                    cmp_cum = (1+cmp_series).cumprod(); cmp_dd = (cmp_cum/cmp_cum.cummax()-1)*100
+                    c_ = COMP_COLORS.get(cmp_name, "#94a3b8")
+                    _disp = _clean_label(cmp_name)
+                    fig_dd.add_trace(go.Scatter(x=cmp_dd.index, y=cmp_dd.values, mode="lines",
+                        name=_disp, line=dict(width=1.5, color=c_, dash="solid"),
+                        hovertemplate=f"<b>{_disp}</b><br>%{{x|%b %Y}}<br>%{{y:.2f}}%<extra></extra>"))
+                except Exception: pass
+
+            # Extra strategy overlays on DD
+            for _ei, (_en, _es) in enumerate(_extra_chart_data.items()):
+                try:
+                    _ec = (1+_es).cumprod(); _edd = (_ec/_ec.cummax()-1)*100
+                    _ecol = _extra_colors[_ei % len(_extra_colors)]
+                    _disp_e = _clean_label(_en)
+                    fig_dd.add_trace(go.Scatter(x=_edd.index, y=_edd.values, mode="lines",
+                        name=_disp_e, line=dict(width=1.5, color=_ecol, dash="solid"),
+                        hovertemplate=f"<b>{_disp_e}</b><br>%{{x|%b %Y}}<br>%{{y:.2f}}%<extra></extra>"))
+                except Exception: pass
+
+            fig_dd.add_hline(y=0, line_color="#e5e7eb", line_width=1)
+            fig_dd.update_layout(
+                title=dict(text="Drawdown (%)", x=0, xanchor="left"),
+                yaxis_title="Drawdown (%)", xaxis_title=None, height=360,
+                showlegend=True,
+                # Bottom-centered legend, matching the projection chart's
+                # convention. Previously left-anchored at x=0 which
+                # looked unbalanced with the equalized margins.
+                legend=dict(bgcolor="rgba(255,255,255,0.95)", bordercolor="#e5e7eb",
+                            borderwidth=1, font=dict(size=11, color="#374151"),
+                            orientation="h", x=0.5, y=-0.22,
+                            xanchor="center", yanchor="top"),
+                **PLOT_THEME)
+            fig_dd.update_xaxes(title_text=None)
+            st.plotly_chart(fig_dd, use_container_width=True, key=f"dd_{label}",
+                            config={"displayModeBar": False})
+
+            # ── ROLLING SHARPE (window adapts to available data) ──
+            # Default: 12-month (252d) for smoothness. But on short
+            # periods (1y/3y tabs after train/test split) there aren't
+            # enough observations, so we shrink the window to keep the
+            # line visible while still being representative.
+            st.markdown("#### Rolling Sharpe Ratio")
+            fig_rs = go.Figure()
+
+            def _pick_window(n):
+                # Use ~40% of available obs, clamped between 42 and 252
+                return max(42, min(252, int(n * 0.4)))
+
+            def _rolling_sharpe(series, window=None):
+                n = len(series)
+                if n < 45:
+                    return pd.Series([], dtype=float)
+                w = window or _pick_window(n)
+                w = min(w, max(21, n - 5))  # don't demand more data than we have
+                roll = series.rolling(w).apply(
+                    lambda x: (x.mean()*252)/(x.std()*np.sqrt(252)) if x.std()>0 else 0
+                ).dropna()
+                # Smooth the resulting curve a bit
+                smooth = 5 if w >= 120 else 3
+                if len(roll) > smooth:
+                    roll = roll.rolling(smooth, min_periods=1).mean()
+                return roll
+
+            # Determine window from "My Portfolio" length (keeps traces aligned)
+            _rs_window = None
+            _mp_ref_key = next((n for n in results if n.startswith("⭐ ")), None)
+            if _mp_ref_key:
+                _rs_window = _pick_window(len(results[_mp_ref_key].get("returns", [])))
+
+            my_rs_keys = [n for n in results if n.startswith("⭐ ")] or (list(results.keys())[:1] if results else [])
+            for name in my_rs_keys:
+                r    = results[name]
+                s    = pd.Series(r["returns"], index=pd.to_datetime(r["index"]))
+                roll = _rolling_sharpe(s, window=_rs_window)
+                if len(roll) < 5: continue
+                _loaded_src_rs = st.session_state.get("portfolio_source","")
+                port_lbl_rs = name.replace("⭐ ","")
+                fig_rs.add_trace(go.Scatter(x=roll.index, y=roll.values, mode="lines",
+                    name=port_lbl_rs, line=dict(width=2.5, color=MY_PORT_COLOR, dash="solid"),
+                    hovertemplate=f"<b>{port_lbl_rs}</b><br>%{{x|%b %Y}}<br>Sharpe: %{{y:.2f}}<extra></extra>"))
+
+            for cmp_name, cmp_series in std_chart_comparisons.items():
+                try:
+                    roll_cmp = _rolling_sharpe(cmp_series, window=_rs_window)
+                    if len(roll_cmp) < 5: continue
+                    c_ = COMP_COLORS.get(cmp_name, "#94a3b8")
+                    _disp = _clean_label(cmp_name)
+                    fig_rs.add_trace(go.Scatter(x=roll_cmp.index, y=roll_cmp.values, mode="lines",
+                        name=_disp, line=dict(width=1.5, color=c_, dash="solid"),
+                        hovertemplate=f"<b>{_disp}</b><br>%{{x|%b %Y}}<br>Sharpe: %{{y:.2f}}<extra></extra>"))
+                except Exception: pass
+
+            # Extra strategy overlays on RS
+            for _ei, (_en, _es) in enumerate(_extra_chart_data.items()):
+                try:
+                    _roll = _rolling_sharpe(_es, window=_rs_window)
+                    _ecol = _extra_colors[_ei % len(_extra_colors)]
+                    _disp_e = _clean_label(_en)
+                    fig_rs.add_trace(go.Scatter(x=_roll.index, y=_roll.values, mode="lines",
+                        name=_disp_e, line=dict(width=1.5, color=_ecol, dash="solid"),
+                        hovertemplate=f"<b>{_disp_e}</b><br>%{{x|%b %Y}}<br>Sharpe: %{{y:.2f}}<extra></extra>"))
+                except Exception: pass
+
+            fig_rs.add_hline(y=0, line_color="#e5e7eb", line_width=1.5,
+                              annotation_text="0", annotation_position="right",
+                              annotation_font=dict(size=10, color="#9ca3af"))
+            fig_rs.add_hline(y=1, line_color="#bbf7d0", line_width=1,
+                              annotation_text="1.0", annotation_position="right",
+                              annotation_font=dict(size=10, color="#059669"))
+            _rs_months = round((_rs_window or 126) / 21)
+            fig_rs.update_layout(
+                title=dict(text=f"Rolling {_rs_months}-Month Sharpe Ratio", x=0, xanchor="left"),
+                yaxis_title="Sharpe Ratio", xaxis_title=None, height=360,
+                showlegend=True,
+                legend=dict(bgcolor="rgba(255,255,255,0.95)", bordercolor="#e5e7eb",
+                            borderwidth=1, font=dict(size=11, color="#374151"),
+                            orientation="h", x=0.5, y=-0.22,
+                            xanchor="center", yanchor="top"),
+                **PLOT_THEME)
+            fig_rs.update_xaxes(title_text=None)
+            st.plotly_chart(fig_rs, use_container_width=True, key=f"rs_{label}",
+                            config={"displayModeBar": False})
+
+    # (Portfolio Weight Comparison section removed per UX feedback.)
+    # (Pie-chart allocation grid removed 2026-07-16 per Tony — the
+    #  tier gauges and holdings tables carry this information.)
+
+
+# Results stored in session state for Tab2/Tab3 display
+
+
 # NAVIGATION (2026-07-15 performance pass): replaced st.tabs with a
 # horizontal radio. st.tabs renders EVERY tab body on EVERY rerun — all
 # seven sections (charts, gauges, tables) re-executed on each widget
@@ -15908,1593 +17507,9 @@ if _nav == "Analyzer":
         # ── SECURITY RISK SCORES (individual tickers) shown inside render_tab at bottom
         # This section intentionally left for render_tab to handle
 
-        def render_tab(results, ef_points, label, mode="results"):
-            # Helper to strip emoji prefixes from portfolio labels for display.
-            # Keeps the 👤 silhouette on "Client's Current" (per advisor spec),
-            # strips everything else. Internal label strings are unchanged —
-            # this is purely a render-time cosmetic transform.
-            import re as _re_clean
-            _CLEAN_KEEP_PREFIX = "👤"
-            def _clean_label(s):
-                if not isinstance(s, str):
-                    return s
-                if s.startswith(_CLEAN_KEEP_PREFIX):
-                    return s  # preserve the silhouette + the rest
-                # Strip a leading emoji + optional whitespace
-                # (covers 🟦 ⚖️ 📈 🧩 📁 ⭐ 🛡️ 🚀 etc.)
-                return _re_clean.sub(
-                    r"^[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+\s*",
-                    "", s
-                ).strip() or s
-
-            # Guard: results must be a non-empty dict of strategy results
-            if not results or not isinstance(results, dict):
-                st.warning(f"No results available for {label}.")
-                return
-            # Guard: keys must be strings (not nested dicts)
-            if results and not isinstance(next(iter(results)), str):
-                st.warning(f"Unexpected results format for {label}.")
-                return
-            # Narrow modes — skip PCM/charts, render only the requested section
-            # scores_only and alloc_only fall through to their sections below
-            if mode in ("scores_only", "alloc_only"):
-                pass  # handled by section guards below
-
-            # ── Data-integrity callout: show actual date range and flag shortfalls ─
-            _my_k = next((k for k in results if k.startswith("⭐ ")), None)
-            if _my_k and results[_my_k].get("index"):
-                _idx        = results[_my_k]["index"]
-                _n          = len(_idx)
-                _yrs_actual = round(_n / 252, 1)
-                # Compare against the label's requested period
-                _yrs_req = 0
-                if "Year"  in label: _yrs_req = 1
-                if "3 Years"  in label: _yrs_req = 3
-                if "5 Years"  in label: _yrs_req = 5
-                if "10 Years" in label: _yrs_req = 10
-                if _yrs_req and _yrs_actual < _yrs_req * 0.85:
-                    st.warning(
-                        f"⚠️ **{label}** — requested {_yrs_req}y but only "
-                        f"**{_yrs_actual}y of data** was available for your portfolio "
-                        f"(from `{_idx[0][:10]}` to `{_idx[-1][:10]}`). "
-                        f"One or more tickers have shorter history. "
-                        f"Add longer-history tickers or switch to the 1y/3y tab for more reliable stats."
-                    )
-                # (Previously emitted a "📅 My Portfolio data: NN trading days"
-                # caption here — removed per UI cleanup, redundant with the
-                # period selector at the top of the tab.)
-
-            # ── CANONICAL COMPARISON ORDER ─────────────────────────
-            # Honors the three Fixed market benchmark toggles at the top of
-            # this tab. Replaces the older 60/40 + 90/10 + S&P + Conservative
-            # set. Order: bonds → balanced → equity, so the matrix reads from
-            # most-conservative to most-aggressive across the benchmark
-            # columns left-to-right.
-            COMP_ORDER  = []
-            COMP_COLORS = {}
-            if st.session_state.get("show_bench_bnd", True):
-                COMP_ORDER.append("🟦 100% Bonds (BND)")
-                COMP_COLORS["🟦 100% Bonds (BND)"] = "#2563eb"
-            if st.session_state.get("show_bench_6040", True):
-                COMP_ORDER.append("⚖️ 60/40 (SPY+AGG)")
-                COMP_COLORS["⚖️ 60/40 (SPY+AGG)"] = "#059669"
-            if st.session_state.get("show_bench_spy", True):
-                COMP_ORDER.append("📈 S&P 500 (SPY)")
-                COMP_COLORS["📈 S&P 500 (SPY)"] = "#dc2626"
-            MY_PORT_COLOR = "#7c3aed"  # Purple for My Portfolio
-
-            # PROXY_MAP, resolve_ticker, get_prices_with_proxies defined at top level
-            # ── Date range for this tab — used throughout ──────────
-            yrs_pcm   = int(label.split()[0]) if label.split()[0].isdigit() else 1
-            end_pcm   = date.today()
-            start_pcm = end_pcm - relativedelta(years=yrs_pcm)
-
-            # ── METRICS PLACEHOLDER (filled after std_chart_comparisons) ──
-            _metrics_box = st.empty()
-
-            if mode not in ("scores_only", "alloc_only"):
-                # ── PCM: DEFAULT 6 COLUMNS ──────────────────────────
-                st.markdown("#### Portfolio Comparison Matrix")
-                # (Previously rendered a "My Portfolio · {benchmark1} ·
-                # {benchmark2} · 1yr period" caption beneath the header —
-                # removed per UI cleanup, redundant with the legend.)
-
-                pcm_standards = {}
-
-                # ══════════════════════════════════════════════════════════════════
-                # CORE DATA INTEGRITY SYSTEM
-                # Every metric is computed from ACTUAL price history for EXACT period.
-                # YTD, 1yr, 3yr, 5yr, 10yr — each period fetched and computed separately.
-                # Uses get_prices_with_proxies so FBTC→GBTC, GLDM→GLD etc. auto-applied.
-                # ══════════════════════════════════════════════════════════════════
-
-                # port_stats_from_prices defined at top level
-                # ── Period dates ─────────────────────────────────────
-                _today     = date.today()
-                _ytd_start = date(_today.year, 1, 1)
-
-                # ── Comparison portfolio definitions ──────────────────
-                # Built dynamically from the three Fixed market benchmark
-                # toggles. Empty dict = all toggles off → no benchmark
-                # columns (the loop below silently skips an empty defs
-                # dict and only the user's portfolio is shown).
-                _CMP_DEFS = {}
-                if st.session_state.get("show_bench_bnd", True):
-                    _CMP_DEFS["🟦 100% Bonds (BND)"] = {"BND": 1.0}
-                if st.session_state.get("show_bench_6040", True):
-                    _CMP_DEFS["⚖️ 60/40 (SPY+AGG)"] = {"SPY": 0.60, "AGG": 0.40}
-                if st.session_state.get("show_bench_spy", True):
-                    _CMP_DEFS["📈 S&P 500 (SPY)"]   = {"SPY": 1.0}
-
-                # ── Fetch comparison prices for this tab's period ─────
-                # IMPORTANT: derive the ticker list directly from _CMP_DEFS so
-                # we never silently miss a ticker (which would cause that
-                # ticker to be filtered out by port_stats_from_prices and
-                # cause the portfolio to look identical to one without it —
-                # e.g. 90/10 was rendering identically to S&P 500 because
-                # BIL was missing from the fetch list).
-                try:
-                    _cmp_tickers = sorted({
-                        t for d in _CMP_DEFS.values() for t in d.keys()
-                    })
-                    if not _cmp_tickers:
-                        # All three benchmark toggles are off — skip the matrix
-                        # benchmark fetch entirely; pcm_standards stays empty
-                        # so only My Portfolio renders in the matrix.
-                        pass
-                    else:
-                        _cmp_p, _    = get_prices_cached(
-                            tuple(_cmp_tickers),
-                            str(start_pcm), str(_today))
-                        _cmp_p       = _cmp_p.ffill()
-
-                        for _sname, _swts in _CMP_DEFS.items():
-                            _st = port_stats_from_prices(_cmp_p, _swts, yrs_pcm)
-                            if _st: pcm_standards[_sname] = _st
-                except Exception: pass
-
-                # ── PARALLEL 10-YEAR FETCH FOR RISK SCORING ───────────
-                # Risk scores must NOT change as the user flips between 1y/3y/
-                # 5y/10y tabs. We compute every portfolio's 10-year vol/drawdown
-                # once (cached in session_state across reruns) and use those
-                # numbers for the Risk Score column in every tab's matrix.
-                # Other metrics (return, Sharpe, etc.) remain period-specific.
-                _SCORING_YEARS = 10
-                _scoring_stats = st.session_state.get("_pcm_scoring_stats_10y", None)
-                if _scoring_stats is None:
-                    _scoring_stats = {}
-                    try:
-                        _start_10y = end_pcm - relativedelta(years=_SCORING_YEARS)
-                        # Use proxy-stitched prices so short-history tickers
-                        # (e.g. SGOV ~2yr, FBTC ~1yr) get back-filled with
-                        # their proxy's older history. Without this, PCM's
-                        # 10yr vol diverges from every other scoring path
-                        # in the app — which all use get_prices_with_proxies
-                        # via _cached_portfolio_vol. Two scoring paths
-                        # against different price series produce different
-                        # diversification-adjusted risk scores for the
-                        # SAME tickers + weights.
-                        _cmp_p_10y, _ = get_prices_with_proxies(
-                            tuple(_cmp_tickers),
-                            str(_start_10y), str(_today),
-                            min_days=max(60, int(_SCORING_YEARS * 60)),
-                        )
-                        if not _cmp_p_10y.empty:
-                            for _sname, _swts in _CMP_DEFS.items():
-                                _s10 = port_stats_from_prices(_cmp_p_10y, _swts, _SCORING_YEARS)
-                                if _s10: _scoring_stats[_sname] = _s10
-                    except Exception:
-                        pass
-                    # Persist for the other tabs/render passes; rebuilt only
-                    # when the analysis is re-run (key cleared on re-run).
-                    st.session_state["_pcm_scoring_stats_10y"] = _scoring_stats
-
-                # (Equal Weight removed — comparison matrix only uses 60/40, 90/10, S&P 500, Conservative)
-
-                # ── My Portfolio: exact per-ticker price history ───────
-                _my_label_pcm    = next((k.replace("⭐ ","") for k in results
-                                         if k.startswith("⭐ ")), "My Portfolio")
-                my_port_keys_pcm = ([k for k in results if k.startswith("⭐ ")]
-                                     or list(results.keys())[:1])
-                my_port = {}
-                if my_port_keys_pcm and tickers:
-                    _r = results[my_port_keys_pcm[0]]
-                    # Determine weights: prefer loaded portfolio weights
-                    _loaded_w = st.session_state.get("loaded_weights", {})
-                    if _loaded_w and all(t in _loaded_w for t in tickers):
-                        _my_wts = {t: _loaded_w[t]/100.0 for t in tickers}
-                    else:
-                        _bw = _r.get("weights", [1/len(tickers)]*len(tickers))
-                        _my_wts = {t: float(_bw[i]) if i < len(_bw) else 1/len(tickers)
-                                   for i, t in enumerate(tickers)}
-                    # Normalize
-                    _wsum = sum(_my_wts.values())
-                    _my_wts = {t: v/_wsum for t, v in _my_wts.items()}
-                    try:
-                        # Fetch actual prices with proxy substitution
-                        _my_p, _proxies = get_prices_with_proxies(tuple(tickers), start_pcm, str(_today))
-                        if not _my_p.empty:
-                            _st = port_stats_from_prices(_my_p, _my_wts, yrs_pcm)
-                            if _st:
-                                my_port[_my_label_pcm] = _st
-                    except Exception: pass
-                    # Fallback to backtest returns
-                    if not my_port:
-                        try:
-                            _bs = pd.Series(_r["returns"], index=pd.to_datetime(_r["index"]))
-                            _st = port_stats_from_prices(
-                                _bs.to_frame("port"), {"port":1.0}, yrs_pcm)
-                            if _st: my_port[_my_label_pcm] = _st
-                        except Exception: pass
-                    if not my_port:
-                        my_port[_my_label_pcm] = {k:_r.get(k,0) for k in
-                            ["ann_return","ann_vol","sharpe","sortino","calmar",
-                             "max_drawdown","total_return","cvar_5"]}
-                        my_port[_my_label_pcm]["ytd_return"] = 0.0
-                        # Also record tickers/weights so PCM scoring + ER work
-                        my_port[_my_label_pcm]["tickers"] = list(_my_wts.keys())
-                        my_port[_my_label_pcm]["weights"] = list(_my_wts.values())
-                        my_port[_my_label_pcm]["weights_dict"] = dict(_my_wts)
-
-                    # ── 10yr stats for My Portfolio (risk-score scoring only) ──
-                    if _my_label_pcm not in _scoring_stats:
-                        try:
-                            _start_10y = end_pcm - relativedelta(years=_SCORING_YEARS)
-                            _my_p_10y, _ = get_prices_with_proxies(
-                                tuple(tickers), _start_10y, str(_today))
-                            if not _my_p_10y.empty:
-                                _s10 = port_stats_from_prices(_my_p_10y, _my_wts, _SCORING_YEARS)
-                                if _s10:
-                                    _scoring_stats[_my_label_pcm] = _s10
-                                    st.session_state["_pcm_scoring_stats_10y"] = _scoring_stats
-                        except Exception:
-                            pass
-
-                # ── Step 2 user-selected comparison portfolios ─────────
-                # cmp_port1/cmp_port2 can be: "None", "📁 SavedName", a
-                # POPULAR_PORTFOLIOS preset key, or "✏️ Custom (enter tickers)".
-                # The custom option pulls weights from cmp{1,2}_custom_weights
-                # which were parsed in the Analyzer's Step 2 input.
-                def _resolve_cmp_selection(sel, idx=None):
-                    """Return (tickers_list, weights_list, display_name) or None.
-                    `idx` is 1 or 2 — used to pull the right custom-weights
-                    state when `sel` is the custom-tickers option."""
-                    if not sel or sel == "None":
-                        return None
-                    if sel.startswith("📁 "):
-                        sp = load_saved().get(sel[2:])
-                        if sp:
-                            tks = sp["tickers"]
-                            wts = sp.get("weights") or [1.0/len(tks)] * len(tks)
-                            return tks, wts, sel
-                    # Custom-tickers comparison from Step 2 text input
-                    if sel.startswith("✏️ Custom") and idx in (1, 2):
-                        cw = st.session_state.get(f"cmp{idx}_custom_weights")
-                        cl = st.session_state.get(f"cmp{idx}_custom_label")
-                        if cw:
-                            return list(cw.keys()), list(cw.values()), (cl or "✏️ Custom")
-                        return None
-                    # Popular preset — handles legacy str (equal-weighted)
-                    # and Schwab dict (specific weights) uniformly.
-                    if sel in POPULAR_PORTFOLIOS and POPULAR_PORTFOLIOS[sel]:
-                        tks, wmap = _resolve_preset(sel)
-                        if tks:
-                            # _resolve_preset returns weights as percentages;
-                            # this caller wants decimals (sums to 1.0).
-                            _total = sum(wmap.values()) or 1.0
-                            wts = [wmap.get(t, 0.0) / _total for t in tks]
-                            return tks, wts, f"🧩 {sel[:14]}"
-                    return None
-
-                user_cmps = {}
-
-                # ── Client's current portfolio (Step 2) ─────────────────
-                # The dedicated "client's current portfolio" picker from
-                # Section 2 of the Analyzer. Distinct from cmp_port1/cmp_port2
-                # (which are advisor-defined comparisons) — this is what the
-                # client actually holds today. Shows up in PCM as its own
-                # column so the advisor can compare current vs proposed vs
-                # market benchmarks side-by-side.
-                _curr_override = st.session_state.get("client_current_portfolio")
-                if _curr_override and _curr_override.get("tickers"):
-                    _curr_tks = list(_curr_override["tickers"])
-                    _curr_w_pct = _curr_override.get("weights") or {}
-                    # Convert percentages → decimals for port_stats_from_prices
-                    _curr_wmap = {
-                        t: float(_curr_w_pct.get(t, 0)) / 100.0
-                        for t in _curr_tks
-                        if float(_curr_w_pct.get(t, 0)) > 0
-                    }
-                    if _curr_wmap:
-                        _curr_label_src = _curr_override.get("source_label", "Client's Current")
-                        # Display label — short enough to fit a PCM column header
-                        _curr_dname = "👤 Client's Current"
-                        try:
-                            _cp, _ = get_prices_with_proxies(
-                                tuple(_curr_wmap.keys()), start_pcm, str(_today))
-                            if not _cp.empty:
-                                _st = port_stats_from_prices(_cp, _curr_wmap, yrs_pcm)
-                                if _st:
-                                    user_cmps[_curr_dname] = _st
-                        except Exception:
-                            pass
-                        # 10yr stats for risk scoring
-                        if _curr_dname not in _scoring_stats:
-                            try:
-                                _start_10y = end_pcm - relativedelta(years=_SCORING_YEARS)
-                                _cp_10y, _ = get_prices_with_proxies(
-                                    tuple(_curr_wmap.keys()), _start_10y, str(_today))
-                                if not _cp_10y.empty:
-                                    _s10 = port_stats_from_prices(_cp_10y, _curr_wmap, _SCORING_YEARS)
-                                    if _s10:
-                                        _scoring_stats[_curr_dname] = _s10
-                                        st.session_state["_pcm_scoring_stats_10y"] = _scoring_stats
-                            except Exception:
-                                pass
-
-                for _i, _cmp_key in enumerate(("cmp_port1", "cmp_port2"), start=1):
-                    _sel = st.session_state.get(_cmp_key, "None")
-                    _resolved = _resolve_cmp_selection(_sel, idx=_i)
-                    if not _resolved:
-                        continue
-                    _tks, _wts, _dname = _resolved
-                    try:
-                        _cp, _ = get_prices_with_proxies(
-                            tuple(_tks), start_pcm, str(_today))
-                        if not _cp.empty:
-                            _wmap = {t: w for t, w in zip(_tks, _wts)}
-                            _st = port_stats_from_prices(_cp, _wmap, yrs_pcm)
-                            if _st:
-                                user_cmps[_dname] = _st
-                    except Exception:
-                        pass
-                    # 10yr stats for risk scoring (cached across periods)
-                    if _dname not in _scoring_stats:
-                        try:
-                            _start_10y = end_pcm - relativedelta(years=_SCORING_YEARS)
-                            _cp_10y, _ = get_prices_with_proxies(
-                                tuple(_tks), _start_10y, str(_today))
-                            if not _cp_10y.empty:
-                                _wmap = {t: w for t, w in zip(_tks, _wts)}
-                                _s10 = port_stats_from_prices(_cp_10y, _wmap, _SCORING_YEARS)
-                                if _s10:
-                                    _scoring_stats[_dname] = _s10
-                                    st.session_state["_pcm_scoring_stats_10y"] = _scoring_stats
-                        except Exception:
-                            pass
-
-                default_cols = {k: pcm_standards[k] for k in COMP_ORDER if k in pcm_standards}
-                # Order: My Portfolio → Step 2 inputs (client current + cmp1 + cmp2)
-                # → fixed benchmarks. Cap at 8 columns so the table stays
-                # readable but all Step 2 selections + fixed benchmarks fit
-                # (1 my_port + 3 step 2 + 3 benchmarks = 7, plus 1 headroom).
-                all_portfolios = {**my_port, **user_cmps, **default_cols}
-                all_portfolios = dict(list(all_portfolios.items())[:8])
-
-                # Controls row — optional extra strategies to overlay on charts
-                extra_sel = st.multiselect(
-                    "Add optimized strategies to comparison charts",
-                    options=[k for k in results.keys() if not k.startswith("⭐ ")],
-                    default=[], key=f"pcm_extra_{label}",
-                    placeholder="Add optimized strategies to charts...",
-                )
-                # Add selected strategies to PCM columns (max 6)
-                for es in extra_sel:
-                    if es in results and es not in all_portfolios:
-                        if len(all_portfolios) >= 6:
-                            last_key = list(all_portfolios.keys())[-1]
-                            del all_portfolios[last_key]
-                        # Augment with tickers/weights so PCM scoring + ER work
-                        _r_es = dict(results[es])
-                        _w_es = _r_es.get("weights", [])
-                        if _w_es and tickers:
-                            _r_es["tickers"] = list(tickers[:len(_w_es)])
-                            _r_es["weights"] = list(_w_es)
-                            _r_es["weights_dict"] = {
-                                t: float(w) for t, w in zip(tickers, _w_es)
-                            }
-                        all_portfolios[es] = _r_es
-                # Store for use in charts below
-                st.session_state[f"chart_extra_{label}"] = extra_sel
-
-                bm_rets = st.session_state.get("bmark_returns_" + label)
-                bm_lbl  = st.session_state.get("benchmark_label", "SPY")
-                bm_ann  = float(pd.Series(bm_rets).mean() * 252) if bm_rets else None
-
-                metric_names = [
-                    "Ann. Return", "Ann. Volatility", "Sharpe Ratio", "Sortino Ratio",
-                    "Calmar Ratio", "Max Drawdown", "Total Return", "YTD Return",
-                    "CVaR (5%)", "Expense Ratio", "Diversification", "Risk Score",
-                ]
-
-                # YTD: Jan 1 of current year to today
-                _ytd_start = date(date.today().year, 1, 1)
-
-                matrix_data = {"Metric": metric_names}
-                for pname, r in all_portfolios.items():
-                    ar=r["ann_return"]; av=r["ann_vol"]; sh=r["sharpe"]
-                    so=r.get("sortino",0); ca=r.get("calmar",0); md=r["max_drawdown"]
-                    tr=r["total_return"]; cv=r.get("cvar_5", ar/252 - 2*av/np.sqrt(252))
-
-                    # ── Risk Score uses 10-YEAR vol/drawdown, not period-specific ──
-                    # Risk is a property of the portfolio, not of which tab the user
-                    # is on. Pull 10yr stats from _scoring_stats; fall back to the
-                    # period values if 10yr data isn't available (short-history
-                    # tickers etc.).
-                    _score_st = _scoring_stats.get(pname, {}) if _scoring_stats else {}
-                    _av_score = float(_score_st.get("ann_vol", av) or av)
-                    _md_score = float(_score_st.get("max_drawdown", md) or md)
-                    _sh_score = float(_score_st.get("sharpe",  sh) or sh)
-
-                    # ── Risk Score: per-holding weighted-avg + correlation ──
-                    # If we have tickers/weights, use the proper portfolio scorer
-                    # (classifies each holding via _classify_ticker, applies caps,
-                    # discounts for diversification). Otherwise fall back to the
-                    # equity-class composite.
-                    _p_tks = r.get("tickers", [])
-                    _p_wts = r.get("weights", [])
-                    div_ratio = None   # diversification ratio for this portfolio
-                    if _p_tks and _p_wts:
-                        _h_scores = []
-                        _h_vols   = []
-                        for _tt in _p_tks:
-                            _rr = security_risk_score(_tt)
-                            if _rr:
-                                _h_scores.append(_rr["score"])
-                                _h_vols.append(_rr.get("ann_vol", 0.15))
-                            else:
-                                _h_scores.append(50)
-                                _h_vols.append(0.15)
-                        # Use 10yr portfolio vol for scoring (locked across tabs)
-                        rs = compute_portfolio_risk_score(
-                            _p_tks, _p_wts,
-                            holding_scores=_h_scores,
-                            holding_vols=_h_vols,
-                            portfolio_vol=_av_score,
-                        )
-                        # Diversification ratio: 1.00 = perfectly correlated,
-                        # < 1.0 = some diversification benefit. Uses the period's
-                        # `av` (not 10yr) since this is informational, not a score.
-                        _w_arr = np.array([float(x or 0) for x in _p_wts])
-                        _w_sum = _w_arr.sum()
-                        if _w_sum > 0:
-                            _w_norm = _w_arr / _w_sum
-                            _wsv = float(np.dot(_w_norm,
-                                                np.array(_h_vols, dtype=float)))
-                            if _wsv > 1e-6:
-                                div_ratio = max(0.0, min(1.0, av / _wsv))
-                    else:
-                        # Fallback path also uses 10yr values for scoring
-                        rs = compute_risk_score(_av_score, _md_score, _sh_score,
-                                                asset_class="equity")
-                    # ── Weighted Expense Ratio ──
-                    if _p_tks and _p_wts:
-                        _wer, _cov = weighted_expense_ratio(_p_tks, _p_wts)
-                        if _cov > 0:
-                            er_str = f"{_wer*100:.2f}%"
-                            if _cov < 95:
-                                er_str += f"  ({_cov:.0f}% covered)"
-                        else:
-                            er_str = "—"
-                    else:
-                        er_str = "—"
-                    # ── Diversification ratio cell ──
-                    # Render as ratio + qualitative tag so the meaning is clear
-                    if div_ratio is not None:
-                        if div_ratio >= 0.95:
-                            _div_tag = "concentrated"
-                        elif div_ratio >= 0.80:
-                            _div_tag = "moderate"
-                        elif div_ratio >= 0.60:
-                            _div_tag = "diversified"
-                        else:
-                            _div_tag = "well-diversified"
-                        div_str = f"{div_ratio:.2f}  ({_div_tag})"
-                    else:
-                        div_str = "—"
-                    alpha = f"{ar-bm_ann:+.2%}" if bm_ann is not None else "—"
-                    # PCM column header — emoji-stripped per advisor preference
-                    # (only the 👤 silhouette on Client's Current is preserved).
-                    short = _clean_label(pname.replace("⭐ ",""))[:24]
-                    # Order must match metric_names list exactly
-                    ytd = r.get("ytd_return", 0)
-                    matrix_data[short] = [
-                        f"{ar:.2%}", f"{av:.2%}", f"{sh:.2f}", f"{so:.2f}",
-                        f"{ca:.2f}", f"{md:.2%}", f"{tr:.2%}", f"{ytd:.2%}",
-                        f"{cv:.2%}", er_str, div_str, str(rs),
-                    ]
-
-                matrix_df = pd.DataFrame(matrix_data)
-                st.dataframe(matrix_df,
-                             use_container_width=True, hide_index=True,
-                             column_config={"Metric": st.column_config.TextColumn("Metric", width="medium")})
-                if bm_ann:
-                    st.caption(f"📊 Benchmark: {bm_lbl} · Ann. Return {bm_ann:.2%}")
-                st.caption(
-                    "💡 **Diversification ratio** = portfolio volatility ÷ weighted "
-                    "sum of individual holding volatilities. **1.00** means the "
-                    "holdings move perfectly together (no diversification benefit). "
-                    "**Lower values** indicate that uncorrelated movements between "
-                    "holdings are reducing overall portfolio risk — a "
-                    "well-diversified portfolio typically lands in the 0.55–0.75 range."
-                )
-
-                # ── DEBUG: per-portfolio breakdown ────────────────────
-                # Lets the user verify expense ratio + diversification ratio
-                # calculations by seeing which tickers contributed and where
-                # data is missing. Open if numbers look off.
-                with st.expander("🔍 Show calculation details (per-portfolio breakdown)", expanded=False):
-                    for pname, r in all_portfolios.items():
-                        _p_tks = r.get("tickers", [])
-                        _p_wts = r.get("weights", [])
-                        if not _p_tks or not _p_wts:
-                            st.markdown(f"**{pname}**: _(no holdings recorded — using portfolio-level fallback)_")
-                            continue
-                        st.markdown(f"**{pname}** — {len(_p_tks)} holdings")
-                        _w_arr = np.array([float(x or 0) for x in _p_wts])
-                        _w_arr = _w_arr / _w_arr.sum() if _w_arr.sum() > 0 else _w_arr
-                        _rows = []
-                        for _t, _w in zip(_p_tks, _w_arr):
-                            _rs = security_risk_score(_t)
-                            _er = _expense_ratio_for_ticker(_t)
-                            _cls, _ct = _classify_ticker(_t)
-                            _rows.append({
-                                "Ticker": _t,
-                                "Weight": f"{_w*100:.1f}%",
-                                "Class":  f"{_cls}/{_ct}" if _cls == "bond" else _cls,
-                                "Vol":    f"{_rs.get('ann_vol', 0)*100:.1f}%" if _rs else "—",
-                                "Score":  _rs["score"] if _rs else "—",
-                                "ER":     ("0.00%" if _er == 0.0 else
-                                          f"{_er*100:.2f}%" if _er is not None else "—"),
-                            })
-                        st.dataframe(pd.DataFrame(_rows), hide_index=True,
-                                    use_container_width=True)
-                        # Also show the aggregated metrics so the user can verify
-                        _wer, _cov = weighted_expense_ratio(_p_tks, _p_wts)
-                        st.caption(
-                            f"→ Weighted ER: **{_wer*100:.3f}%** "
-                            f"(coverage {_cov:.0f}%)  ·  "
-                            f"Portfolio vol: **{r.get('ann_vol', 0)*100:.2f}%**"
-                        )
-                        st.markdown("---")
-
-                # ── STANDARD COMPARISON PORTFOLIOS FOR CHARTS ─────────
-                std_chart_comparisons = {}
-                try:
-                    yrs_cmp   = int(label.split()[0]) if label.split()[0].isdigit() else 3
-                    end_cmp   = date.today()
-                    start_cmp = end_cmp - relativedelta(years=max(1, yrs_cmp))
-                    # ── Fixed market benchmarks (BND / 60-40 / SPY) ──────
-                    # Three universal reference portfolios. Each is shown
-                    # only if its toggle in the Fixed market benchmarks
-                    # expander (top of this tab) is on. Replaces the older
-                    # 60/40 + 90/10 + S&P + Conservative set.
-                    std_cmp_defs = []
-                    if st.session_state.get("show_bench_bnd", True):
-                        std_cmp_defs.append(("🟦 100% Bonds (BND)",     {"BND": 1.0}))
-                    if st.session_state.get("show_bench_6040", True):
-                        std_cmp_defs.append(("⚖️ 60/40 (SPY+AGG)",      {"SPY": 0.60, "AGG": 0.40}))
-                    if st.session_state.get("show_bench_spy", True):
-                        std_cmp_defs.append(("📈 S&P 500 (SPY)",         {"SPY": 1.0}))
-                    # Derive ticker list directly from the defs so we never
-                    # silently drop one (e.g. BIL was missing previously and
-                    # made 90/10 look identical to S&P 500)
-                    _need_tks = sorted({t for _, d in std_cmp_defs for t in d.keys()})
-                    if not _need_tks:
-                        # All three benchmark toggles are off — nothing to fetch.
-                        cmp_prices_std = pd.DataFrame()
-                    else:
-                        cmp_prices_std, _src = get_prices_cached(
-                            tuple(_need_tks), str(start_cmp), str(end_cmp))
-                        cmp_prices_std = cmp_prices_std.ffill()
-
-                    def cmp_port_rets(wts_dict):
-                        cols = [c for c in wts_dict if c in cmp_prices_std.columns]
-                        if not cols: return None
-                        w    = np.array([wts_dict[c] for c in cols]); w=w/w.sum()
-                        rets = cmp_prices_std[cols].pct_change().dropna()
-                        return pd.Series((rets.values @ w), index=rets.index)
-
-                    for cname, cwts in std_cmp_defs:
-                        r = cmp_port_rets(cwts)
-                        if r is not None: std_chart_comparisons[cname] = r
-
-                    # (Equal Weight removed from chart comparisons per advisor preference.)
-
-                    # ── Client's Current Portfolio (Step 2) ─────────
-                    # Mirror the PCM treatment: when the advisor has set a
-                    # client-current portfolio in Step 2, it should appear
-                    # alongside the analyzed portfolio + comparison portfolios
-                    # on every period chart (cumulative return, drawdown,
-                    # rolling Sharpe). Previously it was only fed to PCM,
-                    # which is why the user saw 5 columns in PCM but only 4
-                    # lines on each chart.
-                    _curr_chart = st.session_state.get("client_current_portfolio")
-                    if _curr_chart and _curr_chart.get("tickers"):
-                        try:
-                            _curr_tks_c = list(_curr_chart["tickers"])
-                            _curr_w_pct_c = _curr_chart.get("weights") or {}
-                            _curr_w_dec = {
-                                t: float(_curr_w_pct_c.get(t, 0)) / 100.0
-                                for t in _curr_tks_c
-                                if float(_curr_w_pct_c.get(t, 0)) > 0
-                            }
-                            if _curr_w_dec:
-                                _cp_c, _ = get_prices_with_proxies(
-                                    tuple(_curr_w_dec.keys()),
-                                    str(start_cmp), str(end_cmp))
-                                _cp_c = _cp_c.ffill().dropna(how="all")
-                                _vcols_c = [t for t in _curr_w_dec if t in _cp_c.columns]
-                                if _vcols_c:
-                                    _w_c = np.array([_curr_w_dec[t] for t in _vcols_c])
-                                    _w_c = _w_c / _w_c.sum() if _w_c.sum() > 0 else _w_c
-                                    _r_c = _cp_c[_vcols_c].pct_change().dropna()
-                                    std_chart_comparisons["👤 Client's Current"] = pd.Series(
-                                        _r_c.values @ _w_c, index=_r_c.index)
-                        except Exception:
-                            pass
-
-                    # User Step 2 selections (now supports presets in addition to 📁 saved)
-                    for cmp_key in ["cmp_port1", "cmp_port2"]:
-                        cmp_sel = st.session_state.get(cmp_key, "None")
-                        if not cmp_sel or cmp_sel == "None":
-                            continue
-                        try:
-                            _cmp_tks, _cmp_wts = None, None
-                            _cmp_label = cmp_sel
-                            if cmp_sel.startswith("📁 "):
-                                sp = load_saved().get(cmp_sel[2:])
-                                if sp:
-                                    _cmp_tks = sp["tickers"]
-                                    _cmp_wts = sp.get("weights") or [1.0/len(_cmp_tks)]*len(_cmp_tks)
-                            elif cmp_sel in POPULAR_PORTFOLIOS and POPULAR_PORTFOLIOS[cmp_sel]:
-                                # _resolve_preset returns percentage weights;
-                                # this caller wants decimals.
-                                _cmp_tks, _wmap = _resolve_preset(cmp_sel)
-                                if _cmp_tks:
-                                    _total = sum(_wmap.values()) or 1.0
-                                    _cmp_wts = [_wmap.get(t, 0.0) / _total for t in _cmp_tks]
-                                    _cmp_label = f"🧩 {cmp_sel[:14]}"
-                            if _cmp_tks and _cmp_wts:
-                                cp, _src = get_prices_with_proxies(
-                                    tuple(_cmp_tks), str(start_cmp), str(end_cmp))
-                                cp = cp.ffill().dropna(how="all")
-                                vcols2 = [t for t in _cmp_tks if t in cp.columns]
-                                if vcols2:
-                                    cw = np.array([_cmp_wts[_cmp_tks.index(t)] for t in vcols2])
-                                    cw = cw / cw.sum()
-                                    cr = cp[vcols2].pct_change().dropna()
-                                    std_chart_comparisons[_cmp_label] = pd.Series(
-                                        cr.values @ cw, index=cr.index)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-                # Sort in canonical order (keep user comparisons at the end, order preserved)
-                _ordered = {k: std_chart_comparisons[k] for k in COMP_ORDER if k in std_chart_comparisons}
-                _user = {k: v for k, v in std_chart_comparisons.items() if k not in _ordered}
-                std_chart_comparisons = {**_ordered, **_user}
-
-                # ── Align comparison series to My Portfolio date range ─
-                # results use a test-split window; align comparisons to same period
-                if results:
-                    _ref_key = next((k for k in results if k.startswith("⭐ ")), list(results.keys())[0])
-                    _ref_idx = pd.to_datetime(results[_ref_key]["index"])
-                    _ref_start, _ref_end = _ref_idx[0], _ref_idx[-1]
-
-                    def _align(s):
-                        """Normalize tz and trim to ref window. yfinance returns tz-aware;
-                        results["index"] is tz-naive — must match before comparing."""
-                        try:
-                            idx = s.index
-                            # Strip timezone info if present
-                            if getattr(idx, "tz", None) is not None:
-                                s = s.copy()
-                                s.index = idx.tz_localize(None)
-                            return s.loc[(_ref_start <= s.index) & (s.index <= _ref_end)]
-                        except Exception:
-                            return s
-
-                    std_chart_comparisons = {
-                        k: _align(s)
-                        for k, s in std_chart_comparisons.items()
-                        if len(_align(s)) > 5
-                    }
-
-                # ── Extra strategy overlays (from PCM selector above) ─────
-                # These are added to charts in addition to comparison portfolios
-                _extra_strats = st.session_state.get(f"chart_extra_{label}", [])
-                _extra_colors = ["#f59e0b","#10b981","#6366f1","#ef4444","#8b5cf6"]
-                _extra_chart_data = {}  # name -> pd.Series of returns
-                for _ei, _en in enumerate(_extra_strats):
-                    if _en in results:
-                        _er = results[_en]
-                        _idx = pd.to_datetime(_er["index"])
-                        _extra_chart_data[_en] = pd.Series(_er["returns"], index=_idx)
-
-                # ── RENDER METRICS from all_portfolios (same data as PCM) ────
-                _m_data2 = {}
-                def _strip2(n):
-                    for e in ["📐 ","🌦 ","📈 ","🛡️ ","⚖️ ","⭐ "]: n=n.replace(e,"")
-                    return n[:22]
-                for _pname, _pdata in all_portfolios.items():
-                    _m_data2[_strip2(_pname)] = _pdata
-                if _m_data2:
-                    _bs2  = max(_m_data2.items(), key=lambda x: x[1]["sharpe"])
-                    _bso2 = max(_m_data2.items(), key=lambda x: x[1].get("sortino",0))
-                    _bc2  = max(_m_data2.items(), key=lambda x: x[1].get("calmar",0))
-                    _lv2  = min(_m_data2.items(), key=lambda x: x[1]["ann_vol"])
-                    _ld2  = max(_m_data2.items(), key=lambda x: x[1]["max_drawdown"])  # least negative = best
-                    with _metrics_box.container():
-                        m1,m2,m3,m4,m5,m6 = st.columns(6)
-                        m1.metric("Sharpe",    f"{_bs2[1]['sharpe']:.2f}",         _strip2(_bs2[0]))
-                        m2.metric("Sortino",   f"{_bso2[1].get('sortino',0):.2f}", _strip2(_bso2[0]))
-                        m3.metric("Calmar",    f"{_bc2[1].get('calmar',0):.2f}",   _strip2(_bc2[0]))
-                        m4.metric("Low Vol",   f"{_lv2[1]['ann_vol']:.1%}",        _strip2(_lv2[0]))
-                        m5.metric("Max DD",    f"{_ld2[1]['max_drawdown']:.1%}",   _strip2(_ld2[0]))
-                        m6.metric("Count",     str(len(_m_data2)))
-
-                if mode in ("charts", "all"):
-                # ── 10-YEAR HISTORICAL PERFORMANCE ────────────────────
-                    st.markdown("---")
-                    st.markdown("#### Historical Performance vs Benchmark")
-                    bm_name_hist = st.session_state.get("benchmark_label", "SPY")
-                    bm_tkr_hist  = st.session_state.get("benchmark_ticker", "SPY")
-                    fig_hist = go.Figure()
-                    end_full   = date.today()
-                    # Use the tab's period for the historical chart (1yr, 3yr, 5yr, 10yr)
-                    _hist_yrs  = int(label.split()[0]) if label.split()[0].isdigit() else 10
-                    start_full = end_full - relativedelta(years=_hist_yrs)
-                    chart_colors_hist = ["#2563eb","#059669","#d97706","#dc2626","#7c3aed","#ea580c"]
-    
-                    # ── Find actual common start date for this tab's period ──
-                    try:
-                        _test_prices, _src = get_prices_cached(tuple(tickers), str(start_full), str(end_full))
-                        # Fill forward to handle tickers with gaps, then find common start
-                        _filled = _test_prices.ffill()
-                        _all_valid = _filled.dropna(how="any")
-                        if len(_all_valid) > 30:
-                            start_full = _all_valid.index[0].date()
-                        else:
-                            _most_valid = _filled.dropna(thresh=max(1, len(tickers)//2))
-                            start_full = _most_valid.index[0].date() if len(_most_valid) > 30 else start_full
-                    except Exception:
-                        pass
-    
-                    # Check if we're using a shorter window than the tab's period
-                    _tab_start_expected = (date.today() - relativedelta(years=_hist_yrs))
-                    _using_relative = (start_full > _tab_start_expected) if hasattr(start_full, "year") else False
-                    _actual_years   = round((date.today() - start_full).days / 365.25, 1) if hasattr(start_full, "year") else _hist_yrs
-    
-                    # Show proxy notice if any tickers used substitutes
-                    try:
-                        if _hist_proxies:
-                            risk_free = [k for k,v in _hist_proxies.items() if "risk-free" in v]
-                            class_px  = [k for k,v in _hist_proxies.items() if "class proxy" in v or "name proxy" in v]
-                            direct_px = [k for k,v in _hist_proxies.items() if "proxy" in v and k not in risk_free and k not in class_px]
-                            msgs = []
-                            if direct_px:
-                                msgs.append("🔄 **Direct proxy:** " + ", ".join(
-                                    f"{k} → {_hist_proxies[k].split('(')[1].rstrip(')')}" for k in direct_px))
-                            if class_px:
-                                msgs.append("📊 **Asset-class proxy:** " + ", ".join(
-                                    f"{k} → {_hist_proxies[k]}" for k in class_px))
-                            if risk_free:
-                                msgs.append("⚠️ **Risk-free proxy (BIL):** " + ", ".join(risk_free) +
-                                    " — no comparable historical data found; T-Bill returns used")
-                            if msgs:
-                                st.info(" | ".join(msgs) + f" | Showing {_actual_years:.1f}yr window")
-                    except Exception: pass
-    
-    
-                    if _using_relative:
-                        # Find which tickers are missing full history
-                        try:
-                            _short_tickers = [
-                                t for t in tickers
-                                if t in _test_prices.columns and
-                                _test_prices[t].first_valid_index() is not None and
-                                _test_prices[t].first_valid_index().date() > _ten_yrs_ago
-                            ]
-                        except Exception:
-                            _short_tickers = []
-                        _short_str = ", ".join(_short_tickers[:5]) if _short_tickers else "some tickers"
-                        # Pre-compute the contraction outside the f-string —
-                        # Python 3.12 allowed `'don\'t have'` inside an f-string
-                        # expression, but 3.13 (which Streamlit Cloud uses)
-                        # rejects backslashes inside the expression part of
-                        # f-strings as a hard SyntaxError.
-                        _have_phrase = (
-                            "don't have" if len(_short_tickers) != 1
-                            else "doesn't have"
-                        )
-                        st.info(
-                            f"📅 **Relative comparison period used** — {_short_str} "
-                            f"{_have_phrase} "
-                            f"{_hist_yrs} years of history. Chart shows the common available window: "
-                            f"**{_actual_years:.1f} years** "
-                            f"(from {start_full.strftime('%b %Y') if hasattr(start_full,'strftime') else start_full}). "
-                            f"All portfolios start at 0% on the same date for a fair comparison."
-                        )
-    
-                    # My Portfolio
-                    _mp_hist_keys = [k for k in results if k.startswith("⭐ ")] or (list(results.keys())[:1] if results else [])
-                    my_port_hist = {k: results[k] for k in _mp_hist_keys}
-                    if my_port_hist:
-                        try:
-                            r_my       = list(my_port_hist.values())[0]
-                            port_lbl_h = list(my_port_hist.keys())[0].replace("⭐ ","")
-                            # Fetch ACTUAL historical prices for the full tab period
-                            fp, _hist_proxies = get_prices_with_proxies(tuple(tickers), str(start_full), str(end_full))
-                            if _hist_proxies:
-                                _proxy_msg = ", ".join(f"{k}→{v}" for k,v in _hist_proxies.items())
-                            vcols_h = [t for t in tickers if t in fp.columns]
-                            if vcols_h:
-                                # Use the actual saved/submitted weights
-                                loaded_w = st.session_state.get("loaded_weights", {})
-                                if loaded_w and all(t in loaded_w for t in tickers):
-                                    w_arr_h = np.array([loaded_w[t]/100.0 for t in vcols_h])
-                                else:
-                                    w_arr_h = np.array(r_my["weights"][:len(vcols_h)])
-                                w_arr_h = w_arr_h / w_arr_h.sum()
-                                # Fill forward missing data (handles short-history tickers)
-                                fp_filled = fp[vcols_h].ffill().dropna(how="all")
-                                common_idx = fp_filled.dropna().index
-                                if len(common_idx) > 5:
-                                    rets_h  = fp_filled.loc[common_idx].pct_change().dropna()
-                                    port_r  = pd.Series(rets_h.values @ w_arr_h, index=rets_h.index)
-                                    port_pct = (1 + port_r).cumprod() - 1
-                                    # Update start_full for comparison alignment
-                                    start_full = port_r.index[0].date()
-                                    end_full   = port_r.index[-1].date()
-                                    fig_hist.add_trace(go.Scatter(x=port_pct.index, y=port_pct.values,
-                                        mode="lines", name=port_lbl_h,
-                                        line=dict(width=3, color=MY_PORT_COLOR, dash="solid"),
-                                        hovertemplate=f"<b>{port_lbl_h}</b><br>%{{x|%b %Y}}<br>%{{y:+.1%}}<extra></extra>"))
-                        except Exception: pass
-    
-                    # Comparison portfolios (10yr) — fixed benchmarks
-                    # honoring the three toggles at the top of this tab.
-                    hist_cmp_defs = []
-                    if st.session_state.get("show_bench_bnd", True):
-                        hist_cmp_defs.append(("🟦 100% Bonds (BND)", ["BND"],         [1.0],         "#2563eb"))
-                    if st.session_state.get("show_bench_6040", True):
-                        hist_cmp_defs.append(("⚖️ 60/40 (SPY+AGG)",   ["SPY", "AGG"], [0.60, 0.40],  "#059669"))
-                    if st.session_state.get("show_bench_spy", True):
-                        hist_cmp_defs.append(("📈 S&P 500 (SPY)",     ["SPY"],         [1.0],         "#dc2626"))
-                    for cname, ctkrs, cwts, ccol in hist_cmp_defs:
-                        try:
-                            cp, _src = get_prices_cached(tuple(ctkrs), str(start_full), str(end_full))
-                            cp = cp.ffill().dropna(how="all")
-                            vcols_c = [t for t in ctkrs if t in cp.columns]
-                            if vcols_c:
-                                cw = np.array([cwts[ctkrs.index(t)] for t in vcols_c]); cw = cw/cw.sum()
-                                cr = cp[vcols_c].pct_change().dropna()
-                                # Align to the same start date as My Portfolio
-                                # Align to My Portfolio date range
-                                cr = cr[(cr.index >= pd.Timestamp(start_full)) & 
-                                        (cr.index <= pd.Timestamp(end_full))]
-                                if len(cr) < 5: continue
-                                cc = (1 + pd.Series(cr.values @ cw, index=cr.index)).cumprod()
-                                cc_pct = (cc - 1)
-                                fig_hist.add_trace(go.Scatter(x=cc_pct.index, y=cc_pct.values, mode="lines",
-                                    name=_clean_label(cname),
-                                    line=dict(width=1.8, color=ccol, dash="solid"),
-                                    hovertemplate=f"<b>{_clean_label(cname)}</b><br>%{{x|%b %Y}}<br>%{{y:+.1%}}<extra></extra>"))
-                        except Exception: pass
-
-                    # ── Client's Current Portfolio (Step 2) on 10y hist ─────
-                    # Was missing from the 10y historical chart specifically —
-                    # the period sub-tabs use std_chart_comparisons which got
-                    # the client-current addition, but the 10y hist chart has
-                    # its own code path that bypassed std_chart_comparisons.
-                    # This block adds it explicitly so the 10y view matches
-                    # the other charts.
-                    _curr_h = st.session_state.get("client_current_portfolio")
-                    if _curr_h and _curr_h.get("tickers"):
-                        try:
-                            _ch_tks  = list(_curr_h["tickers"])
-                            _ch_wpct = _curr_h.get("weights") or {}
-                            _ch_wmap = {
-                                t: float(_ch_wpct.get(t, 0)) / 100.0
-                                for t in _ch_tks
-                                if float(_ch_wpct.get(t, 0)) > 0
-                            }
-                            if _ch_wmap:
-                                _ch_cp, _ = get_prices_with_proxies(
-                                    tuple(_ch_wmap.keys()),
-                                    str(start_full), str(end_full))
-                                _ch_cp = _ch_cp.ffill().dropna(how="all")
-                                _ch_vcols = [t for t in _ch_wmap if t in _ch_cp.columns]
-                                if _ch_vcols:
-                                    _ch_w = np.array([_ch_wmap[t] for t in _ch_vcols])
-                                    if _ch_w.sum() > 0:
-                                        _ch_w = _ch_w / _ch_w.sum()
-                                    _ch_r = _ch_cp[_ch_vcols].pct_change().dropna()
-                                    _ch_r = _ch_r[(_ch_r.index >= pd.Timestamp(start_full)) &
-                                                  (_ch_r.index <= pd.Timestamp(end_full))]
-                                    if len(_ch_r) >= 5:
-                                        _ch_cum = (1 + pd.Series(
-                                            _ch_r.values @ _ch_w, index=_ch_r.index
-                                        )).cumprod()
-                                        _ch_pct = _ch_cum - 1
-                                        # Distinct color: amber/gold so it
-                                        # stands out vs portfolio (purple)
-                                        # and benchmarks (blue/green/red).
-                                        fig_hist.add_trace(go.Scatter(
-                                            x=_ch_pct.index, y=_ch_pct.values, mode="lines",
-                                            name="👤 Client's Current",
-                                            line=dict(width=2.0, color="#d97706", dash="solid"),
-                                            hovertemplate=("<b>👤 Client's Current</b><br>"
-                                                           "%{x|%b %Y}<br>%{y:+.1%}<extra></extra>")
-                                        ))
-                        except Exception:
-                            pass
-
-                    # ── Advisor cmp_port1 / cmp_port2 on 10y hist ────────────
-                    # Same pattern: fetch and overlay the Step 2 advisor-set
-                    # comparison portfolios on the 10y chart.
-                    _cmp_colors_10y = ["#f59e0b", "#8b5cf6"]  # amber, violet
-                    for _ci, (_ckey, _ccol) in enumerate(zip(
-                            ("cmp_port1", "cmp_port2"), _cmp_colors_10y)):
-                        _csel = st.session_state.get(_ckey, "None")
-                        if not _csel or _csel == "None":
-                            continue
-                        try:
-                            _c10_tks, _c10_wts = None, None
-                            _c10_label = _csel
-                            if _csel.startswith("📁 "):
-                                sp = load_saved().get(_csel[2:])
-                                if sp:
-                                    _c10_tks = sp["tickers"]
-                                    _c10_wts = sp.get("weights") or [1.0/len(_c10_tks)]*len(_c10_tks)
-                            elif _csel.startswith("✏️ Custom"):
-                                _custom_w = st.session_state.get(f"cmp{_ci+1}_custom_weights")
-                                _custom_l = st.session_state.get(f"cmp{_ci+1}_custom_label")
-                                if _custom_w:
-                                    _c10_tks = list(_custom_w.keys())
-                                    _c10_wts = list(_custom_w.values())
-                                    if _custom_l:
-                                        _c10_label = _custom_l
-                            elif _csel in POPULAR_PORTFOLIOS and POPULAR_PORTFOLIOS[_csel]:
-                                _c10_tks, _wmap = _resolve_preset(_csel)
-                                if _c10_tks:
-                                    # Decimal weights to match the rest of this branch
-                                    _total = sum(_wmap.values()) or 1.0
-                                    _c10_wts = [_wmap.get(t, 0.0) / _total for t in _c10_tks]
-                            if _c10_tks and _c10_wts:
-                                _c10_cp, _ = get_prices_with_proxies(
-                                    tuple(_c10_tks), str(start_full), str(end_full))
-                                _c10_cp = _c10_cp.ffill().dropna(how="all")
-                                _c10_vcols = [t for t in _c10_tks if t in _c10_cp.columns]
-                                if _c10_vcols:
-                                    _c10_w = np.array([_c10_wts[_c10_tks.index(t)] for t in _c10_vcols])
-                                    if _c10_w.sum() > 0:
-                                        _c10_w = _c10_w / _c10_w.sum()
-                                    _c10_r = _c10_cp[_c10_vcols].pct_change().dropna()
-                                    _c10_r = _c10_r[(_c10_r.index >= pd.Timestamp(start_full)) &
-                                                    (_c10_r.index <= pd.Timestamp(end_full))]
-                                    if len(_c10_r) >= 5:
-                                        _c10_cum = (1 + pd.Series(
-                                            _c10_r.values @ _c10_w, index=_c10_r.index
-                                        )).cumprod()
-                                        _c10_pct = _c10_cum - 1
-                                        fig_hist.add_trace(go.Scatter(
-                                            x=_c10_pct.index, y=_c10_pct.values, mode="lines",
-                                            name=_clean_label(_c10_label),
-                                            line=dict(width=1.6, color=_ccol, dash="solid"),
-                                            hovertemplate=(f"<b>{_clean_label(_c10_label)}</b><br>"
-                                                           "%{x|%b %Y}<br>%{y:+.1%}<extra></extra>")
-                                        ))
-                        except Exception:
-                            pass
-    
-                    # Benchmark removed — S&P 500 shown via comparison portfolios
-    
-                    # Extra strategy overlays on 10yr hist (fetch full 10yr data)
-                    for _ei, _en in enumerate(_extra_strats):
-                        if _en in results:
-                            try:
-                                _ex_r = results[_en]
-                                _ex_fp, _src = get_prices_with_proxies(tuple(tickers), str(start_full), str(end_full))
-                                _ex_vc = [t for t in tickers if t in _ex_fp.columns]
-                                if _ex_vc:
-                                    _ex_w = np.array(_ex_r["weights"][:len(_ex_vc)]); _ex_w = _ex_w/_ex_w.sum()
-                                    _ex_ret = _ex_fp[_ex_vc].pct_change().dropna()
-                                    _ex_cum = (1+pd.Series(_ex_ret.values@_ex_w, index=_ex_ret.index)).cumprod()
-                                    _ecol = _extra_colors[_ei % len(_extra_colors)]
-                                    _ex_pct = (_ex_cum - 1)
-                                    _disp_e = _clean_label(_en)
-                                    fig_hist.add_trace(go.Scatter(x=_ex_pct.index, y=_ex_pct.values, mode="lines",
-                                        name=_disp_e, line=dict(width=1.5, color=_ecol, dash="solid"),
-                                        hovertemplate=f"<b>{_disp_e}</b><br>%{{x|%b %Y}}<br>%{{y:+.1%}}<extra></extra>"))
-                            except Exception: pass
-    
-                    if len(fig_hist.data) == 0:
-                        st.warning("Could not load 10-year data. Check tickers and try again.")
-                    else:
-                        fig_hist.add_hline(y=0, line_color="#e5e7eb", line_width=1,
-                                            annotation_text="0%", annotation_position="left",
-                                            annotation_font=dict(size=10, color="#9ca3af"))
-                        fig_hist.update_layout(
-                            title=dict(text=f"{_hist_yrs}-Year Historical Performance vs {bm_name_hist} ({start_full.strftime('%Y') if hasattr(start_full,'strftime') else str(start_full)[:4]}–{end_full.year})", x=0, xanchor="left",
-                                       font=dict(size=14, color="#111827", family="Inter")),
-                            yaxis=dict(title_text="Total Return (%)", tickformat="+.0%",
-                                       gridcolor="#f0f0f0", showgrid=True,
-                                       title_font=dict(size=12, color="#374151"),
-                                       tickfont=dict(size=11, color="#6b7280"),
-                                       zeroline=True, zerolinecolor="#e5e7eb", zerolinewidth=1),
-                            xaxis=dict(title_text=None, gridcolor="#f0f0f0",
-                                       tickfont=dict(size=11, color="#6b7280")),
-                            height=520, template="plotly_white",
-                            paper_bgcolor="#ffffff", plot_bgcolor="#fafafa",
-                            font=dict(color="#374151", family="Inter"),
-                            # Equalized margins so chart content is visually
-                            # centered, and bottom legend now centered to match.
-                            margin=dict(t=54, b=160, l=72, r=72),
-                            showlegend=True,
-                            legend=dict(bgcolor="rgba(255,255,255,0.95)", bordercolor="#e5e7eb",
-                                        borderwidth=1, font=dict(size=11, color="#374151"),
-                                        orientation="h", x=0.5, y=-0.22,
-                                        xanchor="center", yanchor="top"),
-                            hoverlabel=dict(bgcolor="#111827", font=dict(color="#f9fafb", size=12)),
-                        )
-                        st.plotly_chart(fig_hist, use_container_width=True, key=f"hist10_{label}",
-                                        config={"displayModeBar": True, "displaylogo": False,
-                                                "modeBarButtonsToRemove": ["lasso2d","select2d"]})
-    
-                    # ── FORWARD MONTE CARLO ─────────────────────────────
-                    # Heading reflects the actual projection horizon set on
-                    # the slider below (defaults to 10y). Was previously
-                    # hardcoded "10-Year" which was misleading at 30y.
-                    _mc_years_for_heading = st.session_state.get(
-                        f"mc_yrs_{label}", 10
-                    )
-                    st.markdown(
-                        f"#### 🔭 {_mc_years_for_heading}-Year Forward "
-                        f"Projection (Monte Carlo)"
-                    )
-
-                    # ── Flexible Monte Carlo Parameters ─────────────────────
-                    with st.expander("⚙️ Projection Settings", expanded=False):
-                        mc_pcols = st.columns(4)
-                        mc_years = mc_pcols[0].slider("Projection Years", 5, 30, 10, key=f"mc_yrs_{label}")
-                        mc_sims  = mc_pcols[1].slider("Simulations", 100, 1000, 500, step=100, key=f"mc_sims_{label}")
-                        mc_ret_adj  = mc_pcols[2].slider("Return Adjustment (%/yr)", -5, 5, 0, key=f"mc_radj_{label}",
-                                                          help="Shift expected return up/down from historical")
-                        mc_vol_adj  = mc_pcols[3].slider("Volatility Adjustment (%)", -5, 10, 0, key=f"mc_vadj_{label}",
-                                                          help="Increase/decrease volatility assumption")
-
-                        # ── Expected-return mode ─────────────────────────────
-                        # The single most important methodology choice in any
-                        # forward Monte Carlo. Default 'CMA-shrunk' applies
-                        # an industry-standard shrinkage of the historical
-                        # mean toward a long-run capital markets assumption
-                        # (7%/yr equity-blended), which prevents the projection
-                        # from extrapolating recent strong-decade returns into
-                        # the next decade. Raw historical is preserved as an
-                        # option but not the default — it produces unrealistic
-                        # forward projections when the trailing window happens
-                        # to be unusually strong (e.g. the last 10 years for
-                        # US equities).
-                        mc_ret_mode = st.radio(
-                            "Expected return assumption",
-                            options=[
-                                "Conservative (CMA-shrunk to 7%/yr)",
-                                "Balanced (50/50 historical and 8% CMA)",
-                                "Historical (raw 10-year mean)",
-                            ],
-                            index=0,
-                            key=f"mc_ret_mode_{label}",
-                            help=(
-                                "Forward Monte Carlo is highly sensitive to the input mean. "
-                                "Using raw historical returns from a strong decade biases the "
-                                "projection upward — the math compounds the optimism. "
-                                "CMA-shrunk shrinks toward a 7%/yr long-run equity assumption, "
-                                "which is closer to industry-standard capital markets expectations. "
-                                "Volatility is preserved from the historical sample regardless of mode."
-                            ),
-                        )
-
-                        # ── Input data diagnostic ─────────────────────────────
-                        # Lives at the bottom of Projection Settings so all the
-                        # controls + their effective state are in one place.
-                        # Reads from session_state keys populated when the chart
-                        # was last built (one rerun behind on first paint, but
-                        # any subsequent setting change re-renders the chart
-                        # which writes fresh values, so it stays in sync after
-                        # the first interaction).
-                        st.markdown("---")
-                        st.markdown(
-                            "**🔬 Input data diagnostic**  \n"
-                            "<span style='color:#6B7E8A;font-size:0.78rem'>"
-                            "What's actually feeding the simulation, after all "
-                            "settings above are applied. Updates when you change "
-                            "any setting.</span>",
-                            unsafe_allow_html=True,
-                        )
-                        _diag_final = st.session_state.get(f"_mc_diag_final_{label}")
-                        _diag_orig  = st.session_state.get(f"_mc_diag_orig_{label}")
-                        _diag_src   = st.session_state.get(f"_mc_diag_src_{label}", "—")
-                        if _diag_final and len(_diag_final) > 1:
-                            import numpy as _np_d
-                            _arr_d = _np_d.array(_diag_final, dtype=float)
-                            _md = float(_arr_d.mean())
-                            _sd = float(_arr_d.std())
-                            _eff_ret = (1 + _md) ** 252 - 1
-                            _eff_vol = _sd * (252 ** 0.5)
-                            _yrs_d   = len(_arr_d) / 252.0
-                            _dc1, _dc2, _dc3, _dc4 = st.columns(4)
-                            _dc1.metric("Source",      _diag_src)
-                            _dc2.metric("Sample size", f"{len(_arr_d)} days  (≈{_yrs_d:.1f}yr)")
-                            _dc3.metric("Effective ann. return", f"{_eff_ret:+.1%}/yr",
-                                        help="Final mean after CMA shrinkage AND any "
-                                             "Return Adjustment slider value.")
-                            _dc4.metric("Effective ann. vol",    f"{_eff_vol:.1%}/yr",
-                                        help="Final vol after any Volatility "
-                                             "Adjustment slider value.")
-                            # Warn for raw-historical mode + high underlying return
-                            if _diag_orig and len(_diag_orig) > 1:
-                                _arr_o = _np_d.array(_diag_orig, dtype=float)
-                                _orig_ann = (1 + float(_arr_o.mean())) ** 252 - 1
-                                if _orig_ann > 0.18 and mc_ret_mode.startswith("Historical"):
-                                    st.warning(
-                                        f"⚠️ Raw historical mode is selected and the "
-                                        f"trailing 10-year annualized return is "
-                                        f"**{_orig_ann:+.1%}/yr** — unusually high. "
-                                        f"The forward projection will inherit this. "
-                                        f"Switch to 'Conservative (CMA-shrunk)' for "
-                                        f"more realistic forward expectations."
-                                    )
-                        else:
-                            st.caption(
-                                "_Diagnostic populates after the chart renders. "
-                                "Change any setting above and it'll appear._"
-                            )
-
-                    st.caption(f"{mc_sims} simulations · {mc_years}yr horizon · "
-                               f"based on 10-year historical returns · "
-                               f"expected return assumption applied per Projection Settings · "
-                               f"not a guarantee of future returns.")
-    
-                    psel_c1, psel_c2 = st.columns([2, 2])
-                    # Sort: My Portfolio first, then other strategies
-                    _my_strats   = [n for n in results.keys() if n.startswith("⭐ ")]
-                    _other_strats= [n for n in results.keys() if not n.startswith("⭐ ")]
-                    all_proj_strats = _my_strats + _other_strats
-                    my_proj_keys    = _my_strats  # keys starting with ⭐
-                    default_proj    = my_proj_keys[0] if my_proj_keys else all_proj_strats[0] if all_proj_strats else None
-    
-                    if default_proj:
-                        proj_strategy = psel_c1.selectbox(
-                            "Strategy to project", all_proj_strats,
-                            index=0,  # Always default to first = My Portfolio
-                            key=f"proj_sel_{label}", label_visibility="collapsed")
-    
-                        # Build the comparison-portfolio list for this projection.
-                        # Default: include all the same comparisons the
-                        # cumulative/drawdown/Sharpe charts show — Step 2's
-                        # client-current portfolio + advisor cmp_port1/2 +
-                        # the toggled-on fixed market benchmarks. Advisor can
-                        # tick any off via the multiselect if they want a
-                        # cleaner projection chart.
-                        _proj_opts_full = []
-                        # Client's current portfolio — only if Step 2 picker is set
-                        _curr_proj_set = st.session_state.get("client_current_portfolio")
-                        if _curr_proj_set and _curr_proj_set.get("tickers"):
-                            _proj_opts_full.append("👤 Client's Current")
-                        # Advisor-set comparison portfolios from Step 2
-                        for _ci, _ckey in enumerate(("cmp_port1", "cmp_port2"), start=1):
-                            _csel = st.session_state.get(_ckey, "None")
-                            if _csel and _csel != "None":
-                                # Use a stable label that matches std_chart_comparisons
-                                if _csel.startswith("📁 "):
-                                    _proj_opts_full.append(_csel)
-                                elif _csel.startswith("✏️ Custom"):
-                                    _custom_label = st.session_state.get(f"cmp{_ci}_custom_label")
-                                    if _custom_label:
-                                        _proj_opts_full.append(_custom_label)
-                                elif _csel in POPULAR_PORTFOLIOS:
-                                    _proj_opts_full.append(f"🧩 {_csel[:14]}")
-                        # Fixed market benchmarks per their toggles
-                        if st.session_state.get("show_bench_bnd", True):
-                            _proj_opts_full.append("🟦 100% Bonds (BND)")
-                        if st.session_state.get("show_bench_6040", True):
-                            _proj_opts_full.append("⚖️ 60/40 (SPY+AGG)")
-                        if st.session_state.get("show_bench_spy", True):
-                            _proj_opts_full.append("📈 S&P 500 (SPY)")
-                        proj_cmp = psel_c2.multiselect(
-                            "Add comparisons", _proj_opts_full,
-                            default=_proj_opts_full,  # Default: all on
-                            key=f"proj_cmp_{label}", label_visibility="collapsed",
-                            placeholder="Add comparison portfolios...")
-
-                        if proj_strategy in results:
-                            proj_r = results[proj_strategy]
-                            # ── Use 10-year returns for projection ─────────
-                            # The forward Monte Carlo should always be based on
-                            # the longest available history, NOT whatever period
-                            # sub-tab the user is on. Feeding 1-year returns
-                            # into a 10-year forward sim produces wildly
-                            # inflated forecasts because a single-year window
-                            # is too narrow a sample of return distribution
-                            # behavior. Pull the 10-year backtest's returns for
-                            # the same strategy when available; fall back to
-                            # the period's own returns only if 10y data is
-                            # missing (which happens for very short-history
-                            # tickers).
-                            _bt10_state = st.session_state.get("bt10")
-                            _bt10_results = (
-                                _bt10_state[0] if _bt10_state and isinstance(_bt10_state, (list, tuple))
-                                else (_bt10_state or {})
-                            )
-                            _proj_returns_for_mc = proj_r.get("returns", [])
-                            if _bt10_results and proj_strategy in _bt10_results:
-                                _bt10_ret = _bt10_results[proj_strategy].get("returns", [])
-                                if _bt10_ret and len(_bt10_ret) >= 60:
-                                    _proj_returns_for_mc = _bt10_ret
-                            bm_rets_proj = (st.session_state.get("bmark_returns_10 Years") or
-                                            st.session_state.get("bmark_returns_5 Years") or
-                                            st.session_state.get("bmark_returns_3 Years"))
-    
-                            # Build comparison list
-                            comparison_list = []
-                            # Add extra selected strategies from PCM selector
-                            for _ei, _en in enumerate(_extra_strats):
-                                if _en in results:
-                                    try:
-                                        _ex_r2 = results[_en]
-                                        comparison_list.append((_en, _ex_r2["returns"]))
-                                    except Exception: pass
-                            # Pull the picked comparison portfolios from
-                            # std_chart_comparisons (already built above with
-                            # client-current + advisor cmps + fixed benchmarks
-                            # all in one place). Fall back to a fresh fetch
-                            # for fixed benchmarks if not in std_chart_comparisons
-                            # for some reason.
-                            cmp_map = {
-                                "🟦 100% Bonds (BND)":  (["BND"],          [1.0]),
-                                "⚖️ 60/40 (SPY+AGG)":   (["SPY", "AGG"],   [0.60, 0.40]),
-                                "📈 S&P 500 (SPY)":     (["SPY"],          [1.0]),
-                            }
-                            for cmp_name in proj_cmp:
-                                # Prefer reusing the already-fetched series
-                                if cmp_name in std_chart_comparisons:
-                                    try:
-                                        _series = std_chart_comparisons[cmp_name]
-                                        comparison_list.append((cmp_name, _series.tolist()))
-                                        continue
-                                    except Exception:
-                                        pass
-                                # Fallback: fixed benchmarks via cmp_map
-                                if cmp_name in cmp_map:
-                                    try:
-                                        cmp_tks, cmp_wts = cmp_map[cmp_name]
-                                        cend   = date.today(); cstart = cend - relativedelta(years=3)
-                                        cp2, _src = get_prices_cached(tuple(cmp_tks), str(cstart), str(cend))
-                                        cp2 = cp2.ffill().dropna(how="all")
-                                        vcols_p = [t for t in cmp_tks if t in cp2.columns]
-                                        warr_p  = np.array([cmp_wts[cmp_tks.index(t)] for t in vcols_p])
-                                        warr_p  = warr_p / warr_p.sum()
-                                        cr2     = cp2[vcols_p].pct_change().dropna().values @ warr_p
-                                        comparison_list.append((cmp_name, cr2.tolist()))
-                                    except Exception: pass
-    
-                            proj_lbl = proj_strategy.replace("⭐ ","")
-                            bm_name_proj = st.session_state.get("benchmark_label","SPY")
-
-                            # ─────────────────────────────────────────────
-                            # CMA SHRINKAGE — applied BEFORE chart build so
-                            # the chart, percentile cards, and benchmark line
-                            # all use the same shrunk inputs. Without this,
-                            # the chart was rendering the SPY benchmark with
-                            # raw historical mean (~13%/yr the last decade)
-                            # and projecting that 10y forward, producing the
-                            # wildly optimistic +680% line you saw.
-                            # ─────────────────────────────────────────────
-                            import numpy as _np_shr
-
-                            def _shrink_returns(rets_list, mode):
-                                """Rescale a daily returns list to a target
-                                annualized return per the selected mode.
-                                Preserves the daily *deviations* from the mean
-                                (vol/skew/kurt) — only shifts the mean."""
-                                if not rets_list:
-                                    return rets_list
-                                arr = _np_shr.array(rets_list, dtype=float)
-                                if len(arr) < 2:
-                                    return rets_list
-                                hist_mean_d = float(arr.mean())
-                                hist_ann = (1.0 + hist_mean_d) ** 252 - 1.0
-                                if mode.startswith("Conservative"):
-                                    target_ann = 0.07
-                                elif mode.startswith("Balanced"):
-                                    target_ann = 0.5 * hist_ann + 0.5 * 0.08
-                                else:
-                                    target_ann = hist_ann  # raw historical
-                                target_mean_d = (1.0 + target_ann) ** (1.0 / 252) - 1.0
-                                shrunk = arr - hist_mean_d + target_mean_d
-                                return shrunk.tolist()
-
-                            # Use the longest-available history series
-                            # (already 10-year per _proj_returns_for_mc fix)
-                            _proj_rets_shrunk = _shrink_returns(
-                                _proj_returns_for_mc, mc_ret_mode
-                            )
-                            # Same shrinkage applied to benchmark so its
-                            # projected line is on the same methodological
-                            # basis as the portfolio line.
-                            _bm_rets_shrunk = (
-                                _shrink_returns(list(bm_rets_proj), mc_ret_mode)
-                                if bm_rets_proj else None
-                            )
-                            # And to each comparison series in the legend
-                            _comp_shrunk = (
-                                [(cn, _shrink_returns(list(cr), mc_ret_mode))
-                                 for cn, cr in comparison_list]
-                                if comparison_list else None
-                            )
-
-                            fig_proj = build_projection_chart(
-                                strategy_name=proj_lbl,
-                                returns=_proj_rets_shrunk,
-                                benchmark_returns=_bm_rets_shrunk,
-                                bm_label=bm_name_proj,
-                                years=mc_years,
-                                comparison_list=_comp_shrunk,
-                            )
-                            st.plotly_chart(fig_proj, use_container_width=True,
-                                            # Key includes mc_ret_mode + mc_years so Streamlit
-                                            # treats the chart as new whenever the user changes
-                                            # those settings. Without this, Streamlit caches the
-                                            # plotly figure by key and the chart visually doesn't
-                                            # update even though the underlying figure object is
-                                            # different — classic stale-cache bug.
-                                            key=f"proj_{label}_{proj_strategy[:8]}_"
-                                                f"{mc_ret_mode[:4]}_{mc_years}_"
-                                                f"{mc_ret_adj}_{mc_vol_adj}",
-                                            config={"displayModeBar": True, "displaylogo": False,
-                                                    "modeBarButtonsToRemove": ["lasso2d","select2d"]})
-    
-                            # Apply flexible MC params from settings
-                            # Same shrunk series feeds the percentile cards
-                            # below — so chart and cards agree on the input.
-                            _mc_rets = list(_proj_rets_shrunk)
-
-                            # Apply user's Return Adjustment / Volatility Adjustment sliders
-                            # (these stack on top of the CMA shrinkage so the advisor can
-                            # nudge from the default Conservative target if they want).
-                            if mc_ret_adj != 0 or mc_vol_adj != 0:
-                                import numpy as _np
-                                _r = _np.array(_mc_rets)
-                                _r = _r + (mc_ret_adj / 100.0 / 252.0)
-                                if mc_vol_adj != 0:
-                                    _m = _r.mean()
-                                    _r = _m + (_r - _m) * (1 + mc_vol_adj/100.0)
-                                _mc_rets = _r.tolist()
-
-                            # Stash the final input series + the unshrunk source for
-                            # the diagnostic display that lives inside Projection Settings.
-                            # We populate two session_state keys so the expander block
-                            # above (which has already rendered) can pick them up on
-                            # the next rerun via Streamlit's normal state propagation.
-                            st.session_state[f"_mc_diag_final_{label}"] = list(_mc_rets)
-                            st.session_state[f"_mc_diag_orig_{label}"]  = list(_proj_returns_for_mc)
-                            st.session_state[f"_mc_diag_src_{label}"]   = (
-                                "10-year backtest"
-                                if (_bt10_results
-                                    and proj_strategy in _bt10_results
-                                    and _bt10_results[proj_strategy].get("returns")
-                                    and len(_bt10_results[proj_strategy]["returns"]) >= 60)
-                                else f"period-tab fallback ({label})"
-                            )
-                            days, p5, p10, p25, p50, p75, p90, p95, _, prob_loss = run_monte_carlo(
-                                tuple(_mc_rets), years_forward=mc_years,
-                                n_simulations=mc_sims)
-
-                            # Helper: convert a cumulative multiple (e.g. 55.5x)
-                            # into an annualized return so the numbers feel
-                            # sane. A median +5,457% sounds insane until you
-                            # realize that over 30 years it's just +14% annual.
-                            def _ann(cum_multiple, yrs):
-                                if yrs <= 0 or cum_multiple <= 0:
-                                    return 0.0
-                                return cum_multiple ** (1.0 / yrs) - 1.0
-
-                            st.caption(
-                                f"**Projection at year {mc_years}** — final "
-                                f"portfolio value relative to today, expressed "
-                                f"as cumulative return. Annualized rate shown "
-                                f"in parens."
-                            )
-                            pc1,pc2,pc3,pc4,pc5 = st.columns(5)
-                            pc1.metric("Median",
-                                       f"{p50[-1]-1:+.1%}",
-                                       delta=f"{_ann(p50[-1], mc_years):+.1%}/yr",
-                                       delta_color="off")
-                            pc2.metric("Best 25%",
-                                       f"{p75[-1]-1:+.1%}",
-                                       delta=f"{_ann(p75[-1], mc_years):+.1%}/yr",
-                                       delta_color="off")
-                            pc3.metric("Worst 25%",
-                                       f"{p25[-1]-1:+.1%}",
-                                       delta=f"{_ann(p25[-1], mc_years):+.1%}/yr",
-                                       delta_color="off")
-                            pc4.metric("Best 10%",
-                                       f"{p90[-1]-1:+.1%}",
-                                       delta=f"{_ann(p90[-1], mc_years):+.1%}/yr",
-                                       delta_color="off")
-                            pc5.metric("Worst 10%",
-                                       f"{p10[-1]-1:+.1%}",
-                                       delta=f"{_ann(p10[-1], mc_years):+.1%}/yr",
-                                       delta_color="off")
-                            # Probability of loss + worst-case (5th pct) row
-                            if prob_loss:
-                                qc1, qc2, qc3, qc4, qc5 = st.columns(5)
-                                _yrs_avail = sorted([y for y in (1,3,5,10) if y in prob_loss])
-                                # Labels intentionally short so they don't truncate
-                                # in the narrow metric columns. Help tooltips give
-                                # the full context.
-                                qc1.metric("Worst 5%", f"{p5[-1]-1:+.1%}",
-                                           help="Worst-case scenario — the 5th percentile "
-                                                "final outcome. A true downside scenario.")
-                                _qcs = [qc2, qc3, qc4, qc5]
-                                for _i, _y in enumerate(_yrs_avail[:4]):
-                                    _qcs[_i].metric(
-                                        f"Loss Yr {_y}",
-                                        f"{prob_loss[_y]*100:.1f}%",
-                                        help=f"Probability of loss at year {_y} — "
-                                             f"percent of simulations ending below "
-                                             f"starting value at that horizon."
-                                    )
-    
-                    # ── DRAWDOWN CHART ─────────────────────────────────────
-                    st.markdown("#### Drawdown (%)")
-                    fig_dd = go.Figure()
-    
-                    my_dd_keys = [k for k in results if k.startswith("⭐ ")] or (list(results.keys())[:1] if results else [])
-                    for name in my_dd_keys:
-                        r   = results[name]
-                        s   = pd.Series(r["returns"], index=pd.to_datetime(r["index"]))
-                        cum = (1+s).cumprod(); dd = (cum/cum.cummax()-1)*100
-                        _loaded_src_dd = st.session_state.get("portfolio_source","")
-                        port_lbl_dd = name.replace("⭐ ","")
-                        fig_dd.add_trace(go.Scatter(x=dd.index, y=dd.values, mode="lines",
-                            name=port_lbl_dd, line=dict(width=2.5, color=MY_PORT_COLOR, dash="solid"),
-                            hovertemplate=f"<b>{port_lbl_dd}</b><br>%{{x|%b %Y}}<br>%{{y:.2f}}%<extra></extra>"))
-    
-                    for cmp_name, cmp_series in std_chart_comparisons.items():
-                        try:
-                            cmp_cum = (1+cmp_series).cumprod(); cmp_dd = (cmp_cum/cmp_cum.cummax()-1)*100
-                            c_ = COMP_COLORS.get(cmp_name, "#94a3b8")
-                            _disp = _clean_label(cmp_name)
-                            fig_dd.add_trace(go.Scatter(x=cmp_dd.index, y=cmp_dd.values, mode="lines",
-                                name=_disp, line=dict(width=1.5, color=c_, dash="solid"),
-                                hovertemplate=f"<b>{_disp}</b><br>%{{x|%b %Y}}<br>%{{y:.2f}}%<extra></extra>"))
-                        except Exception: pass
-    
-                    # Extra strategy overlays on DD
-                    for _ei, (_en, _es) in enumerate(_extra_chart_data.items()):
-                        try:
-                            _ec = (1+_es).cumprod(); _edd = (_ec/_ec.cummax()-1)*100
-                            _ecol = _extra_colors[_ei % len(_extra_colors)]
-                            _disp_e = _clean_label(_en)
-                            fig_dd.add_trace(go.Scatter(x=_edd.index, y=_edd.values, mode="lines",
-                                name=_disp_e, line=dict(width=1.5, color=_ecol, dash="solid"),
-                                hovertemplate=f"<b>{_disp_e}</b><br>%{{x|%b %Y}}<br>%{{y:.2f}}%<extra></extra>"))
-                        except Exception: pass
-    
-                    fig_dd.add_hline(y=0, line_color="#e5e7eb", line_width=1)
-                    fig_dd.update_layout(
-                        title=dict(text="Drawdown (%)", x=0, xanchor="left"),
-                        yaxis_title="Drawdown (%)", xaxis_title=None, height=360,
-                        showlegend=True,
-                        # Bottom-centered legend, matching the projection chart's
-                        # convention. Previously left-anchored at x=0 which
-                        # looked unbalanced with the equalized margins.
-                        legend=dict(bgcolor="rgba(255,255,255,0.95)", bordercolor="#e5e7eb",
-                                    borderwidth=1, font=dict(size=11, color="#374151"),
-                                    orientation="h", x=0.5, y=-0.22,
-                                    xanchor="center", yanchor="top"),
-                        **PLOT_THEME)
-                    fig_dd.update_xaxes(title_text=None)
-                    st.plotly_chart(fig_dd, use_container_width=True, key=f"dd_{label}",
-                                    config={"displayModeBar": False})
-    
-                    # ── ROLLING SHARPE (window adapts to available data) ──
-                    # Default: 12-month (252d) for smoothness. But on short
-                    # periods (1y/3y tabs after train/test split) there aren't
-                    # enough observations, so we shrink the window to keep the
-                    # line visible while still being representative.
-                    st.markdown("#### Rolling Sharpe Ratio")
-                    fig_rs = go.Figure()
-
-                    def _pick_window(n):
-                        # Use ~40% of available obs, clamped between 42 and 252
-                        return max(42, min(252, int(n * 0.4)))
-
-                    def _rolling_sharpe(series, window=None):
-                        n = len(series)
-                        if n < 45:
-                            return pd.Series([], dtype=float)
-                        w = window or _pick_window(n)
-                        w = min(w, max(21, n - 5))  # don't demand more data than we have
-                        roll = series.rolling(w).apply(
-                            lambda x: (x.mean()*252)/(x.std()*np.sqrt(252)) if x.std()>0 else 0
-                        ).dropna()
-                        # Smooth the resulting curve a bit
-                        smooth = 5 if w >= 120 else 3
-                        if len(roll) > smooth:
-                            roll = roll.rolling(smooth, min_periods=1).mean()
-                        return roll
-
-                    # Determine window from "My Portfolio" length (keeps traces aligned)
-                    _rs_window = None
-                    _mp_ref_key = next((n for n in results if n.startswith("⭐ ")), None)
-                    if _mp_ref_key:
-                        _rs_window = _pick_window(len(results[_mp_ref_key].get("returns", [])))
-
-                    my_rs_keys = [n for n in results if n.startswith("⭐ ")] or (list(results.keys())[:1] if results else [])
-                    for name in my_rs_keys:
-                        r    = results[name]
-                        s    = pd.Series(r["returns"], index=pd.to_datetime(r["index"]))
-                        roll = _rolling_sharpe(s, window=_rs_window)
-                        if len(roll) < 5: continue
-                        _loaded_src_rs = st.session_state.get("portfolio_source","")
-                        port_lbl_rs = name.replace("⭐ ","")
-                        fig_rs.add_trace(go.Scatter(x=roll.index, y=roll.values, mode="lines",
-                            name=port_lbl_rs, line=dict(width=2.5, color=MY_PORT_COLOR, dash="solid"),
-                            hovertemplate=f"<b>{port_lbl_rs}</b><br>%{{x|%b %Y}}<br>Sharpe: %{{y:.2f}}<extra></extra>"))
-
-                    for cmp_name, cmp_series in std_chart_comparisons.items():
-                        try:
-                            roll_cmp = _rolling_sharpe(cmp_series, window=_rs_window)
-                            if len(roll_cmp) < 5: continue
-                            c_ = COMP_COLORS.get(cmp_name, "#94a3b8")
-                            _disp = _clean_label(cmp_name)
-                            fig_rs.add_trace(go.Scatter(x=roll_cmp.index, y=roll_cmp.values, mode="lines",
-                                name=_disp, line=dict(width=1.5, color=c_, dash="solid"),
-                                hovertemplate=f"<b>{_disp}</b><br>%{{x|%b %Y}}<br>Sharpe: %{{y:.2f}}<extra></extra>"))
-                        except Exception: pass
-    
-                    # Extra strategy overlays on RS
-                    for _ei, (_en, _es) in enumerate(_extra_chart_data.items()):
-                        try:
-                            _roll = _rolling_sharpe(_es, window=_rs_window)
-                            _ecol = _extra_colors[_ei % len(_extra_colors)]
-                            _disp_e = _clean_label(_en)
-                            fig_rs.add_trace(go.Scatter(x=_roll.index, y=_roll.values, mode="lines",
-                                name=_disp_e, line=dict(width=1.5, color=_ecol, dash="solid"),
-                                hovertemplate=f"<b>{_disp_e}</b><br>%{{x|%b %Y}}<br>Sharpe: %{{y:.2f}}<extra></extra>"))
-                        except Exception: pass
-    
-                    fig_rs.add_hline(y=0, line_color="#e5e7eb", line_width=1.5,
-                                      annotation_text="0", annotation_position="right",
-                                      annotation_font=dict(size=10, color="#9ca3af"))
-                    fig_rs.add_hline(y=1, line_color="#bbf7d0", line_width=1,
-                                      annotation_text="1.0", annotation_position="right",
-                                      annotation_font=dict(size=10, color="#059669"))
-                    _rs_months = round((_rs_window or 126) / 21)
-                    fig_rs.update_layout(
-                        title=dict(text=f"Rolling {_rs_months}-Month Sharpe Ratio", x=0, xanchor="left"),
-                        yaxis_title="Sharpe Ratio", xaxis_title=None, height=360,
-                        showlegend=True,
-                        legend=dict(bgcolor="rgba(255,255,255,0.95)", bordercolor="#e5e7eb",
-                                    borderwidth=1, font=dict(size=11, color="#374151"),
-                                    orientation="h", x=0.5, y=-0.22,
-                                    xanchor="center", yanchor="top"),
-                        **PLOT_THEME)
-                    fig_rs.update_xaxes(title_text=None)
-                    st.plotly_chart(fig_rs, use_container_width=True, key=f"rs_{label}",
-                                    config={"displayModeBar": False})
-    
-            # (Portfolio Weight Comparison section removed per UX feedback.)
-            # (Pie-chart allocation grid removed 2026-07-16 per Tony — the
-            #  tier gauges and holdings tables carry this information.)
-
-
-        # Results stored in session state for Tab2/Tab3 display
+        # (render_tab moved to module level 2026-07-16 — it is shared by
+        #  Results & Charts and the Optimizer, which no longer execute the
+        #  Analyzer body under radio navigation. See def render_tab above.)
         st.session_state["results_ready"] = True
         st.success("✅ Analysis complete — view results in the **Results** and **Charts** tabs above.")
 
